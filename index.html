@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>LotRadar</title>
+  <link rel="stylesheet" href="styles.css?v=posting-click-fix-2">
+  <script src="app.js?v=posting-click-fix-2" defer></script>
+
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand-mark">L<span>R</span></div>
+      <div class="brand-title">LOT<span>RADAR</span><small>INDEPENDENT APPLICATION</small></div>
+      <div class="sidebar-heading">USED INVENTORY</div>
+      <nav class="sidenav" id="tabs" aria-label="Inventory views">
+        <button data-tab="trade" class="selected"><span>★</span> Trade-in priority</button>
+        <button data-tab="all"><span>▦</span> Used inventory</button>
+        <button data-tab="drafts"><span>▤</span> Listing drafts</button>
+        <button data-tab="published"><span>✓</span> Tracked on Facebook</button>
+        <button data-tab="outstock"><span>⌁</span> Out of stock &amp; FB cleanup</button>
+        <button id="btn-listing-trash" type="button"><span>▤</span> Trash</button>
+      </nav>
+      <div class="sidebar-spacer"></div>
+      <div class="sidebar-note">
+        <span class="privacy-dot"></span> Local-only database
+        <p>No Facebook credentials, automated posts, or account scraping.</p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topline">
+        <div class="crumb">INVENTORY MANAGEMENT <span>/</span> <strong id="crumb-view">TRADE-IN PRIORITY</strong></div>
+        <div class="top-actions"><span class="pill cycle">MARKETPLACE R62 · PHOTO AUDIT</span>
+          <button class="iconbutton" id="theme-toggle" title="Toggle appearance" aria-label="Toggle appearance">◐</button>
+        </div>
+      </header>
+      <div class="content">
+        <section class="intro">
+          <div><div class="eyebrow">TOYOTA + MITSUBISHI · USED ONLY</div><h1>LotRadar<span class="title-dot">.</span></h1>
+            </div>
+          <div class="header-buttons">
+            <button id="btn-quick-scan" class="btn primary" type="button" title="Discover new vehicles: Toyota first; skip previously loaded links; fully collect new links at both dealers">⚡ Quick Scan</button>
+            <details class="advanced-tools" id="more-scans">
+              <summary class="btn secondary">More scans</summary>
+              <div class="advanced-tool-content"><div class="advanced-action-row">
+            <button id="btn-verify" class="btn secondary" type="button" title="Check saved links at both dealers, update details and retry missing photos">✓ Refresh &amp; Verify Inventory</button>
+            <button id="btn-facebook-scan" class="btn secondary" type="button" title="Check dealer and Facebook links for all LotRadar-tracked listings">↻ Check Listing Links</button>
+            <button id="btn-fetch-missing-photos" class="btn secondary" type="button" title="Revisit dealer galleries for vehicles with fewer than 10 usable downloaded photos">↓ Fetch Missing Photos</button>
+            <button id="btn-recheck-outstock" class="btn secondary" type="button" title="Recheck dealer and linked Facebook URLs for every vehicle in Out of Stock">↻ Recheck Out of Stock</button>
+            <button id="btn-full-scan" hidden style="display:none" class="btn secondary" type="button" title="Scan dealer inventory, verify saved links, then check tracked Facebook listings">⟳ Full Scan</button>
+              </div></div>
+            </details>
+            <details class="advanced-tools" id="advanced-tools">
+              <summary class="btn secondary">⚙ Settings</summary>
+              <div class="advanced-tool-content">
+                <p class="muted">Marketplace settings, exports, optional imports, and Chrome Reader setup.</p>
+                <div class="advanced-action-row">
+            <button id="btn-chrome-scan" class="btn secondary" type="button" title="Scan current rendered Toyota and Mitsubishi used inventory, including updated equipment">↻ Rescan Everything</button>
+                  <button id="btn-photo-settings" class="btn secondary" type="button" data-photo-settings-open>⚙ Photo settings</button>
+                  <button id="btn-reader-setup" class="btn secondary" type="button">◉ Chrome Reader pairing</button>
+                  <button id="btn-export" class="btn ghost">↓ Export audit</button>
+                  <button id="btn-import-external" class="btn secondary">⇧ Import working scan</button>
+                  <button id="btn-import" class="btn secondary">＋ Import inventory</button>
+                  <button id="btn-site-scan" class="btn secondary">⌕ Historical link discovery</button>
+                  <button id="btn-sync" class="btn ghost" title="Only external configured feeds, if available">⟳ External feeds</button>
+                </div>
+                <details class="settings-diagnostics">
+                  <summary>Scanner status & diagnostics</summary>
+                  <div id="feed-status" class="feed-status" aria-live="polite"></div>
+                  <div id="site-scan-status" class="feed-status" aria-live="polite"></div>
+                  <div id="verify-summary" class="feed-status" aria-live="polite"></div>
+                  <div class="settings-diagnostic-buttons">
+                    <button type="button" id="btn-verify-report" class="btn ghost">Verification report</button>
+                    <button type="button" id="btn-scan-console" class="btn ghost" hidden>▣ View scan console</button>
+                  </div>
+                </details>
+              </div>
+            </details>
+          </div>
+        </section>
+        <p id="full-scan-progress" class="fb-bulk-progress" aria-live="polite" hidden></p>
+        <button id="btn-full-stop" class="btn secondary" type="button" hidden>Stop Full Scan</button>
+        <p id="fb-bulk-progress" class="fb-bulk-progress" aria-live="polite" hidden></p>
+        <div class="fb-bulk-controls"><button id="btn-facebook-cancel" type="button" class="btn secondary" hidden>× Cancel Facebook check</button><button id="btn-facebook-retry" type="button" class="btn secondary" hidden>↻ Retry failed</button></div>
+        <div class="section-top inventory-heading"><div><h2 id="section-title">Trade-in priority</h2></div>
+</div>
+        <section id="dealer-connection-console" class="dealer-connection-console" aria-label="Dealer connection console">
+          <div class="dealer-console-header"><h2>Live Scanner</h2><button type="button" id="dealer-console-toggle" class="btn ghost" aria-expanded="true">Hide console</button></div>
+          <div id="dealer-console-body" class="dealer-terminal">
+            <div class="dealer-terminal-bar"><span id="dealer-console-reader" role="status">Checking Chrome Reader…</span><span class="dealer-terminal-etas"><strong id="dealer-console-eta"></strong><strong id="dealer-console-facebook-eta"></strong></span></div>
+            <p id="dealer-console-summary" class="dealer-terminal-summary"></p>
+            <div id="dealer-console-activity" role="log" aria-live="off" tabindex="0" aria-label="Recent scan activity">No scan activity yet.</div>
+            <div class="dealer-console-meta"><span>Recent activity</span><span id="dealer-console-updated"></span></div>
+          </div>
+        </section>
+        <section class="stats" id="stats" aria-label="Inventory statistics"></section>
+        <section class="inventory-tools" aria-label="Inventory filters">
+          <div class="inventory-totals" aria-live="polite"><strong id="inventory-loaded">0 vehicles loaded</strong><strong id="inventory-to-post" hidden></strong><span id="inventory-matches"></span></div>
+          <div class="inventory-filters">
+            <label>Min price<input id="inventory-min" type="number" min="0" step="0.01" placeholder="Any"></label>
+            <label>Max price<input id="inventory-max" type="number" min="0" step="0.01" placeholder="Any"></label>
+            <label>Age in LotRadar<select id="inventory-age"><option value="">Any age</option><option value="0">Less than 1 day</option><option value="7">0–7 days</option><option value="30">8–30 days</option><option value="older">31+ days</option></select></label>
+            <label>Model year<select id="inventory-year"><option value="">All years</option></select></label>
+            <div class="inventory-sort-group"><label>Sort<select id="inventory-sort">
+              <option value="priority">Trade-in priority</option><option value="price-low">Price ↑</option><option value="price-high">Price ↓</option>
+              <option value="refreshed-new">Recently loaded / refreshed</option><option value="refreshed-old">Least recently refreshed</option>
+              <option value="age-new">Newest in LotRadar</option><option value="age-old">Oldest in LotRadar</option>
+              <option value="year-new">Year ↓</option><option value="year-old">Year ↑</option>
+              <option value="az">Make / model A–Z</option><option value="za">Make / model Z–A</option>
+            </select></label>
+              <div class="inventory-sort-direction" role="group" aria-label="Sort direction">
+                <button id="inventory-sort-up" type="button" class="btn ghost" aria-pressed="false" aria-label="Sort ascending">↑</button>
+                <button id="inventory-sort-down" type="button" class="btn ghost" aria-pressed="false" aria-label="Sort descending">↓</button>
+              </div>
+            </div>
+            <button id="inventory-reset" class="btn ghost" type="button">Clear filters</button>
+          </div>
+        </section>
+
+          <label class="search-wrap inventory-search inventory-search-wide"><span aria-hidden="true">⌕</span><input id="search" type="search" autocomplete="off" placeholder="Search by stock number, VIN, or model" aria-label="Search by stock number, VIN, or model"></label>
+
+        <section id="vehicle-grid" class="vehicle-grid" aria-label="VIN-based vehicle inventory"></section>
+        <div id="vehicle-more-row" class="more-vehicles-row" hidden><button id="vehicle-show-more" class="btn secondary" type="button">Load more used vehicles</button></div>
+        <details class="basic-catalog" id="basic-catalog-panel">
+          <summary class="basic-heading"><div><div class="eyebrow">ADVANCED · CHROME DISCOVERY QUEUE</div><h2>Historical vehicle links (unverified)</h2></div><span id="basic-count">Checking link count…</span></summary>
+          <p class="muted">These URL-derived candidates feed Chrome Reader. Many can come from older sitemaps; they are not proven to be in stock and never count toward the vehicle total. Use Settings → Historical link discovery to refresh the queue. This section is collapsed during normal inventory work.</p>
+          <div id="basic-catalog-list" class="basic-catalog-list">Expand to inspect historical link candidates.</div>
+          <button class="btn secondary basic-more" type="button" id="basic-more" hidden>Show 60 more links</button>
+        </details>
+        <footer class="footer">LotRadar R62 &nbsp;•&nbsp; Independent application &nbsp;•&nbsp; Dealer inventory is subject to confirmation.</footer>
+      </div>
+    </main>
+  </div>
+
+  <div class="overlay" id="enrich-overlay" hidden>
+    <button class="overlay-dim" data-dismiss="enrich" aria-label="Close detail capture"></button>
+    <section class="modal enrich-modal" role="dialog" aria-modal="true" aria-labelledby="enrich-title">
+      <div class="drawer-top"><div><div class="eyebrow">STAGE 2 · VEHICLE DETAILS</div><h2 id="enrich-title">Capture price, stock, VIN, mileage</h2></div><button class="close" data-dismiss="enrich" aria-label="Close">×</button></div>
+      <p class="muted" id="enrich-subtitle"></p>
+      <p class="muted">Open the dealer link in your normal browser. If the vehicle page displays, press <strong>Ctrl+A</strong>, then <strong>Ctrl+C</strong>, return here and paste with <strong>Ctrl+V</strong>. No blocked automated detail requests are made.</p>
+      <a id="enrich-open-url" href="#" class="btn secondary" target="_blank" rel="noopener noreferrer">Open this vehicle page ↗</a>
+      <label class="field">Visible page text<textarea id="enrich-page-text" rows="7" maxlength="200000" placeholder="Paste the page contents here. VIN, Stock Number, Hampton Price/Price/TSRP and Odometer are extracted from labelled fields."></textarea></label>
+      <div id="enrich-result" class="muted" role="status" aria-live="polite"></div>
+      <p class="safety-note">Sitemap candidates and pasted pages are not proof the car is on the lot. Captured fields stay in the unverified catalog. No Facebook posting or inventory status changes.</p>
+      <button class="btn primary wide" id="enrich-submit" type="button">Extract and save fields</button>
+    </section>
+  </div>
+  <div class="overlay" id="detail-overlay" hidden>
+    <button class="overlay-dim" data-dismiss="detail" aria-label="Close details"></button>
+    <section class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <div class="drawer-top"><div><div class="eyebrow">POST A USED VEHICLE</div><h2 id="drawer-title">Vehicle</h2></div><div class="posting-header-actions"><button class="btn primary" type="button" id="prepare-facebook-form" data-act="open-facebook" hidden>Prepare Facebook form ↗</button><button class="close" type="button" data-dismiss="detail" aria-label="Close">×</button></div></div>
+      <div id="drawer-content" class="drawer-content"></div>
+    </section>
+  </div>
+
+  <div class="overlay" id="external-overlay" hidden>
+    <button class="overlay-dim" data-dismiss="external" aria-label="Close transfer"></button>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="external-title">
+      <div class="drawer-top"><div><div class="eyebrow">SECOND SCRAPER TRANSFER</div><h2 id="external-title">Import working scan</h2></div><button class="close" data-dismiss="external" aria-label="Close">×</button></div>
+      <form id="external-form" class="import-form">
+        <p class="muted">Select the JSON or CSV export produced by your working scanner. Preview the records before importing. No websites are requested during this transfer.</p>
+        <label>Source detection<select id="external-source"><option value="auto">Auto-detect from dealer, condition or vehicle URL</option><option value="toyota_used">Toyota Used</option><option value="mitsubishi_used">Mitsubishi Used</option></select></label>
+        <label>Working scanner export (.csv / .json)<input id="external-file" type="file" accept=".csv,.json,text/csv,application/json" required></label>
+        <div id="external-preview" class="safety-note" role="status">Records remain untouched until you review the preview and select Import.</div>
+        <button id="external-preview-btn" type="submit" class="btn secondary wide">Check file and preview records</button>
+        <button id="external-confirm-btn" type="button" class="btn primary wide" disabled>Import verified records (partial snapshot)</button>
+        <div class="safety-note">Only used vehicles are imported. Missing VINs are never treated as sold; conflicting or ambiguous records are rejected.</div>
+      </form>
+    </section>
+  </div>
+  <div class="overlay" id="import-overlay" hidden>
+    <button class="overlay-dim" data-dismiss="import" aria-label="Close import"></button>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="import-title">
+      <div class="drawer-top"><div><div class="eyebrow">AUTHORIZED INVENTORY EXPORT</div><h2 id="import-title">Import dealership vehicles</h2></div><button class="close" data-dismiss="import" aria-label="Close">×</button></div>
+      <form id="import-form" class="import-form">
+        <p class="muted">Upload a dealership CSV or JSON export. Shared used inventory is merged by VIN. For automatic dealership page reading, use the Chrome Scan button above.</p>
+        <label>Dealership / inventory group<select id="import-source" required>
+          <option value="toyota_used">Hampton Toyota • Used</option>
+          <option value="mitsubishi_used">Hampton Mitsubishi • Used</option>
+        </select></label>
+        <label>Inventory export (.csv / .json)<input type="file" id="import-file" accept=".csv,.json,text/csv,application/json" required></label>
+        <label class="check-row"><input type="checkbox" id="import-complete"><span>Complete snapshot for this source <small>Only checked, valid snapshots can flag previously present VINs as missing.</small></span></label>
+        <div class="safety-note">Used vehicles only. Never import private customer data. Missing vehicles require follow-up verification before any Facebook action.</div>
+        <button class="btn primary wide" type="submit">Validate and import</button>
+      </form>
+    </section>
+  </div>
+  <div class="overlay" id="site-scan-overlay" hidden>
+    <button class="overlay-dim" data-dismiss="site-scan" aria-label="Close website scan"></button>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="site-scan-title">
+      <div class="drawer-top"><div><div class="eyebrow">PUBLIC DEALERSHIP WEBSITE READER</div><h2 id="site-scan-title">Scan Hampton websites</h2></div><button class="close" data-dismiss="site-scan" aria-label="Close">×</button></div>
+      <p class="muted">Basic scan reads vehicle-shaped links to identify year, make and model without opening blocked detail pages. Results are UNVERIFIED and may include historical sitemap URLs. Chrome Scan retrieves VIN, mileage, stock and photos through the paired browser; this advanced tool only updates discovery links.</p>
+      <div class="safety-note">Discovery results are unverified until a dealer page is checked. Scans never publish to Facebook.</div>
+      <button class="btn primary wide" id="site-start-confirm" type="button">Discover historical links</button>
+    </section>
+  </div>
+  <div class="overlay" id="chrome-bridge-overlay" hidden>
+    <button class="overlay-dim" data-dismiss="chrome-bridge" aria-label="Close Chrome setup"></button>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="chrome-bridge-title">
+      <div class="drawer-top"><div><div class="eyebrow">STAGE 2 · CHROME READER</div><h2 id="chrome-bridge-title">Automatic vehicle detail collection</h2></div><button class="close" data-dismiss="chrome-bridge" aria-label="Close">×</button></div>
+      <p class="muted">Use regular Chrome to read dealership pages automatically, one page at a time. Requires the included Chrome extension installed once. No copy/paste per vehicle and no automatic Facebook posting.</p>
+      <p class="safety-note">First install: Chrome → Extensions → Manage Extensions → Developer mode → Load unpacked → select <code>%LOCALAPPDATA%\Programs\MarketplaceScanner\chrome-extension</code>. Keep the extension paired after moving LotRadar to another computer.</p>
+      <div id="chrome-pair-controls" hidden><label class="field">Local pairing key<input id="chrome-pair-key" readonly autocomplete="off" class="pair-key-mono"></label>
+      <button class="btn secondary" id="chrome-copy-key" type="button" disabled>Copy key for Chrome extension</button></div> <button class="btn secondary" id="chrome-retry" type="button">Retry connection</button>
+      <p id="chrome-bridge-status" class="muted" role="status">Checking Chrome connection…</p>
+      <p class="muted">Scan Inventory reads live inventory cards and refreshes all discovered used vehicle pages. Existing vehicles are rescanned for updated equipment.</p>
+      <p class="safety-note">Chrome will create and close temporary vehicle tabs. If its browser page returns 403, the job stops without inventing VINs. All imported data stays pending until current availability is confirmed. </p>
+      <button class="btn primary wide" id="chrome-start" type="button" disabled>Scan Inventory</button>
+    </section>
+  </div>
+  <div class="overlay" id="live-verify-overlay" hidden>
+    <button class="overlay-dim" data-dismiss="live-verify" aria-label="Close dealer verification"></button>
+    <section id="live-verify-panel" class="modal live-verify-panel" role="dialog" aria-modal="true" aria-labelledby="live-verify-heading" aria-label="Live dealership link verification">
+          <div class="live-verify-heading"><h2 id="live-verify-heading">Dealer link verification</h2><div><button id="live-verify-pause" class="btn ghost" type="button" hidden>Pause</button><button id="live-verify-stop" class="btn ghost" type="button" hidden>Stop verification</button><button id="live-verify-export" class="btn ghost" type="button">↓ Download report</button><button id="live-verify-hide" class="btn ghost" type="button">Close</button></div></div>
+          <p id="live-verify-status" role="status" aria-live="polite">Waiting for paired Chrome Reader…</p>
+          <progress id="live-verify-progress" max="1" value="0"></progress>
+          <pre id="live-verify-findings" class="live-verify-findings">No live checks yet.</pre>
+          <p class="muted">Read-only comparison. A readable dealer page is not proof the vehicle is currently in stock.</p>
+        </section>
+  </div>
+  <div class="overlay" id="scan-console-overlay" hidden>
+    <button class="overlay-dim" data-dismiss="scan-console" aria-label="Hide scan console"></button>
+    <section class="modal scan-console" role="dialog" aria-modal="true" aria-labelledby="scan-console-title">
+      <div class="drawer-top"><div><div class="eyebrow">LIVE SCANNER OPERATIONS</div><h2 id="scan-console-title">Dealer connection console</h2></div><button class="close" data-dismiss="scan-console" title="Hide console without stopping scanner" aria-label="Hide console; scan continues">×</button></div>
+      <div class="scan-console-body">
+        <div class="scan-console-head"><div class="terminal-indicator"><span class="terminal-led"></span><div><small>ACTIVE CONNECTION</small><strong id="scan-console-dealer">Waiting for scan</strong></div></div><span id="scan-console-status">Idle</span></div>
+        <div class="scan-source-strip" id="scan-source-strip" aria-label="Progress by dealership"><span>Waiting for source selection</span></div>
+        <div class="scan-progress" role="progressbar" aria-label="Overall dealership scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="scan-progress-fill"></div></div>
+        <div class="scan-console-metrics"><span id="scan-console-counts">0 of 4 dealership sections</span><span id="scan-console-eta">ETA: calculating</span></div>
+        <div id="scan-console-blocked" class="scan-console-blocked" role="status" hidden></div>
+        <div class="terminal-label"><span>LIVE SCANNER OUTPUT</span><span class="terminal-hint">Real requests + parser outcomes · max 200 events</span></div>
+        <div id="scan-console-log" class="scan-console-log" role="log" aria-live="off" aria-label="Actual website scanning events">No scan activity yet.</div>
+        <div class="verify-result" id="verify-result" hidden role="status" aria-live="polite"></div>
+        <div class="scan-console-footer"><span>Hide or reopen this window anytime. The scanner continues independently; no fabricated log messages.</span><button id="console-download" class="btn secondary" type="button">↓ Diagnostics</button></div>
+      </div>
+    </section>
+  </div>
+  <button id="scan-dock" class="scan-dock" type="button" aria-label="Reopen dealership scan console" hidden>
+    <span class="scan-dock-light" aria-hidden="true"></span>
+    <span class="scan-dock-info"><strong id="scan-dock-title">Dealer scan in progress</strong><small id="scan-dock-subtitle">Reopen live console</small></span>
+    <span id="scan-dock-percent" class="scan-dock-percent" aria-hidden="true">0%</span>
+    <span class="scan-dock-arrow" aria-hidden="true">↗</span>
+  </button>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

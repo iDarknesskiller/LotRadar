@@ -1,0 +1,183 @@
+﻿{
+    "exported_at":  "2026-11-14T18:00:26.3270217-06:00",
+    "source":  "Current installed standalone LotRadar",
+    "file_count":  35,
+    "excluded_items":  5,
+    "files":  [
+                  {
+                      "path":  "source/ai_copy.py",
+                      "bytes":  5838,
+                      "sha256":  "43bad06e139f4de98ef89c75738346f2eb4a45c354975f2a5bc8e548e8f7bcb2"
+                  },
+                  {
+                      "path":  "source/app.js",
+                      "bytes":  163735,
+                      "sha256":  "0e0f41d1de0855b82f34aa228bd8dee7bfd0963d5fd5d20562350ebb393fed26"
+                  },
+                  {
+                      "path":  "source/browser_trials.py",
+                      "bytes":  8268,
+                      "sha256":  "78070314a19247add8a8cc3b0005cc94724579949befbf8a1eb46c4b677f39ef"
+                  },
+                  {
+                      "path":  "source/chrome_bridge.py",
+                      "bytes":  71414,
+                      "sha256":  "2fdd630e816628cacd817dca373be0790bc8a2b819c0d24e7527b8f32b5d904b"
+                  },
+                  {
+                      "path":  "source/connector_export.py",
+                      "bytes":  4457,
+                      "sha256":  "73d7bde6538b91099a971d6335ac94fbd31e436df5c834843bf060594b19eec5"
+                  },
+                  {
+                      "path":  "source/core.py",
+                      "bytes":  81710,
+                      "sha256":  "dd34f1e213850a1a3bf5e30c53d875f43d569e463b4b390c7607981e3999f66b"
+                  },
+                  {
+                      "path":  "source/dealer_features.py",
+                      "bytes":  24175,
+                      "sha256":  "37ae799b2cbd7922df6ccd6d5a39375b2425526cbbbf6e83675fe8b8c8670778"
+                  },
+                  {
+                      "path":  "source/dealer_site_scraper.py",
+                      "bytes":  60322,
+                      "sha256":  "465dba91b2b95b05c8e4d765613941aaa1a085f7a0e8be01a4c71f447908cb69"
+                  },
+                  {
+                      "path":  "source/Export Inventory for SalesmanHub.cmd",
+                      "bytes":  568,
+                      "sha256":  "371ca3fa3cef296eafc119e0834804b26bebce60d5232a9da6541b37843ace67"
+                  },
+                  {
+                      "path":  "source/facebook_auto.py",
+                      "bytes":  10411,
+                      "sha256":  "f3cda2e4151061ec560d6df948e94091d0094cf4972662712114c23620882da7"
+                  },
+                  {
+                      "path":  "source/feed_sync.py",
+                      "bytes":  5777,
+                      "sha256":  "c6d28dd35320955dbab93599eaf1b3a9ca8b3f5787a138cd55c35292e9e17743"
+                  },
+                  {
+                      "path":  "source/headless_dealer.py",
+                      "bytes":  9853,
+                      "sha256":  "89d774a96d83469a37274c40f0ac5f6b5fe766610b6b34c87f8c253107beaade"
+                  },
+                  {
+                      "path":  "source/index.html",
+                      "bytes":  24097,
+                      "sha256":  "902dfa4b26cae8361688f741fa08d4d340ef9467240cff1402e38135e9c7f075"
+                  },
+                  {
+                      "path":  "source/Launch Marketplace Scanner.cmd",
+                      "bytes":  189,
+                      "sha256":  "b0834ce1371d86e3a3ed1ae615e9bd8c41faf631609247679770ba0d9978b4dd"
+                  },
+                  {
+                      "path":  "source/listing_transfer.py",
+                      "bytes":  5204,
+                      "sha256":  "fdf694d0a47c70c2dc213787996ea388811ff8d959b2b9ee629383daedd5a87b"
+                  },
+                  {
+                      "path":  "source/Marketplace Bootstrap.ps1",
+                      "bytes":  10020,
+                      "sha256":  "6158dfeaea7d8132dbab65d523a4a275d1c6bf332b82c8c48a93c91ee196a9fa"
+                  },
+                  {
+                      "path":  "source/migrate_legacy.py",
+                      "bytes":  4055,
+                      "sha256":  "9971b24ebd7387aaeb9561074701f38a1f191be3acaadd3f85673783bbbcab2f"
+                  },
+                  {
+                      "path":  "source/photo-selection.css",
+                      "bytes":  2555,
+                      "sha256":  "191a778d1b9c160a7f67f500f1ffa5b3c688c64001397ad0eb7ee5cd52ed3d68"
+                  },
+                  {
+                      "path":  "source/photo_cache.py",
+                      "bytes":  60474,
+                      "sha256":  "b8ace829aa2397ac07a5a530af2cb8c76650b9941e7f4aff34907975be5406d1"
+                  },
+                  {
+                      "path":  "source/photo_classify.py",
+                      "bytes":  10731,
+                      "sha256":  "b11c2823b23e8d7b3a321d4681e49203a4c5cf09c24a24cb3a56c0f4e121869f"
+                  },
+                  {
+                      "path":  "source/photo_selection.py",
+                      "bytes":  10341,
+                      "sha256":  "ef75ca01ad74e612d5638ca7a6a93cfe217c4e10ffff3c33192e9828495dc8c9"
+                  },
+                  {
+                      "path":  "source/README - SCANNER.txt",
+                      "bytes":  944,
+                      "sha256":  "82b853d7f51ee30ed2e87b0bb785c9f06c0a462ae3112d79d27fec45ad1ff4a4"
+                  },
+                  {
+                      "path":  "source/refresh_policy.py",
+                      "bytes":  1694,
+                      "sha256":  "0c84e3d5f9a78a2f7e184d88fd75f436361af3c282c9494e875db96795e789c9"
+                  },
+                  {
+                      "path":  "source/requirements.txt",
+                      "bytes":  61,
+                      "sha256":  "95f410e6fc6bbb73c77a8094c8490300389cfa0d33da1bc681d3ba52a1dba520"
+                  },
+                  {
+                      "path":  "source/server.py",
+                      "bytes":  109141,
+                      "sha256":  "3fd7535392bccd9d486e2bf7c2da6693e336a29722119c4880154bda02167900"
+                  },
+                  {
+                      "path":  "source/styles.css",
+                      "bytes":  55666,
+                      "sha256":  "6a9ba06bb00a965ae30308a54f38ec0e08c4d65c399515d513d76aa26921a9ac"
+                  },
+                  {
+                      "path":  "source/system_load.py",
+                      "bytes":  1603,
+                      "sha256":  "2096284b8a50ad7a5869c168987ed68b70658f2132ff6faacaa7c8a4d1882afa"
+                  },
+                  {
+                      "path":  "source/trade_ready.py",
+                      "bytes":  6372,
+                      "sha256":  "cc214914b30324e96b6e5a6fc76fc2ec3e6823acba3ed7aa5b668393f7296fda"
+                  },
+                  {
+                      "path":  "source/vin_decode.py",
+                      "bytes":  7422,
+                      "sha256":  "2edb185294589f017cc41977bc2f652eb01841f3c7fdaf92fb0771623578e8e8"
+                  },
+                  {
+                      "path":  "source/chrome-extension/background.js",
+                      "bytes":  71890,
+                      "sha256":  "767aaf5b4825b70ef3b58679da52eeb9ae44e8bb3279e1e3e2e52c3a5b299f7d"
+                  },
+                  {
+                      "path":  "source/chrome-extension/facebook_reader.js",
+                      "bytes":  6875,
+                      "sha256":  "9bbc007d796335bcf316578afad6b6a41cc991b4d513b7a83281db422677c2db"
+                  },
+                  {
+                      "path":  "source/chrome-extension/manifest.json",
+                      "bytes":  820,
+                      "sha256":  "486e6b8f216a21b5ae08d5257b6c45b83f38ef55ad3870ef633ba104e8de46fe"
+                  },
+                  {
+                      "path":  "source/chrome-extension/marketplace_signal.js",
+                      "bytes":  2406,
+                      "sha256":  "16ef8710a54ae54b77ee6c7d52f16ac9092d071af43b5965f7f93c0a98b9f032"
+                  },
+                  {
+                      "path":  "source/chrome-extension/popup.html",
+                      "bytes":  2180,
+                      "sha256":  "9a57182ca1b25818c865e6fda978cfa290729c084131be271c9e28e3b357f14a"
+                  },
+                  {
+                      "path":  "source/chrome-extension/popup.js",
+                      "bytes":  4604,
+                      "sha256":  "0221fc09de57808035172d70ecba1bc80c1a58d02b2756195d1b51fe82b4bf81"
+                  }
+              ]
+}

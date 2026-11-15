@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "LotRadar Browser Reader",
+  "version": "1.9.7",
+  "description": "Connects LotRadar inventory and approved vehicle drafts to Chrome.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage",
+    "alarms",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*",
+    "https://www.hamptontoyota.com/*",
+    "https://www.hamptonmitsubishi.com/*"
+  ],
+  "action": {
+    "default_title": "LotRadar",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "optional_host_permissions": [
+    "https://www.facebook.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1:8765/*"
+      ],
+      "js": [
+        "marketplace_signal.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
