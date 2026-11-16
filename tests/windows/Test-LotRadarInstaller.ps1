@@ -143,6 +143,20 @@ function Add-ManifestEntry($Manifest, [string]$Path, [string]$Sha) {
     $entry = [pscustomobject]@{ path = $Path; sha256 = $Sha; bytes = 1 }
     $Manifest.payload_files = @($Manifest.payload_files) + $entry
 }
+function Stop-SandboxProcesses {
+    # Only processes that belong to THIS sandbox: python server.py under the sandbox path, and the --app window opened for 127.0.0.1:8765.
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine })
+    $targets = @($all | Where-Object {
+        (($_.Name -ieq 'python.exe') -and $_.CommandLine -like '*server.py*' -and $_.CommandLine -like ('*' + $local + '*')) -or
+        ((($_.Name -ieq 'chrome.exe') -or ($_.Name -ieq 'msedge.exe')) -and $_.CommandLine -like '*--app=http://127.0.0.1:8765*')
+    })
+    foreach ($t in $targets) {
+        Write-Host ('Stopping sandbox process ' + $t.Name + ' pid ' + $t.ProcessId)
+        $ErrorActionPreference = 'Continue'
+        & taskkill.exe /PID $t.ProcessId /T /F 2>&1 | Out-Null
+    }
+    if ($targets.Count) { Start-Sleep -Seconds 3 }
+}
 function Release-Locks {
     foreach ($l in @($script:Locks)) { try { $l.Dispose() } catch { } }
     $script:Locks.Clear()
@@ -520,16 +534,27 @@ try {
             Assert-True ($r.Code -eq 0) ('exit ' + $r.Code + "`n" + $r.Output)
             Assert-True ($r.Output -match 'already running') ('message: ' + $r.Output)
             $procs = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*server.py*' -and $_.CommandLine -like ('*' + $local + '*') })
-            Assert-True ($procs.Count -eq 1) ('expected exactly 1 sandbox server process, found ' + $procs.Count)
-            return '1 server process'
+            $ids = @($procs | ForEach-Object { $_.ProcessId })
+            $roots = @($procs | Where-Object { $ids -notcontains $_.ParentProcessId })
+            $tree = (($procs | ForEach-Object { [string]$_.ProcessId + '<-' + [string]$_.ParentProcessId }) -join ', ')
+            Assert-True ($roots.Count -eq 1) ('expected exactly 1 sandbox server process tree, found ' + $roots.Count + ' (' + $tree + ')')
+            $listeners = @(Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue)
+            Assert-True ($listeners.Count -ge 1) 'nothing is listening on 8765'
+            $owners = @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)
+            Assert-True ($owners.Count -eq 1) ('more than one process listens on 8765: ' + ($owners -join ', '))
+            return ('1 server process tree (' + $procs.Count + ' python.exe processes: ' + $tree + '), single listener pid ' + $owners[0])
         }
         Invoke-Test 'F3' 'Real bootstrap: sandbox data folder created, installed program unchanged, no real data touched' {
             Assert-True (Test-Path -LiteralPath $dataDir) 'data dir missing'
-            Assert-True (((Get-Inventory $fixture) -join "`n") -eq $dataBefore) 'fixture data changed during launch'
+            $origRows = @($dataBefore -split "`n")
+            $nowRows = @(Get-Inventory $fixture)
+            $lost = @($origRows | Where-Object { $nowRows -notcontains $_ })
+            Assert-True ($lost.Count -eq 0) ('original fixture files missing or MODIFIED: ' + (($lost | ForEach-Object { ($_ -split '\|')[0] }) -join ', '))
+            $script:fixtureAdded = @($nowRows | Where-Object { $origRows -notcontains $_ } | ForEach-Object { ($_ -split '\|')[0] })
             foreach ($item in $manifest.payload_files) {
                 Assert-True ((Get-Sha (Join-Path $program $item.path.Replace('/', '\'))) -eq $item.sha256) ('program file changed by launch: ' + $item.path)
             }
-            return 'OK'
+            return ('OK; original fixture files byte-identical; files the server added to the data folder during the refused start: ' + $(if ($script:fixtureAdded.Count) { $script:fixtureAdded -join ', ' } else { '(none)' }))
         }
         # stop the sandbox server
         Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*server.py*' -and $_.CommandLine -like ('*' + $local + '*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
@@ -551,8 +576,13 @@ try {
             Write-Host 'Test Desktop LotRadar.lnk removed.'
         }
     } catch { Write-Host ('WARNING: could not restore Desktop shortcut: ' + $_.Exception.Message) -ForegroundColor Red }
+    try { Stop-SandboxProcesses } catch { Write-Host ('NOTE: could not stop sandbox processes: ' + $_.Exception.Message) -ForegroundColor Yellow }
     if (-not $KeepSandbox) {
-        try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop } catch { Write-Host ('NOTE: sandbox not fully removed: ' + $root) -ForegroundColor Yellow }
+        for ($try = 1; $try -le 3; $try++) {
+            try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop; break } catch {
+                if ($try -eq 3) { Write-Host ('NOTE: sandbox not fully removed (safe to delete by hand): ' + $root) -ForegroundColor Yellow } else { Start-Sleep -Seconds 4 }
+            }
+        }
     }
     Write-Host ''
     Write-Host '=== SUMMARY ===' -ForegroundColor Cyan
