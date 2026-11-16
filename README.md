@@ -26,3 +26,7 @@ Never commit data directories, customer information, photos, local databases, br
 6. Human authorizes merge/release after backup, regression and rollback verification.
 
 Initial review priorities are recorded in `AUDIT_README.txt`.
+
+## Contributors and development governance
+
+LotRadar uses a documented human-led, AI-assisted development process. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the specific roles and credited contributions of the Project Owner, ChatGPT (Chief Architect), Claude (Lead Programmer), and Gemini (Independent QA). AI role acknowledgements are not separate GitHub user accounts or claims of Git commit authorship.
