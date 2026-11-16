@@ -35,6 +35,31 @@ from dealer_site_scraper import scan_source, scan_basic_source, enrich_basic_fro
 BASE = Path(__file__).resolve().parent
 STATIC = {'/photo-selection.css':'photo-selection.css','/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/styles.css': 'styles.css'}
 MIMES = {'.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.css':'text/css; charset=utf-8'}
+# Branding: two exact allowlisted files, read from fixed paths only (no caller-controlled path).
+# They are private production assets; when absent the UI keeps the text "LR" mark.
+BRAND_FILES = {'/branding/lotradar_logo.png':(Path('branding')/'lotradar_logo.png','image/png',b'\x89PNG\r\n\x1a\n'),
+               '/favicon.ico':(Path('LotRadar.ico'),'image/x-icon',b'\x00\x00\x01\x00')}
+BRAND_FALLBACK = '<div class="brand-mark" data-brand-logo>L<span>R</span></div>'
+
+def read_brand_file(route):
+    rel,_mime,magic = BRAND_FILES[route]
+    try:
+        raw = (BASE/rel).read_bytes()
+    except OSError:
+        return None
+    return raw if raw.startswith(magic) and 16 <= len(raw) <= 5_000_000 else None
+
+def branded_index(raw_html):
+    """Swap the text mark for the logo only when the packaged logo exists and is a PNG."""
+    logo = read_brand_file('/branding/lotradar_logo.png')
+    text = raw_html.decode('utf-8')
+    if logo is not None and BRAND_FALLBACK in text:
+        tag = hashlib.sha256(logo).hexdigest()[:10]
+        text = text.replace(BRAND_FALLBACK, '<div class="brand-mark has-logo"><img class="brand-logo" src="/branding/lotradar_logo.png?v=%s" width="190" height="190" alt="LotRadar"></div>' % tag)
+    icon = read_brand_file('/favicon.ico')
+    if icon is not None:
+        text = text.replace('</head>', '  <link rel="icon" href="/favicon.ico?v=%s" sizes="any">\n</head>' % hashlib.sha256(icon).hexdigest()[:10], 1)
+    return text.encode('utf-8')
 MAX_BODY = 25_000_000
 USED_SOURCES = ('toyota_used','mitsubishi_used')
 
@@ -928,9 +953,16 @@ def create_handler(store, port, token):
                     return self._json(400, {'error':str(ex)})
                 self._headers(200,'application/zip',len(raw))
                 return self.wfile.write(raw)
+            if path in BRAND_FILES:
+                raw = read_brand_file(path)
+                if raw is None:
+                    return self._headers(204, 'text/plain', 0) if path == '/favicon.ico' else self._json(404, {'error':'not_found'})
+                self._headers(200, BRAND_FILES[path][1], len(raw))
+                return self.wfile.write(raw)
             if path in STATIC:
                 p = BASE / STATIC[path]
                 raw = p.read_bytes()
+                if p.name == 'index.html':raw = branded_index(raw)
                 self._headers(200, MIMES[p.suffix], len(raw))
                 return self.wfile.write(raw)
             return self._json(404, {'error':'not_found'})

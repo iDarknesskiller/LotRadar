@@ -30,7 +30,7 @@ and `build_type` in `Install-Manifest.json`.
 
 ## Private branding assets
 
-Photo export requires `business_card.png` and `dedication.jpg` (and the shortcut icon `LotRadar.ico`, optional).
+Photo export requires `business_card.png` and `dedication.jpg`. Branding requires `lotradar_logo.png` (transparent RGBA PNG, shown unchanged in the sidebar) and `LotRadar.ico` (made from that PNG; used for the shortcuts and the browser tab icon). **Production builds fail if the logo or icon is missing or corrupt**; development builds work without them and the app keeps the text "LR" mark. These files are private: keep them in the `--asset-dir` folder, never in the public repository. The logo is never added to vehicle photos or exports.
 Keep them in a folder **outside** this repository (or under the git-ignored `branding/`), e.g.
 `C:\LotRadarPrivate\assets\`. The builder checks type headers and size and refuses an in-repo, non-ignored folder.
 
