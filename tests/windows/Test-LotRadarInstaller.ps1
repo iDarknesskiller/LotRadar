@@ -481,6 +481,21 @@ try {
     } elseif ($portWasBusy) {
         Skip-Test 'F1' 'Real bootstrap launch' 'port 8765 busy'
     } else {
+        Write-Host 'F0/F1: first launch provisions Python packages and Playwright Chromium inside the sandbox; this can take several minutes. Do not close this window.' -ForegroundColor Yellow
+        Invoke-Test 'F0' 'Real bootstrap refuses a non-SQLite database file and does not modify it' {
+            $dbPath = Join-Path $dataDir 'marketplace.sqlite3'
+            Assert-True (Test-Path -LiteralPath $dbPath) 'test setup: fixture database missing'
+            $before = Get-Sha $dbPath
+            $r = Invoke-CmdScript (Join-Path $program 'Launch Marketplace Scanner.cmd')
+            Assert-True ($r.Code -ne 0) ('launcher reported success with a corrupt database: ' + $r.Output)
+            Assert-True ($r.Output -match 'file is not a database') ('unexpected output (provisioning problem?): ' + $r.Output)
+            Assert-True ((Get-Sha $dbPath) -eq $before) 'DATABASE FILE WAS MODIFIED'
+            Assert-True (-not (Test-PortBusy)) 'a server is still listening after the failed start'
+            return 'exit ' + $r.Code + '; database bytes unchanged; no server left running'
+        }
+        # F1+ need a clean data folder: set the random-byte fixture aside (it is checked again in F3).
+        $fixture = Join-Path $userRoot 'data-fixture'
+        Move-Item -LiteralPath $dataDir -Destination $fixture
         Invoke-Test 'F1' 'Real bootstrap: first launch serves healthy local-only API' {
             $launcher = Join-Path $program 'Launch Marketplace Scanner.cmd'
             $log1 = Join-Path $root 'launch1.log'
@@ -510,6 +525,7 @@ try {
         }
         Invoke-Test 'F3' 'Real bootstrap: sandbox data folder created, installed program unchanged, no real data touched' {
             Assert-True (Test-Path -LiteralPath $dataDir) 'data dir missing'
+            Assert-True (((Get-Inventory $fixture) -join "`n") -eq $dataBefore) 'fixture data changed during launch'
             foreach ($item in $manifest.payload_files) {
                 Assert-True ((Get-Sha (Join-Path $program $item.path.Replace('/', '\'))) -eq $item.sha256) ('program file changed by launch: ' + $item.path)
             }
