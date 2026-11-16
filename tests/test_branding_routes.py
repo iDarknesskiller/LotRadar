@@ -29,7 +29,7 @@ class Branding(unittest.TestCase):
         c,t,b=self.get('/favicon.ico');self.assertEqual((c,b),(200,ICO));self.assertEqual(t,'image/x-icon')
     def test_index_uses_logo_with_name_and_favicon(self):
         self.start(True);html=self.get('/')[2].decode()
-        self.assertIn('class="brand-logo"',html);self.assertIn('width="112" height="112"',html);self.assertIn('alt="LotRadar"',html);self.assertIn('rel="icon"',html);self.assertIn('LOT<span>RADAR</span>',html)
+        self.assertIn('class="brand-logo"',html);self.assertIn('width="190" height="190"',html);self.assertIn('alt="LotRadar"',html);self.assertIn('rel="icon"',html);self.assertIn('LOT<span>RADAR</span>',html)
     def test_fallback_without_assets(self):
         self.start(False);html=self.get('/')[2].decode()
         self.assertIn('L<span>R</span>',html);self.assertNotIn('class="brand-logo"',html);self.assertNotIn('rel="icon"',html)

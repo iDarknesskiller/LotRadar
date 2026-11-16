@@ -55,7 +55,7 @@ def branded_index(raw_html):
     text = raw_html.decode('utf-8')
     if logo is not None and BRAND_FALLBACK in text:
         tag = hashlib.sha256(logo).hexdigest()[:10]
-        text = text.replace(BRAND_FALLBACK, '<div class="brand-mark has-logo"><img class="brand-logo" src="/branding/lotradar_logo.png?v=%s" width="112" height="112" alt="LotRadar"></div>' % tag)
+        text = text.replace(BRAND_FALLBACK, '<div class="brand-mark has-logo"><img class="brand-logo" src="/branding/lotradar_logo.png?v=%s" width="190" height="190" alt="LotRadar"></div>' % tag)
     icon = read_brand_file('/favicon.ico')
     if icon is not None:
         text = text.replace('</head>', '  <link rel="icon" href="/favicon.ico?v=%s" sizes="any">\n</head>' % hashlib.sha256(icon).hexdigest()[:10], 1)
