@@ -13,6 +13,25 @@ try {
     $manifestPath = Join-Path $PSScriptRoot 'Install-Manifest.json'
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($manifest.product -ne 'LotRadar / Marketplace Scanner') { throw 'Invalid installer manifest.' }
+    # Reject manifests that could write outside the staging folder or are malformed (hardening added to the ported installer).
+    if (-not $manifest.payload_files -or @($manifest.payload_files).Count -lt 1) { throw 'Installer manifest lists no payload files.' }
+    $seenPaths = @{}
+    foreach ($item in $manifest.payload_files) {
+        $rel = [string]$item.path
+        $parts = $rel -split '[\\/]'
+        if ([string]::IsNullOrWhiteSpace($rel) -or $rel.Contains(':') -or ($parts -contains '') -or ($parts -contains '.') -or ($parts -contains '..')) {
+            throw ('Unsafe path in installer manifest: ' + $rel)
+        }
+        if ($seenPaths.ContainsKey($rel.ToLowerInvariant())) { throw ('Duplicate path in installer manifest: ' + $rel) }
+        $seenPaths[$rel.ToLowerInvariant()] = $true
+        if ([string]$item.sha256 -notmatch '^[0-9a-f]{64}$') { throw ('Invalid checksum entry in installer manifest for: ' + $rel) }
+    }
+    if ($manifest.package_version) {
+        Write-Host ('Package ' + $manifest.package_version + ' (' + $manifest.build_type + ', source ' + $manifest.source_commit + ')')
+    }
+    if ($manifest.build_type -and $manifest.build_type -ne 'production') {
+        Write-Warning 'This is a NON-PRODUCTION package (see build_type in Install-Manifest.json). Photo export needs the branding images.'
+    }
 
     $parentDir = Join-Path $env:LOCALAPPDATA 'Programs'
     $program = Join-Path $parentDir 'MarketplaceScanner'
