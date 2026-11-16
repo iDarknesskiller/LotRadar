@@ -14,6 +14,7 @@ VIN='1HGCM82633A004352';SRC='toyota_used'
 urls=[f'https://pictures.dealer.com/t/p{i:02d}.jpg' for i in range(1,n+1)]
 st=MarketplaceStore(str(data))
 st.import_feed(SRC,'json',json.dumps([{'vin':VIN,'condition':'used','year':2022,'make':'Hyundai','model':'Tucson','stock':'T1','mileage':1000,'price':20000,'url':'https://www.hamptontoyota.com/used/x.htm','images':urls,'photo_gallery_expected':n+4}]))
+st.create_draft(VIN,SRC)  # local-only synthetic draft so the description editor exists
 pc=P.PhotoCache(st.root);d=pc._directory(VIN,SRC);d.mkdir(parents=True,exist_ok=True)
 rnd=random.Random(7);entries={}
 for i,u in enumerate(urls[:partial],1):
