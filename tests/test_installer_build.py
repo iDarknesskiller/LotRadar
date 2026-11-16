@@ -355,5 +355,41 @@ class TestLauncher(unittest.TestCase):
             self.assertEqual(h.read(), baseline)
 
 
+class TestInstallerHardeningStatic(unittest.TestCase):
+    """Static checks only. The PowerShell behavior is verified by tests/windows/Test-LotRadarInstaller.ps1 on Windows."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = rb(os.path.join(REPO, 'installer', 'Install-LotRadar.ps1')).decode('utf-8')
+
+    def test_crlf_only(self):
+        self.assertNotIn('\n', self.text.replace('\r\n', ''))
+
+    def test_link_guard_present_and_used(self):
+        self.assertIn('function Test-UnsafeLink', self.text)
+        self.assertGreaterEqual(self.text.count('Test-UnsafeLink'), 5)
+        self.assertIn("'Junction'", self.text)
+        self.assertIn("'SymbolicLink'", self.text)
+
+    def test_containment_uses_directory_boundary(self):
+        self.assertIn("StartsWith($payloadFull + '\\', [StringComparison]::OrdinalIgnoreCase)", self.text)
+
+    def test_launch_lock_taken_after_install_lock_and_released(self):
+        self.assertLess(self.text.index('lotradar-install.lock'), self.text.index('marketplace-launch.lock'))
+        self.assertIn('$launchLock.Dispose()', self.text)
+        self.assertNotIn('Start-Sleep', self.text)  # the lock is never waited on
+
+    def test_stage_recheck_precedes_swap(self):
+        self.assertLess(self.text.index('Re-verify the whole staged tree'), self.text.index('[IO.Directory]::Move($program, $previousDir)'))
+
+    def test_rollback_handles_first_install(self):
+        self.assertIn('if (-not $success -and $swapped)', self.text)
+        self.assertIn('failed first installation', self.text)
+
+    def test_installer_never_deletes_data_or_stale_stages(self):
+        self.assertNotRegex(self.text, r'Remove-Item[^\r\n]*\$dataDir')
+        self.assertNotIn('Remove-Item -LiteralPath $programsDir', self.text)
+
+
 if __name__ == '__main__':
     unittest.main()

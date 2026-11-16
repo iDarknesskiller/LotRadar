@@ -57,14 +57,29 @@ handing it over. Publish it only as a release artifact, with the Project Owner's
 ## Install / upgrade (user, no admin rights)
 
 1. Extract the ZIP to a normal folder (not inside the ZIP preview).
-2. Close LotRadar completely. The installer refuses to run while port 8765 is active or another installer holds
-   `runtime\lotradar-install.lock`.
+2. Close LotRadar completely. The installer refuses to run while port 8765 is active, another installer holds
+   `runtime\lotradar-install.lock`, or LotRadar holds `runtime\marketplace-launch.lock` (starting/running). The
+   installer takes both locks without waiting and keeps them until it finishes, so a launch started during an install
+   fails safely ("already starting in another window") instead of racing it. Close it and launch again afterwards.
 3. Double-click `Installer.cmd`. It verifies every file's SHA-256 **before** changing anything, stages the new
    program next to the old one, moves the old program to `ProgramBackups`, swaps the folders, and restores the old
    program if the swap fails. Shortcuts are created on the Desktop and Start menu.
+   The installer refuses (nothing is changed) if the package payload, `Programs\MarketplaceScanner` or
+   `ProgramBackups` is a junction, symlink or other reparse-point folder, or if any payload path resolves outside the
+   package folder. If the package sits in a OneDrive/redirected folder and is refused, copy the extracted package to a
+   normal local folder (for example `C:\LotRadarInstall`) and run it again.
+   If anything fails after the swap, the previous program folder is restored (the failed copy is kept as
+   `ProgramBackups\Failed-install-*`); on a first install with no previous program, the failed copy is moved there
+   and no program is installed. Data is never touched.
 4. Start LotRadar from the shortcut. First run installs Python 3.10+ (via WinGet), the packages in
    `requirements.txt` and Playwright Chromium; offline it stops with a message and can simply be launched again
    after connecting.
+
+## Stale staging folders
+
+A crashed or killed install can leave `%LOCALAPPDATA%\Programs\.MarketplaceScanner-stage-<id>`. The installer does
+**not** delete folders it did not create in the current run (they may belong to a concurrent or crashed run). They are
+harmless and do not block installs. With LotRadar closed, they can be deleted by hand.
 
 ## Roll back manually
 
@@ -107,7 +122,12 @@ collisions, ADS, bad hashes), held installer lock, foreign listener on port 8765
 `LOCALAPPDATA`, and the launcher (missing bootstrap, exit-code propagation, working directory, EXE absent/present,
 pause behavior). `-FullLaunch` additionally starts the real bootstrap in the sandbox and checks `/api/health`
 and the single-server guarantee. The only shared location is the real Desktop `LotRadar.lnk`, which is backed up
-and restored. Interactive checks (Explorer double-click, offline first run, Chrome Reader pairing) are manual.
+and restored. Hardening tests: R1-R5 (junction/symlink inside payload, payload root, install target, backup root; outside
+sentinel folders must stay untouched; R3 reports SKIP if the account cannot create symlinks), C1/C2 (launch-lock
+interlock, including a real bootstrap launched mid-install), P1/P2 (post-swap rollback with and without a prior
+install, via a test-only injected *copy* of the installer; the shipped script is not edited) and S1 (stale stage
+folder). With `-FullLaunch`: OFF1 (offline first run fails clearly, data untouched) followed by F0 (retry proceeds)
+and F4 (provisioned + outage still starts). Interactive checks are listed in `docs/MANUAL_ACCEPTANCE.md`.
 
 ### Launcher pause
 

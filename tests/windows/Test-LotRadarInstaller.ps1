@@ -68,8 +68,8 @@ function Add-Result([string]$Id, [string]$Name, [string]$Status, [string]$Detail
 }
 function Invoke-Test([string]$Id, [string]$Name, [scriptblock]$Body) {
     try {
-        $detail = @(& $Body) | Select-Object -Last 1
-        Add-Result $Id $Name 'PASS' ([string]$detail)
+        $detail = [string](@(& $Body) | Select-Object -Last 1)
+        if ($detail -like 'BLOCKED:*') { Add-Result $Id $Name 'SKIP' $detail } else { Add-Result $Id $Name 'PASS' $detail }
     } catch {
         Add-Result $Id $Name 'FAIL' $_.Exception.Message
     }
@@ -142,6 +142,52 @@ function Save-Manifest([string]$Dir, $Manifest) {
 function Add-ManifestEntry($Manifest, [string]$Path, [string]$Sha) {
     $entry = [pscustomobject]@{ path = $Path; sha256 = $Sha; bytes = 1 }
     $Manifest.payload_files = @($Manifest.payload_files) + $entry
+}
+function Invoke-Cmd([string]$CommandLine) {
+    $ErrorActionPreference = 'Continue'
+    $out = & cmd.exe /d /c $CommandLine 2>&1 | Out-String
+    return [pscustomobject]@{ Code = $LASTEXITCODE; Output = $out }
+}
+function New-Junction([string]$LinkPath, [string]$TargetPath) {
+    $r = Invoke-Cmd ('mklink /J "' + $LinkPath + '" "' + $TargetPath + '"')
+    if ($r.Code -ne 0) { throw ('mklink /J failed: ' + $r.Output) }
+}
+# Removes ONLY a verified junction/symlink (never recurses into the target).
+function Remove-Junction([string]$LinkPath) {
+    if (-not (Test-Path -LiteralPath $LinkPath)) { return }
+    $item = Get-Item -LiteralPath $LinkPath -Force
+    if ($item.LinkType -eq 'Junction' -or $item.LinkType -eq 'SymbolicLink') { [IO.Directory]::Delete($LinkPath) }
+    else { throw ('Refusing to remove a non-link: ' + $LinkPath) }
+}
+# A harmless outside folder with a sentinel file; returns its path. Must stay byte-identical after any test.
+function New-Sentinel([string]$Name) {
+    $dir = Join-Path $root ('outside ' + $Name)
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $dir 'sentinel.txt'), ('sentinel ' + $Name), $utf8NoBom)
+    return $dir
+}
+function Assert-SentinelIntact([string]$Dir, [string]$Name) {
+    $names = @(Get-ChildItem -LiteralPath $Dir -Recurse -Force | ForEach-Object { $_.Name })
+    Assert-True ($names.Count -eq 1 -and $names[0] -eq 'sentinel.txt') ('outside folder was modified (' + $Name + '): ' + ($names -join ', '))
+    Assert-True ([IO.File]::ReadAllText((Join-Path $Dir 'sentinel.txt')) -eq ('sentinel ' + $Name)) ('sentinel content changed: ' + $Name)
+}
+# Copy of the package whose installer has a test-only line injected after a marker line. The production script is never edited.
+function New-InjectedPkg([string]$Name, [string]$After, [string]$Inject) {
+    $dst = New-PkgCopy $Name
+    $f = Join-Path $dst 'Install-LotRadar.ps1'
+    $text = [IO.File]::ReadAllText($f)
+    $idx = $text.IndexOf($After)
+    if ($idx -lt 0) { throw ('injection marker not found: ' + $After) }
+    $eol = $text.IndexOf("`n", $idx)
+    $text = $text.Insert($eol + 1, $Inject + "`r`n")
+    [IO.File]::WriteAllText($f, $text, $utf8NoBom)
+    return $dst
+}
+function Invoke-Installer-Boot {
+    $boot = Join-Path $program 'Marketplace Bootstrap.ps1'
+    $ErrorActionPreference = 'Continue'
+    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $boot 2>&1 | Out-String
+    return [pscustomobject]@{ Code = $LASTEXITCODE; Output = $out }
 }
 function Stop-SandboxProcesses {
     # Only processes that belong to THIS sandbox: python server.py under the sandbox path, and the --app window opened for 127.0.0.1:8765.
@@ -429,6 +475,189 @@ try {
         return 'OK'
     }
 
+    # ======================= handoff #3 hardening tests =======================
+    # ---- reparse points / junctions (harmless sentinel folders; links are removed with Directory.Delete only)
+    Invoke-Test 'R1' 'Junction INSIDE the payload folder is refused; outside sentinel untouched; nothing changes' {
+        $sent = New-Sentinel 'r1'
+        $pkg = New-PkgCopy 'r1'
+        try {
+            $victim = Join-Path $pkg 'MarketplaceScanner\chrome-extension'
+            Assert-True (Test-Path -LiteralPath $victim) 'test setup: chrome-extension folder missing in package'
+            Remove-Item -LiteralPath $victim -Recurse -Force
+            New-Junction $victim $sent
+            $r = Invoke-Installer $pkg
+        } finally { Remove-Junction (Join-Path $pkg 'MarketplaceScanner\chrome-extension') }
+        Assert-True ($r.Code -ne 0) ('installer accepted a junction inside the payload: ' + $r.Output)
+        Assert-True ($r.Output -match 'link|reparse|missing|escape') ('unexpected message: ' + $r.Output)
+        Assert-SentinelIntact $sent 'r1'
+        Assert-Unchanged $good 'payload junction'
+        return 'refused: ' + ([string]($r.Output -split "`n" | Where-Object { $_ -match 'INSTALL ERROR' } | Select-Object -First 1)).Trim()
+    }
+    Invoke-Test 'R2' 'Payload ROOT folder is a junction: refused' {
+        $sent = New-Sentinel 'r2'
+        $pkg = New-PkgCopy 'r2'
+        $real = Join-Path $pkg 'MarketplaceScanner'
+        $moved = Join-Path $root 'r2-real-payload'
+        Move-Item -LiteralPath $real -Destination $moved
+        try {
+            New-Junction $real $moved
+            $r = Invoke-Installer $pkg
+        } finally { Remove-Junction $real }
+        Assert-True ($r.Code -ne 0) ('installer accepted a junction payload root: ' + $r.Output)
+        Assert-True ($r.Output -match 'link|reparse') ('unexpected message: ' + $r.Output)
+        Assert-SentinelIntact $sent 'r2'
+        Assert-Unchanged $good 'payload root junction'
+        return 'refused'
+    }
+    Invoke-Test 'R3' 'File symlink inside payload is refused (reported SKIP/BLOCKED if symlinks cannot be created)' {
+        $pkg = New-PkgCopy 'r3'
+        $victim = Join-Path $pkg 'MarketplaceScanner\requirements.txt'
+        $other = Join-Path $root 'r3-other.txt'
+        [IO.File]::WriteAllText($other, 'other', $utf8NoBom)
+        Remove-Item -LiteralPath $victim -Force
+        $mk = Invoke-Cmd ('mklink "' + $victim + '" "' + $other + '"')
+        if ($mk.Code -ne 0) { return 'BLOCKED: this account cannot create file symlinks (needs Developer Mode or elevation): ' + $mk.Output.Trim() }
+        $r = Invoke-Installer $pkg
+        Assert-True ($r.Code -ne 0) ('installer accepted a file symlink: ' + $r.Output)
+        Assert-Unchanged $good 'file symlink'
+        return 'refused'
+    }
+    Invoke-Test 'R4' 'Programs\MarketplaceScanner (install target) is a junction: refused, target sentinel untouched' {
+        $sent = New-Sentinel 'r4'
+        $saved = Join-Path $root 'r4-saved-program'
+        Move-Item -LiteralPath $program -Destination $saved
+        try {
+            New-Junction $program $sent
+            $r = Invoke-Installer $pkgDir
+        } finally { Remove-Junction $program; Move-Item -LiteralPath $saved -Destination $program }
+        Assert-True ($r.Code -ne 0) ('installer accepted a junction as the install target: ' + $r.Output)
+        Assert-True ($r.Output -match 'link|reparse') ('unexpected message: ' + $r.Output)
+        Assert-SentinelIntact $sent 'r4'
+        Assert-Unchanged $good 'install-target junction'
+        return 'refused'
+    }
+    Invoke-Test 'R5' 'ProgramBackups is a junction: refused, outside sentinel untouched' {
+        $sent = New-Sentinel 'r5'
+        $savedBackups = $null
+        if (Test-Path -LiteralPath $backupRoot) { $savedBackups = Join-Path $root 'r5-saved-backups'; Move-Item -LiteralPath $backupRoot -Destination $savedBackups }
+        try {
+            New-Junction $backupRoot $sent
+            $r = Invoke-Installer $pkgDir
+        } finally {
+            Remove-Junction $backupRoot
+            if ($savedBackups) { Move-Item -LiteralPath $savedBackups -Destination $backupRoot }
+        }
+        Assert-True ($r.Code -ne 0) ('installer accepted a junction as the backup root: ' + $r.Output)
+        Assert-SentinelIntact $sent 'r5'
+        Assert-Unchanged $good 'backup-root junction'
+        return 'refused'
+    }
+
+    # ---- install/launch interlock
+    Invoke-Test 'C1' 'Held marketplace-launch.lock (LotRadar starting/running): installer aborts, nothing changes' {
+        $lock = [IO.File]::Open((Join-Path $runtimeDir 'marketplace-launch.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+        [void]$script:Locks.Add($lock)
+        try { $r = Invoke-Installer $pkgDir } finally { Release-Locks }
+        Assert-True ($r.Code -ne 0) 'installer ran while the launch lock was held'
+        Assert-True ($r.Output -match 'running or starting') ('unexpected message: ' + $r.Output)
+        Assert-Unchanged $good 'launch lock'
+        $again = Invoke-Installer $pkgDir
+        Assert-True ($again.Code -eq 0) ('installer cannot run after the lock was released (stranded lock?): ' + $again.Output)
+        $script:good = Get-State
+        return 'aborted while held; succeeded after release (no stranded lock)'
+    }
+    Invoke-Test 'C2' 'Installer-first: real bootstrap launched during an install fails safe, install completes, no stranded locks' {
+        $pkg = New-InjectedPkg 'c2' "Write-Host 'Existing scanner data was not modified.'" 'Start-Sleep -Seconds 15'
+        $env:LOTRADAR_NO_PAUSE = '1'
+        $inst = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + (Join-Path $pkg 'Install-LotRadar.ps1') + '"')) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root 'c2-install.out') -RedirectStandardError (Join-Path $root 'c2-install.err')
+        try {
+            $deadline = (Get-Date).AddSeconds(60)
+            while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath (Join-Path $root 'c2-install.out') -PathType Leaf)) { Start-Sleep -Milliseconds 300 }
+            $sawSwap = $false
+            while ((Get-Date) -lt $deadline -and -not $inst.HasExited) {
+                if (Test-Path -LiteralPath (Join-Path $root 'c2-install.out')) {
+                    $txt = ''
+                    try { $txt = [IO.File]::ReadAllText((Join-Path $root 'c2-install.out')) } catch { }
+                    if ($txt -match 'Installed program:') { $sawSwap = $true; break }
+                }
+                Start-Sleep -Milliseconds 300
+            }
+            Assert-True $sawSwap 'installer never reached the injected pause (cannot test overlap)'
+            $boot = Invoke-Installer-Boot
+            Assert-True ($boot.Code -ne 0) ('bootstrap SUCCEEDED while the installer held the launch lock: ' + $boot.Output)
+            Assert-True (-not (Test-PortBusy)) 'a server started during the install'
+        } finally {
+            [void]$inst.WaitForExit(120000)
+        }
+        Assert-True ($inst.ExitCode -eq 0) ('installer exit ' + $inst.ExitCode + ': ' + [IO.File]::ReadAllText((Join-Path $root 'c2-install.out')))
+        Assert-True (-not (Test-PortBusy)) 'a server is listening after the test'
+        # locks are free again
+        foreach ($n in @('lotradar-install.lock', 'marketplace-launch.lock')) {
+            $l = [IO.File]::Open((Join-Path $runtimeDir $n), 'OpenOrCreate', 'ReadWrite', 'None'); $l.Dispose()
+        }
+        Assert-True (((Get-Inventory $dataDir) -join "`n") -eq $dataBefore) 'DATA CHANGED'
+        $script:good = Get-State
+        return 'bootstrap refused during install (' + ($boot.Output.Trim() -replace '\s+', ' ') + '); install completed; locks free'
+    }
+
+    # ---- post-swap rollback (test-only injected copy of the installer; production script untouched)
+    Invoke-Test 'P1' 'Post-swap failure with a prior install: previous program restored byte-for-byte, data/runtime unchanged' {
+        $before = Get-State
+        $runtimeSnap = (Get-Inventory $runtimeDir | Where-Object { $_ -notlike '*.lock*' }) -join "`n"
+        $pkg = New-InjectedPkg 'p1' "Write-Host 'Existing scanner data was not modified.'" "throw 'TEST-INJECTED post-swap failure'"
+        $r = Invoke-Installer $pkg
+        Assert-True ($r.Code -ne 0) ('injected failure did not fail the installer: ' + $r.Output)
+        Assert-True ($r.Output -match 'TEST-INJECTED') 'injection did not run (rollback path NOT reached)'
+        Assert-True ($r.Output -match 'Original program has been restored') ('no restore message: ' + $r.Output)
+        $now = Get-State
+        Assert-True ($now.Program -eq $before.Program) 'restored program differs from the pre-install program'
+        Assert-True ($now.Data -eq $before.Data) 'DATA CHANGED'
+        Assert-True ((($now.Backups) - ($before.Backups)) -eq 1) ('expected exactly 1 new backup folder (Failed-install-*), delta=' + ($now.Backups - $before.Backups))
+        $failed = @(Get-ChildItem -LiteralPath $backupRoot -Directory | Where-Object { $_.Name -like 'Failed-install-*' })
+        Assert-True ($failed.Count -ge 1) 'Failed-install-* folder missing'
+        Assert-True ((Get-StageDirs).Count -eq 0) 'leftover staging folder'
+        $rt = (Get-Inventory $runtimeDir | Where-Object { $_ -notlike '*.lock*' }) -join "`n"
+        Assert-True ($rt -eq $runtimeSnap) 'runtime folder changed'
+        $script:good = Get-State
+        return 'rollback reached and verified: program restored, data identical, failed copy kept as Failed-install-*'
+    }
+    Invoke-Test 'P2' 'Post-swap failure on a FIRST install (no prior program): no program left, failed copy kept, data unchanged' {
+        $savedProgram = Join-Path $root 'p2-saved-program'
+        Move-Item -LiteralPath $program -Destination $savedProgram
+        $beforeBackups = 0
+        if (Test-Path -LiteralPath $backupRoot) { $beforeBackups = @(Get-ChildItem -LiteralPath $backupRoot -Directory).Count }
+        try {
+            $pkg = New-InjectedPkg 'p2' "Write-Host 'Existing scanner data was not modified.'" "throw 'TEST-INJECTED post-swap failure'"
+            $r = Invoke-Installer $pkg
+            Assert-True ($r.Code -ne 0) 'injected failure did not fail the installer'
+            Assert-True ($r.Output -match 'TEST-INJECTED') 'injection did not run (rollback path NOT reached)'
+            Assert-True ($r.Output -match 'failed first installation') ('no first-install message: ' + $r.Output)
+            Assert-True (-not (Test-Path -LiteralPath $program)) 'a broken program folder was left installed'
+            Assert-True (((Get-Inventory $dataDir) -join "`n") -eq $dataBefore) 'DATA CHANGED'
+            $after = @(Get-ChildItem -LiteralPath $backupRoot -Directory)
+            Assert-True ($after.Count -eq $beforeBackups + 1) 'expected exactly one Failed-install-* folder to be added'
+        } finally {
+            if (-not (Test-Path -LiteralPath $program)) { Move-Item -LiteralPath $savedProgram -Destination $program }
+        }
+        Assert-True ((Get-State).Program -eq $good.Program) 'test cleanup did not restore the program'
+        $script:good = Get-State
+        return 'rollback reached and verified'
+    }
+
+    # ---- stale staging folder
+    Invoke-Test 'S1' 'A stale .MarketplaceScanner-stage-* folder is NOT deleted and does not block a normal install' {
+        $stale = Join-Path $programsDir '.MarketplaceScanner-stage-deadbeefdeadbeefdeadbeefdeadbeef'
+        New-Item -ItemType Directory -Path $stale -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $stale 'leftover.txt'), 'stale', $utf8NoBom)
+        try {
+            $r = Invoke-Installer $pkgDir
+            Assert-True ($r.Code -eq 0) ('install blocked by a stale stage folder: ' + $r.Output)
+            Assert-True (Test-Path -LiteralPath (Join-Path $stale 'leftover.txt')) 'installer deleted a stale stage folder it did not create'
+        } finally { Remove-Item -LiteralPath $stale -Recurse -Force -ErrorAction SilentlyContinue }
+        $script:good = Get-State
+        return 'install OK; stale folder left in place (documented manual cleanup)'
+    }
+
     # ---- launcher
     $launcherSrc = Join-Path $pkgDir 'MarketplaceScanner\Launch Marketplace Scanner.cmd'
     $lDir = Join-Path $root 'Launcher Test Dir'
@@ -496,6 +725,23 @@ try {
         Skip-Test 'F1' 'Real bootstrap launch' 'port 8765 busy'
     } else {
         Write-Host 'F0/F1: first launch provisions Python packages and Playwright Chromium inside the sandbox; this can take several minutes. Do not close this window.' -ForegroundColor Yellow
+        Invoke-Test 'OFF1' 'Offline first run (nothing provisioned yet): clear failure, data untouched, no server; F0 then proves the retry resumes' {
+            $dbPath = Join-Path $dataDir 'marketplace.sqlite3'
+            $before = Get-Sha $dbPath
+            $saved = @{ HTTP_PROXY = $env:HTTP_PROXY; HTTPS_PROXY = $env:HTTPS_PROXY; ALL_PROXY = $env:ALL_PROXY; NO_PROXY = $env:NO_PROXY }
+            try {
+                $env:HTTP_PROXY = 'http://127.0.0.1:9'; $env:HTTPS_PROXY = 'http://127.0.0.1:9'; $env:ALL_PROXY = 'http://127.0.0.1:9'; $env:NO_PROXY = '127.0.0.1,localhost'
+                $r = Invoke-CmdScript (Join-Path $program 'Launch Marketplace Scanner.cmd')
+            } finally {
+                foreach ($k in $saved.Keys) { if ($null -eq $saved[$k]) { Remove-Item ('Env:\' + $k) -ErrorAction SilentlyContinue } else { Set-Item ('Env:\' + $k) $saved[$k] } }
+            }
+            Assert-True ($r.Code -ne 0) ('launcher reported SUCCESS while offline with nothing provisioned: ' + $r.Output)
+            Assert-True (-not (Test-PortBusy)) 'a server is listening after the offline failure'
+            Assert-True ((Get-Sha $dbPath) -eq $before) 'DATABASE FILE WAS MODIFIED'
+            Assert-True ($r.Output -notmatch 'file is not a database') 'bootstrap reached the database although offline (was it already provisioned on this machine?)'
+            $tail = (($r.Output -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 3) -join ' | ')
+            return ('exit ' + $r.Code + '; no server; data unchanged; message: ' + $tail)
+        }
         Invoke-Test 'F0' 'Real bootstrap refuses a non-SQLite database file and does not modify it' {
             $dbPath = Join-Path $dataDir 'marketplace.sqlite3'
             Assert-True (Test-Path -LiteralPath $dbPath) 'test setup: fixture database missing'
@@ -559,6 +805,37 @@ try {
         # stop the sandbox server
         Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*server.py*' -and $_.CommandLine -like ('*' + $local + '*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         if ($script:launchProc) { [void]$script:launchProc.WaitForExit(60000) }
+        Invoke-Test 'F4' 'Already provisioned + temporary internet outage: LotRadar still starts healthy (one server tree)' {
+            $saved = @{ HTTP_PROXY = $env:HTTP_PROXY; HTTPS_PROXY = $env:HTTPS_PROXY; ALL_PROXY = $env:ALL_PROXY; NO_PROXY = $env:NO_PROXY }
+            $health = $null
+            try {
+                $env:HTTP_PROXY = 'http://127.0.0.1:9'; $env:HTTPS_PROXY = 'http://127.0.0.1:9'; $env:ALL_PROXY = 'http://127.0.0.1:9'; $env:NO_PROXY = '127.0.0.1,localhost'
+                $log4 = Join-Path $root 'launch4.log'
+                $runner = Join-Path $root 'launch4.cmd'
+                [IO.File]::WriteAllText($runner, ('@echo off' + "`r`n" + 'call "' + (Join-Path $program 'Launch Marketplace Scanner.cmd') + '" > "' + $log4 + '" 2>&1' + "`r`n" + 'exit /b %errorlevel%' + "`r`n"), [Text.Encoding]::ASCII)
+                $script:launchProc = Start-Process -FilePath cmd.exe -ArgumentList '/d', '/c', ('"' + $runner + '"') -PassThru -WindowStyle Minimized
+                $deadline = (Get-Date).AddMinutes(5)
+                while ((Get-Date) -lt $deadline -and -not $script:launchProc.HasExited) {
+                    try { $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/health' -TimeoutSec 3; break } catch { Start-Sleep -Seconds 3 }
+                }
+                if (-not $health) {
+                    $tail = ''
+                    if (Test-Path -LiteralPath $log4) { $tail = (Get-Content -LiteralPath $log4 -Tail 25) -join "`n" }
+                    throw ('no health response while offline; launcher exited=' + $script:launchProc.HasExited + "`n" + $tail)
+                }
+            } finally {
+                foreach ($k in $saved.Keys) { if ($null -eq $saved[$k]) { Remove-Item ('Env:\' + $k) -ErrorAction SilentlyContinue } else { Set-Item ('Env:\' + $k) $saved[$k] } }
+            }
+            Assert-True ($health.ok -eq $true -and $health.local_only -eq $true -and $health.service -eq 'Marketplace Scanner') ('unexpected health payload: ' + ($health | ConvertTo-Json -Compress))
+            $procs = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*server.py*' -and $_.CommandLine -like ('*' + $local + '*') })
+            $ids = @($procs | ForEach-Object { $_.ProcessId })
+            $roots = @($procs | Where-Object { $ids -notcontains $_.ParentProcessId })
+            Assert-True ($roots.Count -eq 1) ('expected 1 server process tree, found ' + $roots.Count)
+            return 'healthy while offline; 1 server tree'
+        }
+        # stop the sandbox server again
+        Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*server.py*' -and $_.CommandLine -like ('*' + $local + '*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        if ($script:launchProc) { [void]$script:launchProc.WaitForExit(60000) }
     }
 } catch {
     Add-Result 'FATAL' 'Test run aborted' 'FAIL' $_.Exception.Message
@@ -591,7 +868,7 @@ try {
     $pass = @($script:Results | Where-Object { $_.Status -eq 'PASS' }).Count
     $skip = @($script:Results | Where-Object { $_.Status -eq 'SKIP' }).Count
     Write-Host ('PASS=' + $pass + ' FAIL=' + $fail + ' SKIP=' + $skip)
-    Write-Host 'MANUAL checks still required (not automatable here): double-click the Desktop shortcut and a launcher failure from Explorer; offline first run then retry; Chrome Reader load-unpacked + pairing; repeat on Windows 10 and 11.'
+    Write-Host 'MANUAL checks still required (see docs/MANUAL_ACCEPTANCE.md): Explorer double-click of Installer.cmd/shortcuts; Chrome Reader load-unpacked + pairing; read-only photo export; repeat on Windows 10 AND Windows 11.'
     [IO.File]::WriteAllText($jsonPath, (@{ results = $script:Results; os = ([string]$PSVersionTable.PSVersion); package = $zipPath } | ConvertTo-Json -Depth 5), $utf8NoBom)
     Write-Host ('Log : ' + $logPath)
     Write-Host ('JSON: ' + $jsonPath)
