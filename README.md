@@ -1,4 +1,6 @@
-# LotRadar (Private Development Repository)
+# LotRadar (Development Repository)
+
+> **Visibility:** this GitHub repository is **public**. Never commit private branding images, customer data, databases, photos, credentials or tokens. See `docs/INSTALL.md` for how private assets are supplied locally at build time.
 
 LotRadar is an independent Windows inventory-scanner and Facebook Marketplace listing-preparation application.
 

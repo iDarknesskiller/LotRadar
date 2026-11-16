@@ -1,0 +1,42 @@
+# Generated installer packages and build output (ship as release artifacts, never commit)
+dist/
+build/
+*.zip
+*.exe
+*.msi
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+setup-venv/
+
+# Runtime state, user data and private data -- never commit
+data/
+runtime/
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+photos/
+photo_cache/
+browser-profile/
+browser_profile/
+profiles/
+*.log
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+secrets*
+*token*
+*credentials*
+
+# Private branding assets (supplied locally at build time; publication needs owner approval)
+branding/
+private-assets/
