@@ -1,6 +1,13 @@
 # Manual acceptance checklist (cannot be automated)
 
-Run each item on **Windows 10 and Windows 11**, as a standard user, using a package built from the commit under
+**Scope for the current release candidate (Project Owner waivers, recorded 2026-11-16):** Windows 10 is the verified
+platform. **Windows 11, OneDrive-redirected extraction/installation and the R3 file-symlink refusal test are
+WAIVED - NOT VERIFIED** (not passed). The installer's link/reparse-point guard (`Test-UnsafeLink`), path containment
+and checksums stay enabled; the R3 test code stays in the harness and may show SKIP. Release label: **"Windows 10
+verified; Windows 11 untested."** Extract packages into an ordinary local folder (for example `C:\LotRadarInstall`),
+not into OneDrive. Where this checklist says "Windows 10 and Windows 11", the Windows 11 column is waived.
+
+Run each item on **Windows 10 (Windows 11 waived, see above)**, as a standard user, using a package built from the commit under
 test. Record OS build, package version and PASS/FAIL. Do not use real customer data; do not post to Facebook.
 Use a test profile or a machine where overwriting `%LOCALAPPDATA%\Programs\MarketplaceScanner` is acceptable
 (data in `%LOCALAPPDATA%\MarketplaceScanner\data` is preserved, but back it up first).
@@ -26,12 +33,21 @@ Health must show `ok=true, local_only=true, service="Marketplace Scanner"`; one 
 ## C. Chrome Reader
 1. `chrome://extensions` > Developer mode > Load unpacked > `%LOCALAPPDATA%\Programs\MarketplaceScanner\chrome-extension`.
 2. Pair with LotRadar. Open one dealership vehicle page and read it (read-only). Confirm no Facebook page is touched.
+3. **Version evidence:** compare name/version in the source `chrome-extension/manifest.json`, the package ZIP, the installed
+   `%LOCALAPPDATA%\Programs\MarketplaceScanner\chrome-extension\manifest.json` and the extension card in
+   `chrome://extensions` (expected `LotRadar Browser Reader` 1.9.7; the card's Details > "Loaded from" must be the installed
+   folder; remove any older unpacked copy). `tests\windows\Get-LotRadarEvidence.ps1 -Mode Version -PackageZip <zip>` prints
+   the first three with SHA-256.
+4. **VDP read-only evidence:** with `/api/health` healthy, open one legitimate dealership used-vehicle page, trigger the
+   Reader, and confirm VIN/stock, make/model, mileage and price in LotRadar match the page (only fields present on the
+   page). Nothing may be published to Facebook.
 
 ## D. Production package + photo export
 1. Build from a clean commit with the owner's branding supplied privately: `python scripts/build_installer.py build --mode production --asset-dir <private folder outside the repo>`.
 2. `python scripts/build_installer.py verify <zip> --require-production`; compare the ZIP SHA-256 with the manifest note.
 3. Install it. Export photos for one vehicle (read-only): business-card cover first, dedication image, exterior before
-   interior, originals unchanged.
+   interior, originals unchanged. Hash evidence: `Get-LotRadarEvidence.ps1 -Mode PhotoSnapshot -Vin <VIN> -OutFile <file outside data>`
+   before the export and `-Mode PhotoCompare -Vin <VIN> -BeforeFile <file>` after it (read-only; changed/deleted originals must be 0).
 4. A DEV-NOBRANDING package must report `branding_assets_missing`.
 
 ## Result table

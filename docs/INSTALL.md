@@ -54,6 +54,13 @@ string, a missing/invalid required asset (production), or a dirty tree (producti
 the same commit and assets give the same ZIP byte for byte. Share the ZIP's SHA-256 (printed by the build) when
 handing it over. Publish it only as a release artifact, with the Project Owner's approval.
 
+## Supported platforms for this release
+
+Windows 10 is the verified platform ("Windows 10 verified; Windows 11 untested"). Windows 11, installation/extraction
+from OneDrive-redirected folders, and the file-symlink refusal test (R3) were waived by the Project Owner and are **not
+verified**. Extract the ZIP to an ordinary local folder such as `C:\LotRadarInstall`; the link/reparse-point guard
+remains active and may refuse OneDrive folders.
+
 ## Install / upgrade (user, no admin rights)
 
 1. Extract the ZIP to a normal folder (not inside the ZIP preview).
