@@ -523,3 +523,7 @@
 
 #detail-overlay .posting-footer [data-act="create-draft"]{min-width:210px;min-height:48px;transform:none!important}
 .toast:not(.shown) .toast-close{pointer-events:none!important}
+
+/* Official radar logo (served only when the private asset is packaged; otherwise the LR text mark stays) */
+.brand-mark.has-logo{background:transparent;box-shadow:none;border:0;padding:0;overflow:visible}
+.brand-logo{display:block;width:45px;height:45px;object-fit:contain}

@@ -22,7 +22,30 @@ import build_installer as bi  # noqa: E402
 
 PNG = b'\x89PNG\r\n\x1a\n' + b'x' * 200
 JPG = b'\xff\xd8\xff\xe0' + b'y' * 200
-ICO = b'\x00\x00\x01\x00' + b'z' * 200
+
+def _png(width=256, height=256, color_type=6, iend=True):
+    import struct, zlib
+    def chunk(tag, body):
+        return struct.pack('>I', len(body)) + tag + body + struct.pack('>I', zlib.crc32(tag + body) & 0xffffffff)
+    raw = b''.join(b'\x00' + b'\x00\x40\x80\xff' * width for _ in range(height))
+    out = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, color_type, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw))
+    return out + (chunk(b'IEND', b'') if iend else b'')
+
+
+def _ico(frames=2):
+    import struct
+    bodies = [b'\x89PNG-synthetic-frame-%d' % i for i in range(frames)]
+    head = struct.pack('<HHH', 0, 1, frames)
+    offset = 6 + 16 * frames
+    entries = b''
+    for i, body in enumerate(bodies):
+        entries += struct.pack('<BBBBHHII', 16 << i if i < 4 else 0, 16 << i if i < 4 else 0, 0, 0, 1, 32, len(body), offset)
+        offset += len(body)
+    return head + entries + b''.join(bodies)
+
+
+LOGO = _png()          # synthetic stand-in; the real private logo is never used in tests
+ICO = _ico()
 
 
 def rb(path):
@@ -45,8 +68,8 @@ class BuilderTestCase(unittest.TestCase):
         self.assets = os.path.join(self.tmp, 'assets')
         os.makedirs(self.assets)
 
-    def write_assets(self, png=True, jpg=True, ico=True):
-        for flag, name, data in ((png, 'business_card.png', PNG), (jpg, 'dedication.jpg', JPG), (ico, 'LotRadar.ico', ICO)):
+    def write_assets(self, png=True, jpg=True, ico=True, logo=True):
+        for flag, name, data in ((png, 'business_card.png', PNG), (jpg, 'dedication.jpg', JPG), (ico, 'LotRadar.ico', ICO), (logo, 'lotradar_logo.png', LOGO)):
             if flag:
                 with open(os.path.join(self.assets, name), 'wb') as h:
                     h.write(data)
@@ -223,6 +246,38 @@ class TestBuildGuards(BuilderTestCase):
             self.build('production', self.assets)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, 'out')), 'no package may be written on failure')
 
+    def test_production_requires_logo_and_icon(self):
+        for kw, name in (({'logo': False}, 'lotradar_logo.png'), ({'ico': False}, 'LotRadar.ico')):
+            shutil.rmtree(self.assets); os.makedirs(self.assets)
+            self.write_assets(**kw)
+            with self.assertRaisesRegex(bi.BuildError, name):
+                self.build('production', self.assets)
+
+    def test_development_builds_without_logo_and_icon(self):
+        self.write_assets(logo=False, ico=False)
+        path, manifest, *_ = self.build('development', self.assets)
+        self.assertIn('branding/lotradar_logo.png', manifest['branding_assets_missing'])
+
+    def test_logo_and_icon_must_be_structurally_valid(self):
+        bad = {'lotradar_logo.png': (_png(color_type=2), _png(iend=False), _png(8, 8)),
+               'LotRadar.ico': (_ico()[:40], b'\x00\x00\x01\x00\x00\x00')}
+        for name, variants in bad.items():
+            for data in variants:
+                shutil.rmtree(self.assets); os.makedirs(self.assets); self.write_assets()
+                with open(os.path.join(self.assets, name), 'wb') as h:
+                    h.write(data)
+                with self.assertRaises(bi.BuildError, msg=name):
+                    self.build('production', self.assets)
+
+    def test_logo_bytes_are_packaged_unchanged_and_build_is_reproducible(self):
+        self.write_assets()
+        a = self.build('production', self.assets, 'o1')
+        b = self.build('production', self.assets, 'o2')
+        self.assertEqual(rb(a[0]), rb(b[0]))
+        with zipfile.ZipFile(a[0]) as z:
+            self.assertEqual(z.read('MarketplaceScanner/branding/lotradar_logo.png'), LOGO)
+            self.assertEqual(z.read('MarketplaceScanner/LotRadar.ico'), ICO)
+
     def test_production_requires_clean_tree(self):
         self.write_assets()
         with open(os.path.join(self.repo, 'server.py'), 'ab') as h:
@@ -272,11 +327,11 @@ class TestBuildGuards(BuilderTestCase):
         self.assertEqual(manifest['build_type'], 'production')
         self.assertEqual(manifest['working_tree_clean'], True)
         self.assertEqual(manifest['branding_assets_included'],
-                         ['LotRadar.ico', 'branding/business_card.png', 'branding/dedication.jpg'])
+                         ['LotRadar.ico', 'branding/business_card.png', 'branding/dedication.jpg', 'branding/lotradar_logo.png'])
         self.assertEqual(bi.verify_bytes(rb(path), require_production=True), [])
         with zipfile.ZipFile(path) as z:
             self.assertEqual(z.read('MarketplaceScanner/branding/business_card.png'), PNG)
-            self.assertEqual(len(manifest['payload_files']), len(bi.SOURCE_ALLOWLIST) + 3)
+            self.assertEqual(len(manifest['payload_files']), len(bi.SOURCE_ALLOWLIST) + 4)
 
     def test_production_without_icon_is_allowed(self):
         self.write_assets(ico=False)
