@@ -326,6 +326,8 @@ def verify_bytes(archive, require_production=False):
             errors.append('listed but missing from package: %s' % path)
         for path in sorted(actual - listed):
             errors.append('in package but not in manifest: %s' % path)
+            rel = path[len(PAYLOAD_ROOT) + 1:] if path.startswith(PAYLOAD_ROOT + '/') else path
+            errors += scan_secrets(rel, zf.read(path))
         for path in sorted(listed & actual):
             data = zf.read(path)
             item = expected[path]
