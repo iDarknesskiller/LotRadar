@@ -472,6 +472,7 @@ try {
         Assert-True ($r.Code -eq 0) ('exit code ' + $r.Code + "`n" + $r.Output)
         Assert-True (((Get-Inventory $dataDir) -join "`n") -eq $dataBefore) 'DATA CHANGED'
         Assert-True (((Get-Inventory $program) -join "`n") -eq $good.Program) 'program differs from package'
+        $script:good = Get-State   # new baseline: T12 added a backup folder
         return 'OK'
     }
 
@@ -577,7 +578,11 @@ try {
             while ((Get-Date) -lt $deadline -and -not $inst.HasExited) {
                 if (Test-Path -LiteralPath (Join-Path $root 'c2-install.out')) {
                     $txt = ''
-                    try { $txt = [IO.File]::ReadAllText((Join-Path $root 'c2-install.out')) } catch { }
+                    try {
+                        # the installer still has this file open for writing, so open it with shared access
+                        $fs = [IO.File]::Open((Join-Path $root 'c2-install.out'), 'Open', 'Read', 'ReadWrite')
+                        try { $txt = (New-Object IO.StreamReader $fs).ReadToEnd() } finally { $fs.Dispose() }
+                    } catch { }
                     if ($txt -match 'Installed program:') { $sawSwap = $true; break }
                 }
                 Start-Sleep -Milliseconds 300
