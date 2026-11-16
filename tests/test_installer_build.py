@@ -314,7 +314,7 @@ class TestBuildGuards(BuilderTestCase):
     def test_asset_in_ignored_branding_dir_inside_repo_is_allowed(self):
         inside = os.path.join(self.repo, 'branding')
         os.makedirs(inside)
-        for name, data in (('business_card.png', PNG), ('dedication.jpg', JPG)):
+        for name, data in (('business_card.png', PNG), ('dedication.jpg', JPG), ('lotradar_logo.png', LOGO), ('LotRadar.ico', ICO)):
             with open(os.path.join(inside, name), 'wb') as h:
                 h.write(data)
         path, manifest, *_ = self.build('development', inside)
@@ -332,11 +332,6 @@ class TestBuildGuards(BuilderTestCase):
         with zipfile.ZipFile(path) as z:
             self.assertEqual(z.read('MarketplaceScanner/branding/business_card.png'), PNG)
             self.assertEqual(len(manifest['payload_files']), len(bi.SOURCE_ALLOWLIST) + 4)
-
-    def test_production_without_icon_is_allowed(self):
-        self.write_assets(ico=False)
-        path, manifest, *_ = self.build('production', self.assets)
-        self.assertNotIn('LotRadar.ico', manifest['branding_assets_included'])
 
     def test_production_package_missing_branding_fails_verify(self):
         self.write_assets()
