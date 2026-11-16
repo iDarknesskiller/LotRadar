@@ -42,7 +42,9 @@ $script:Listener = $null
 $origLocal = $env:LOCALAPPDATA
 $origRoam = $env:APPDATA
 $sandboxId = [Guid]::NewGuid().ToString('N').Substring(0, 8)
-$root = Join-Path $env:TEMP ('LotRadar Test Sandbox ' + $sandboxId)
+# Use the LONG form of the profile path: $env:TEMP may be an 8.3 short path (MAINOF~1) that does not match what Windows reports for the same folder.
+$root = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ('Temp\LotRadar Test Sandbox ' + $sandboxId)
+if ($root.Contains('~')) { throw ('Sandbox path contains an 8.3 short name, refusing: ' + $root) }
 $local = Join-Path $root 'Local'
 $roam = Join-Path $root 'Roaming'
 $program = Join-Path $local 'Programs\MarketplaceScanner'
@@ -216,8 +218,9 @@ try {
         Assert-True (Test-Path -LiteralPath $desktopLnk) 'Desktop shortcut missing'
         $shell = New-Object -ComObject WScript.Shell
         $lnk = $shell.CreateShortcut($desktopLnk)
-        Assert-True ($lnk.TargetPath -eq (Join-Path $program 'Launch Marketplace Scanner.cmd')) ('shortcut target wrong: ' + $lnk.TargetPath)
-        Assert-True ($lnk.WorkingDirectory -eq $program) ('shortcut working dir wrong: ' + $lnk.WorkingDirectory)
+        $wantTarget = Join-Path $program 'Launch Marketplace Scanner.cmd'
+        Assert-True ($lnk.TargetPath -ieq $wantTarget) ('shortcut target wrong: ' + $lnk.TargetPath + ' (expected ' + $wantTarget + ')')
+        Assert-True ($lnk.WorkingDirectory -ieq $program) ('shortcut working dir wrong: ' + $lnk.WorkingDirectory + ' (expected ' + $program + ')')
         Assert-True (-not (Test-Path -LiteralPath $backupRoot)) 'fresh install created a backup folder'
         Assert-True ((Get-StageDirs).Count -eq 0) 'leftover staging folder'
         return 'installed, shortcuts OK, all hashes match'
