@@ -571,6 +571,7 @@ try {
         $pkg = New-InjectedPkg 'c2' "Write-Host 'Existing scanner data was not modified.'" 'Start-Sleep -Seconds 15'
         $env:LOTRADAR_NO_PAUSE = '1'
         $inst = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + (Join-Path $pkg 'Install-LotRadar.ps1') + '"')) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root 'c2-install.out') -RedirectStandardError (Join-Path $root 'c2-install.err')
+        $null = $inst.Handle   # PS 5.1: cache the process handle, otherwise ExitCode can come back empty
         try {
             $deadline = (Get-Date).AddSeconds(60)
             while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath (Join-Path $root 'c2-install.out') -PathType Leaf)) { Start-Sleep -Milliseconds 300 }
@@ -593,8 +594,9 @@ try {
             Assert-True (-not (Test-PortBusy)) 'a server started during the install'
         } finally {
             [void]$inst.WaitForExit(120000)
+            $inst.WaitForExit()
         }
-        Assert-True ($inst.ExitCode -eq 0) ('installer exit ' + $inst.ExitCode + ': ' + [IO.File]::ReadAllText((Join-Path $root 'c2-install.out')))
+        Assert-True ($null -ne $inst.ExitCode -and $inst.ExitCode -eq 0) ('installer exit ' + $inst.ExitCode + ': ' + [IO.File]::ReadAllText((Join-Path $root 'c2-install.out')))
         Assert-True (-not (Test-PortBusy)) 'a server is listening after the test'
         # locks are free again
         foreach ($n in @('lotradar-install.lock', 'marketplace-launch.lock')) {
