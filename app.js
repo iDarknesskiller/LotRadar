@@ -546,6 +546,24 @@ function updateScanDock(job){
 
 const selectedRecord=r=>{const pick=$('draft-source');const name=pick?.value||r.draft?.source||Object.keys(r.sources)[0];return r.sources[name]||primary(r);};
 function sectionHeader(text){return `<div class="detail-block"><h3>${text}</h3>`;}
+
+// Polling/progress re-renders must never steal focus, caret, selection or scroll from a field the user is typing in.
+function captureEditState(){
+ const el=document.activeElement,drawer=$('drawer-content');
+ const st={drawerTop:drawer?drawer.scrollTop:0,id:'',start:0,end:0,dir:'none',top:0};
+ if(el&&el.id&&drawer&&drawer.contains(el)&&el.matches('input,textarea,select')){
+  st.id=el.id;st.top=el.scrollTop||0;
+  try{st.start=el.selectionStart;st.end=el.selectionEnd;st.dir=el.selectionDirection||'none';}catch{}
+ }
+ return st;
+}
+function restoreEditState(st){
+ const drawer=$('drawer-content');if(!st||!drawer)return;
+ if(st.id){const el=document.getElementById(st.id);if(el){el.focus({preventScroll:true});
+  try{if(st.start!=null&&el.setSelectionRange)el.setSelectionRange(st.start,st.end,st.dir);}catch{}
+  el.scrollTop=st.top;}}
+ drawer.scrollTop=st.drawerTop;
+}
 function renderDetail(){
  const r=state.vehicles.find(v=>v.vin===selectedVin);
  if(!r){closeOverlay('detail');return;}
@@ -656,6 +674,7 @@ const imageAudit=photoProgressPanel();
    <div class="fb-compare-content" id="facebook-compare-content">${renderFacebookRows(facebookCompareCache.get(r.vin))}</div>
   </div></details>`:'';
  const mainAction=d?'':`<button class="btn primary" type="button" data-act="create-draft" ${sourceEntries.length?'':'disabled'}>Create listing draft →</button>`;
+ const editState=captureEditState();
  $('drawer-content').innerHTML=`<div class="posting-photo-area">
   <div class="export-preview-default"><strong>Facebook photo preview</strong><span>Exact exported images · Business card + dedication #2 · ${previewReady?(exportPreview.actualSource==='mitsubishi_used'?'Mitsubishi backup':'Toyota primary'):'Toyota preferred, Mitsubishi backup'}</span></div>
  <div class="gallery-stage">${main?`<img src="${esc(main)}" alt="${esc(modelValue)} ${previewActive?'export':'source'} photo ${gallery.index+1}">`:`<span class="muted">${previewActive?(exportPreview.loading?'Preparing exact export preview…':previewReady?(exportPreview.failed.has(gallery.index)?'Photo unavailable. Select its thumbnail to retry.':'Loading exported photo…'):(exportPreview.error?'Photos are still being fetched or unavailable.':'No export photos ready yet.')):'No vehicle photos captured yet.'}</span>`}</div>
@@ -668,6 +687,7 @@ const imageAudit=photoProgressPanel();
  <section class="posting-workspace" aria-label="Listing copy tools"><div class="copy-workspace-head"><h3>Quick Copy</h3>${listingDeleteAction}</div><div class="quick-copy-grid">${quick}</div>
  ${draftActions}${descriptionArea}${draftFieldNotice}${dealerFacts}${stockConfirmation}${posting}${fbComparison}
  <div class="posting-footer"><button type="button" class="btn secondary" data-dismiss="detail">Close</button><div class="draft-footer-actions">${draftSourceInput}${mainAction}</div></div></section>`;
+ restoreEditState(editState);
  document.querySelectorAll('#detail-overlay .gallery-stage img,#detail-overlay .gallery-thumbs img').forEach(image=>image.addEventListener('error',()=>{image.hidden=true}));
 }
 // R41: authorized one-time Facebook checks, never a recurring Facebook crawler.
@@ -922,6 +942,13 @@ async function startPhotoAutoFetch(vin){
  photoProgress={vin,source:data.source,data,revision:data.revision,watching:photoProgress.vin===vin?photoProgress.watching:''};
  renderDetail();void watchPhotoProgress(vin,data.source);
 }
+function updatePhotoProgressInPlace(){
+ const node=document.querySelector('.photo-audit-panel');
+ if(!node){return;}
+ const html=photoProgressPanel();if(!html)return;
+ const t=document.createElement('div');t.innerHTML=html;const fresh=t.firstElementChild;
+ if(fresh&&fresh.outerHTML!==node.outerHTML)node.replaceWith(fresh);
+}
 async function watchPhotoProgress(vin,source){
  const token=photoFetchKey(vin,source)+'#'+Date.now();
  if(photoProgress.watching&&photoProgress.watching.startsWith(photoFetchKey(vin,source)+'#'))return;
@@ -937,7 +964,7 @@ async function watchPhotoProgress(vin,source){
    if(selectedVin!==vin||photoProgress.watching!==token)break;
    const stageChanged=next.stage!==d.stage&&!['queued','downloading'].includes(next.stage);   // rebuild once per real stage change, not per photo
    photoProgress={...photoProgress,data:next,revision:next.revision};
-   if(stageChanged)await rebuildExportPreviewKeepingState();else renderPhotoControls();
+   if(stageChanged)await rebuildExportPreviewKeepingState();else updatePhotoProgressInPlace();
   }
  }catch{}
  finally{if(photoProgress.watching===token)photoProgress.watching='';}
