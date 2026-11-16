@@ -22,7 +22,7 @@ set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" (
  echo.
  echo LotRadar exited with error code %RC%. See the messages above.
- rem Keep the window open only when started by double-click, not from a console.
- echo %cmdcmdline% | find /i "%~nx0" >nul && pause
+ rem Keep the window open so the message can be read (e.g. after a double-click). Scripts set LOTRADAR_NO_PAUSE=1.
+ if not defined LOTRADAR_NO_PAUSE pause
 )
 exit /b %RC%

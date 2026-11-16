@@ -22,9 +22,14 @@ try {
         if ([string]::IsNullOrWhiteSpace($rel) -or $rel.Contains(':') -or ($parts -contains '') -or ($parts -contains '.') -or ($parts -contains '..')) {
             throw ('Unsafe path in installer manifest: ' + $rel)
         }
+        foreach ($part in $parts) {
+            if ($part -imatch '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$' -or $part.EndsWith('.') -or $part.EndsWith(' ')) {
+                throw ('Unsafe path segment in installer manifest: ' + $rel)
+            }
+        }
         if ($seenPaths.ContainsKey($rel.ToLowerInvariant())) { throw ('Duplicate path in installer manifest: ' + $rel) }
         $seenPaths[$rel.ToLowerInvariant()] = $true
-        if ([string]$item.sha256 -notmatch '^[0-9a-f]{64}$') { throw ('Invalid checksum entry in installer manifest for: ' + $rel) }
+        if ([string]$item.sha256 -cnotmatch '^[0-9a-f]{64}$') { throw ('Invalid checksum entry in installer manifest for: ' + $rel) }
     }
     if ($manifest.package_version) {
         Write-Host ('Package ' + $manifest.package_version + ' (' + $manifest.build_type + ', source ' + $manifest.source_commit + ')')

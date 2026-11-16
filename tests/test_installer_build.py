@@ -342,6 +342,10 @@ class TestLauncher(unittest.TestCase):
         self.assertIn('cd /d "%~dp0"', self.text)
         self.assertIn('-File "%BOOTSTRAP%"', self.text)
 
+    def test_pause_is_deterministic_not_cmdcmdline_heuristic(self):
+        self.assertNotIn('cmdcmdline', self.text)
+        self.assertIn('if not defined LOTRADAR_NO_PAUSE pause', self.text)
+
     def test_missing_bootstrap_branch_returns_nonzero(self):
         self.assertRegex(self.text, r'if not exist "%BOOTSTRAP%" \(\r\n(?:.*\r\n)*? set "RC=2"')
 
