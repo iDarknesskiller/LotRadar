@@ -89,5 +89,27 @@ python -m unittest discover -s tests -v
 ```
 
 These cover the builder, verifier and static launcher checks and run on any OS. They do **not** execute the
-PowerShell installer or the launcher; those need the Windows acceptance run recorded in
-`CLAUDE_IMPLEMENTATION_HANDOFF.md`.
+PowerShell installer or the launcher.
+
+### Windows acceptance script
+
+`tests/windows/Test-LotRadarInstaller.ps1` runs the installer and launcher for real, in a sandbox (LOCALAPPDATA and
+APPDATA are redirected to a temp folder with spaces in its name; fixture data is synthetic). Run it in Windows
+PowerShell 5.1 as a normal user:
+
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\windows\Test-LotRadarInstaller.ps1 -PackageZip C:\path\LotRadar-Installer-<...>.zip
+```
+
+It covers: PowerShell parser check, manifest re-verification, clean install via `Installer.cmd`, upgrade with a
+byte-for-byte data comparison, tampered/missing/adversarial manifests (traversal, UNC, reserved names, case
+collisions, ADS, bad hashes), held installer lock, foreign listener on port 8765, locked program file, missing
+`LOCALAPPDATA`, and the launcher (missing bootstrap, exit-code propagation, working directory, EXE absent/present,
+pause behavior). `-FullLaunch` additionally starts the real bootstrap in the sandbox and checks `/api/health`
+and the single-server guarantee. The only shared location is the real Desktop `LotRadar.lnk`, which is backed up
+and restored. Interactive checks (Explorer double-click, offline first run, Chrome Reader pairing) are manual.
+
+### Launcher pause
+
+On a non-zero exit the launcher pauses so the message can be read after a double-click. Scripts and CI set
+`LOTRADAR_NO_PAUSE=1` to disable the pause.
