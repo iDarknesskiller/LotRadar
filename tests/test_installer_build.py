@@ -399,10 +399,48 @@ class TestLauncher(unittest.TestCase):
     def test_missing_bootstrap_branch_returns_nonzero(self):
         self.assertRegex(self.text, r'if not exist "%BOOTSTRAP%" \(\r\n(?:.*\r\n)*? set "RC=2"')
 
-    def test_bootstrap_unchanged_from_baseline(self):
+    def test_bootstrap_operations_unchanged_from_baseline(self):
+        # PR #5 Phase 2 adds ONLY optional stage reporting. Every added line ends with '# startup-gui'; removing those
+        # lines must give the approved baseline byte for byte, so no bootstrap operation, order or message changed.
         baseline = subprocess.check_output(['git', '-C', REPO, 'show', '6164c78de3fd568b0c45525ee337c3e604c65e32:Marketplace Bootstrap.ps1'])
         with open(os.path.join(REPO, 'Marketplace Bootstrap.ps1'), 'rb') as h:
-            self.assertEqual(h.read(), baseline)
+            current = h.read()
+        lines = current.splitlines(keepends=True)
+        marked = [l for l in lines if l.rstrip(b'\r\n').endswith(b'# startup-gui')]
+        self.assertEqual(b''.join(l for l in lines if l not in marked or not l.rstrip(b'\r\n').endswith(b'# startup-gui')), baseline)
+        # marked lines are either the helper block or plain Write-StartupStage calls
+        text = current.decode('ascii')
+        start = text.index('# Optional stage reporting for the startup window')
+        end = text.index('\n} # startup-gui\n', start) + len('\n} # startup-gui\n')
+        helper = text[start:end]
+        calls = [l.decode('ascii').strip() for l in marked if l.decode('ascii') not in helper]
+        self.assertTrue(calls)
+        for c in calls:
+            self.assertRegex(c, r"^Write-StartupStage '(install|python|browser|server|open|)' '(started|info|complete|failed)' ('[^']*'|\$_\.Exception\.Message) # startup-gui$")
+        # the helper only appends to a nonce-named file inside runtime, and is inert without a valid nonce
+        self.assertIn("if ($script:StartupNonce -notmatch '^[0-9a-f]{32}$' -or -not $env:LOCALAPPDATA) { return }", helper)
+        self.assertIn("('startup-status-' + $script:StartupNonce + '.jsonl')", helper)
+        self.assertIn('[IO.File]::AppendAllText', helper)
+        self.assertIn('} catch { }', helper)
+        for banned in ('Remove-Item', 'Start-Process', 'Open-LotRadarWindow', 'exit', 'throw', '.lock'):
+            self.assertNotIn(banned, helper)
+        # the browser window is still opened in exactly one place
+        self.assertEqual(text.count('Open-LotRadarWindow\n'), 1)
+
+    def test_startup_window_branch(self):
+        t = self.text
+        self.assertIn('set "STARTUPGUI=%~dp0startup\\Show-LotRadarStartup.ps1"', t)
+        gui = t.index('if "%LOTRADAR_STARTUP_GUI%"=="0" goto :console')
+        self.assertLess(t.index('if not exist "%BOOTSTRAP%"'), gui)          # existing checks still first
+        self.assertLess(t.index('where powershell.exe'), gui)
+        for line in ('if defined LOTRADAR_NO_PAUSE goto :console', 'if not exist "%STARTUPGUI%" goto :console',
+                     'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%STARTUPGUI%"',
+                     'if "%RC%"=="0" exit /b 0', 'if "%RC%"=="91" exit /b 1'):
+            self.assertIn(line, t)
+        # the console path that follows is the original command, unchanged
+        console = t[t.index('\r\n:console\r\n') + 2:]
+        self.assertTrue(console.startswith(':console\r\nrem Execution policy is relaxed for this single process only'))
+        self.assertIn('powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%BOOTSTRAP%"', console)
 
 
 class TestInstallerHardeningStatic(unittest.TestCase):

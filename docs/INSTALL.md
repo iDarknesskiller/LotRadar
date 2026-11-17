@@ -93,9 +93,32 @@ folder and run it again.
    If anything fails after the swap, the previous program folder is restored (the failed copy is kept as
    `ProgramBackups\Failed-install-*`); on a first install with no previous program, the failed copy is moved there
    and no program is installed. Data is never touched.
-4. Start LotRadar from the shortcut. First run installs Python 3.10+ (via WinGet), the packages in
+4. Start LotRadar from the shortcut (in the PR #5 candidate a startup window shows the steps; see below). First run installs Python 3.10+ (via WinGet), the packages in
    `requirements.txt` and Playwright Chromium; offline it stops with a message and can simply be launched again
    after connecting.
+
+## Startup window (PR #5 candidate, not in the approved `main` release)
+
+Double-clicking the LotRadar shortcut shows a small LotRadar window listing the real startup steps: checking the
+installation, Python and packages, the browser runtime, starting the local server, opening LotRadar. A step is marked
+done only when the startup script reports it; a moving bar is shown because no step reports a measurable fraction (no
+percentages or time estimates are shown). LotRadar is reported as open only after the script reports that it opened the
+window AND the window's own check of `http://127.0.0.1:8765/api/health` succeeds.
+
+- The window only displays progress. `Marketplace Bootstrap.ps1` still does all the work, in its own minimized
+  "LotRadar Server" console window (taskbar), and stays the only owner of the launch lock, the server and the browser
+  window. LotRadar keeps running after the startup window closes; closing the "LotRadar Server" window stops LotRadar.
+- Closing the startup window while LotRadar is still starting does not stop anything: the console window is brought up
+  and startup continues there.
+- If startup fails, the window shows the reason, **Show details**, **Show console** (the full output of that attempt),
+  **Retry** and **Close**. Retry/Close close the failed attempt's console only after its script has exited.
+- A second double-click while LotRadar runs opens LotRadar again without starting a second server.
+- Scripts and automation keep the original console start and exit codes: set `LOTRADAR_STARTUP_GUI=0` (or
+  `LOTRADAR_NO_PAUSE=1`, used by the test harness). If the window cannot be shown (no desktop session, Windows Forms
+  unavailable, or the per-user LotRadar or runtime folder is a link), the launcher falls back to the console start.
+- Progress is passed through `%LOCALAPPDATA%\MarketplaceScanner\runtime\startup-status-<random>.jsonl` (step names and
+  short messages only, with user/computer names and profile paths removed). The window deletes its file when it
+  closes; files older than one day are removed at the next start.
 
 ## Stale staging folders
 

@@ -183,6 +183,24 @@ function Invoke-CmdScript([string]$ScriptPath) {
     Remove-Item -LiteralPath $runner -Force -ErrorAction SilentlyContinue
     return [pscustomobject]@{ Code = $code; Output = $out }
 }
+# Runs the startup window (test options: auto-close, result file) and waits for it. Returns exit code + parsed result.
+function Invoke-StartupWindow([string]$Gui, [int]$TimeoutSec) {
+    $res = Join-Path $root ('gui-result-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
+    $saved = $env:LOTRADAR_NO_PAUSE
+    Remove-Item Env:\LOTRADAR_NO_PAUSE -ErrorAction SilentlyContinue
+    try {
+        $t0 = Get-Date
+        $p = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"' + $Gui + '"'), '-AutoCloseSeconds', '2', '-ResultFile', ('"' + $res + '"')) -PassThru
+        $null = $p.Handle
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) { try { $p.Kill() } catch { }; throw ('the startup window did not finish within ' + $TimeoutSec + ' s') }
+        $data = $null
+        if (Test-Path -LiteralPath $res) { $data = [IO.File]::ReadAllText($res) | ConvertFrom-Json; Remove-Item -LiteralPath $res -Force }
+        return [pscustomobject]@{ Exit = $p.ExitCode; Result = $data; Seconds = [int]((Get-Date) - $t0).TotalSeconds }
+    } finally { if ($null -ne $saved) { $env:LOTRADAR_NO_PAUSE = $saved } }
+}
+function Get-ProcessesMentioning([string]$Text) {
+    return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.ProcessId -ne $PID -and $_.CommandLine -like ('*' + $Text + '*') })
+}
 function Test-PortBusy {
     $client = New-Object System.Net.Sockets.TcpClient
     try {
@@ -925,6 +943,98 @@ try {
         return 'exit 0, no pause'
     }
 
+    # ---- startup window (PR #5 Phase 2). Stub bootstraps report through the same status-file contract.
+    $gDir = Join-Path $root 'Gui Test Dir'
+    New-Item -ItemType Directory -Path (Join-Path $gDir 'startup') -Force | Out-Null
+    Copy-Item -LiteralPath $launcherSrc -Destination $gDir -Force
+    Copy-Item -LiteralPath (Join-Path $pkgDir 'MarketplaceScanner\startup\Show-LotRadarStartup.ps1') -Destination (Join-Path $gDir 'startup') -Force
+    $gLauncher = Join-Path $gDir 'Launch Marketplace Scanner.cmd'
+    $gStub = Join-Path $gDir 'Marketplace Bootstrap.ps1'
+    $gGui = Join-Path $gDir 'startup\Show-LotRadarStartup.ps1'
+    $emit = 'function E([string]$s, [string]$st, [string]$m, [string]$n) { $d = Join-Path $env:LOCALAPPDATA ''MarketplaceScanner\runtime''; $l = (@{ nonce = $n; pid = $PID; stage = $s; state = $st; message = $m; time = ''t'' } | ConvertTo-Json -Compress) + "`n"; [IO.File]::AppendAllText((Join-Path $d (''startup-status-'' + $env:LOTRADAR_STARTUP_NONCE + ''.jsonl'')), $l) }; '
+    Invoke-Test 'G1' 'Startup window unavailable: launcher falls back to the console start in the same window' {
+        [IO.File]::WriteAllText($gStub, 'Write-Host "STUB-CONSOLE-RAN"; exit 0', [Text.Encoding]::ASCII)
+        $saved = @{ LOTRADAR_NO_PAUSE = $env:LOTRADAR_NO_PAUSE; LOTRADAR_STARTUP_GUI_TEST_UNAVAILABLE = $env:LOTRADAR_STARTUP_GUI_TEST_UNAVAILABLE }
+        try {
+            Remove-Item Env:\LOTRADAR_NO_PAUSE -ErrorAction SilentlyContinue
+            $env:LOTRADAR_STARTUP_GUI_TEST_UNAVAILABLE = '1'
+            $r = Invoke-CmdScript $gLauncher
+        } finally { foreach ($k in $saved.Keys) { if ($null -eq $saved[$k]) { Remove-Item ('Env:\' + $k) -ErrorAction SilentlyContinue } else { Set-Item ('Env:\' + $k) $saved[$k] } } }
+        Assert-True ($r.Code -eq 0) ('exit ' + $r.Code + "`n" + $r.Output)
+        Assert-True ($r.Output -match 'STUB-CONSOLE-RAN') ('console start did not run in the launcher window: ' + $r.Output)
+        return 'window returned 90; console path ran; exit 0'
+    }
+    Invoke-Test 'G1b' 'Launcher maps a shown window failure (91) to exit 1 and does NOT also run the console start' {
+        [IO.File]::WriteAllText($gStub, 'Write-Host "STUB-CONSOLE-RAN"; exit 0', [Text.Encoding]::ASCII)
+        $realGuiCopy = $gGui + '.real'
+        Copy-Item -LiteralPath $gGui -Destination $realGuiCopy -Force
+        [IO.File]::WriteAllText($gGui, 'exit 91', [Text.Encoding]::ASCII)   # stand-in window that reports "failure shown"
+        $saved = $env:LOTRADAR_NO_PAUSE
+        try {
+            Remove-Item Env:\LOTRADAR_NO_PAUSE -ErrorAction SilentlyContinue
+            $r = Invoke-CmdScript $gLauncher
+        } finally { if ($null -ne $saved) { $env:LOTRADAR_NO_PAUSE = $saved }; Move-Item -LiteralPath $realGuiCopy -Destination $gGui -Force }
+        Assert-True ($r.Code -eq 1) ('exit ' + $r.Code + "`n" + $r.Output)
+        Assert-True ($r.Output -notmatch 'STUB-CONSOLE-RAN') 'the console start ALSO ran after the window reported its failure'
+        return 'exit 1; console start not run'
+    }
+    Invoke-Test 'G1c' 'Window script that cannot run (parse error) falls back to the console start' {
+        [IO.File]::WriteAllText($gStub, 'Write-Host "STUB-CONSOLE-RAN"; exit 0', [Text.Encoding]::ASCII)
+        $realGuiCopy = $gGui + '.real'
+        Copy-Item -LiteralPath $gGui -Destination $realGuiCopy -Force
+        [IO.File]::WriteAllText($gGui, 'this is { not valid PowerShell', [Text.Encoding]::ASCII)
+        $saved = $env:LOTRADAR_NO_PAUSE
+        try {
+            Remove-Item Env:\LOTRADAR_NO_PAUSE -ErrorAction SilentlyContinue
+            $r = Invoke-CmdScript $gLauncher
+        } finally { if ($null -ne $saved) { $env:LOTRADAR_NO_PAUSE = $saved }; Move-Item -LiteralPath $realGuiCopy -Destination $gGui -Force }
+        Assert-True ($r.Code -eq 0) ('exit ' + $r.Code + "`n" + $r.Output)
+        Assert-True ($r.Output -match 'STUB-CONSOLE-RAN') ('console start did not run: ' + $r.Output)
+        Assert-True ($r.Output -match 'could not run') 'no notice that the window could not run'
+        return 'fallback to console; exit 0'
+    }
+    Invoke-Test 'G2' 'Documented opt-out LOTRADAR_STARTUP_GUI=0: console start, no window, exit code kept' {
+        [IO.File]::WriteAllText($gStub, 'Write-Host "STUB-CONSOLE-RAN"; exit 5', [Text.Encoding]::ASCII)
+        $saved = @{ LOTRADAR_NO_PAUSE = $env:LOTRADAR_NO_PAUSE; LOTRADAR_STARTUP_GUI = $env:LOTRADAR_STARTUP_GUI }
+        try {
+            $env:LOTRADAR_NO_PAUSE = '1'
+            $env:LOTRADAR_STARTUP_GUI = '0'
+            $r = Invoke-CmdScript $gLauncher
+        } finally { foreach ($k in $saved.Keys) { if ($null -eq $saved[$k]) { Remove-Item ('Env:\' + $k) -ErrorAction SilentlyContinue } else { Set-Item ('Env:\' + $k) $saved[$k] } } }
+        Assert-True ($r.Code -eq 5) ('exit ' + $r.Code + "`n" + $r.Output)
+        Assert-True ($r.Output -match 'STUB-CONSOLE-RAN') 'console start did not run in the launcher window'
+        Assert-True ($r.Output -match 'error code 5') ('message: ' + $r.Output)
+        Assert-True ((Get-ProcessesMentioning 'Show-LotRadarStartup.ps1').Count -eq 0) 'a startup window process is running'
+        return 'exit 5 propagated; console path; no window'
+    }
+    Invoke-Test 'G3' 'Window: a reported failure is shown, exit 91, the failed console is closed, status file removed' {
+        [IO.File]::WriteAllText($gStub, ($emit + 'E ''install'' ''started'' ''stub'' $env:LOTRADAR_STARTUP_NONCE; E ''install'' ''failed'' ''STUB FAILURE 7'' $env:LOTRADAR_STARTUP_NONCE; Write-Host "STUB-FAIL"; exit 7'), [Text.Encoding]::ASCII)
+        $before = @(Get-ChildItem -LiteralPath $runtimeDir -Filter 'startup-status-*.jsonl' -ErrorAction SilentlyContinue).Count
+        try { $w = Invoke-StartupWindow $gGui 90 } finally { Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null } }
+        Assert-True ($w.Exit -eq 91) ('window exit ' + $w.Exit + '; result ' + ($w.Result | ConvertTo-Json -Compress))
+        Assert-True ($w.Result.mode -eq 'failed' -and $w.Result.reason -eq 'STUB FAILURE 7') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
+        Start-Sleep -Seconds 2
+        Assert-True ((Get-ProcessesMentioning $gDir).Count -eq 0) 'the failed attempt''s console is still running'
+        $after = @(Get-ChildItem -LiteralPath $runtimeDir -Filter 'startup-status-*.jsonl' -ErrorAction SilentlyContinue).Count
+        Assert-True ($after -le $before) 'status file of the attempt was left behind'
+        return ('exit 91 (launcher returns 1); reason shown: ' + $w.Result.reason + '; console closed; ' + $w.Seconds + ' s')
+    }
+    Invoke-Test 'G4' 'Window: a forged "opened" event without a healthy server is NOT reported as success' {
+        Assert-True (-not (Test-PortBusy)) 'test setup: something listens on 8765'
+        [IO.File]::WriteAllText($gStub, ($emit + 'E ''open'' ''started'' ''forged'' $env:LOTRADAR_STARTUP_NONCE; E ''open'' ''complete'' ''forged'' $env:LOTRADAR_STARTUP_NONCE; exit 0'), [Text.Encoding]::ASCII)
+        try { $w = Invoke-StartupWindow $gGui 90 } finally { Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null } }
+        Assert-True ($w.Exit -eq 91 -and $w.Result.mode -eq 'failed') ('forged ready accepted: ' + ($w.Result | ConvertTo-Json -Compress))
+        Assert-True ($w.Result.health -ne $true) 'health reported OK with no server'
+        return ('exit 91; ' + $w.Result.reason)
+    }
+    Invoke-Test 'G5' 'Window: events with another nonce are ignored (no progress, then a clear failure)' {
+        [IO.File]::WriteAllText($gStub, ($emit + 'E ''open'' ''complete'' ''wrong nonce'' (''f'' * 32); exit 0'), [Text.Encoding]::ASCII)
+        try { $w = Invoke-StartupWindow $gGui 90 } finally { Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null } }
+        Assert-True ($w.Exit -eq 91 -and $w.Result.mode -eq 'failed') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
+        Assert-True (@($w.Result.events).Count -eq 0) ('foreign events were accepted: ' + (@($w.Result.events) -join ', '))
+        return ('exit 91; 0 events accepted; ' + $w.Result.reason)
+    }
+
     # ---- optional: real bootstrap in the sandbox
     if (-not $FullLaunch) {
         Skip-Test 'F1' 'Real bootstrap launch, /api/health, second launch, single server' 'pass -FullLaunch to run (downloads packages, opens the app window)'
@@ -1058,6 +1168,54 @@ try {
             $lock = [IO.File]::Open((Join-Path $runtimeDir 'marketplace-launch.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
             $lock.Dispose()
             return 'no sandbox server process; port free; launcher exited; marketplace-launch.lock free (stop = process termination; no graceful-quit path exists yet)'
+        }
+
+        # ---- startup window over the REAL bootstrap (runtime already provisioned above)
+        $realGui = Join-Path $program 'startup\Show-LotRadarStartup.ps1'
+        function Get-ServerRoots {
+            $procs = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*server.py*' -and $_.CommandLine -like ('*' + $local + '*') })
+            $ids = @($procs | ForEach-Object { $_.ProcessId })
+            return @($procs | Where-Object { $ids -notcontains $_.ParentProcessId })
+        }
+        Invoke-Test 'G6' 'Window + real bootstrap: stages shown, LotRadar opened exactly once, window exits 0, server and launch lock remain' {
+            $w = Invoke-StartupWindow $realGui 600
+            $ev = @($w.Result.events)
+            Assert-True ($w.Exit -eq 0 -and $w.Result.mode -eq 'done' -and $w.Result.health -eq $true) ('result: ' + ($w.Result | ConvertTo-Json -Compress))
+            Assert-True (@($ev | Where-Object { $_ -eq 'open:complete' }).Count -eq 1) ('LotRadar window opened ' + @($ev | Where-Object { $_ -eq 'open:complete' }).Count + ' times: ' + ($ev -join ', '))
+            foreach ($need in @('install:started', 'python:started', 'browser:started', 'server:started')) { Assert-True ($ev -contains $need) ('stage not reported: ' + $need + ' (' + ($ev -join ', ') + ')') }
+            Start-Sleep -Seconds 2
+            $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/health' -TimeoutSec 5
+            Assert-True ($health.ok -eq $true -and $health.local_only -eq $true) 'server not healthy after the window closed'
+            Assert-True ((Get-ServerRoots).Count -eq 1) ('expected 1 server process tree, found ' + (Get-ServerRoots).Count)
+            $held = $false
+            try { $l = [IO.File]::Open((Join-Path $runtimeDir 'marketplace-launch.lock'), 'OpenOrCreate', 'ReadWrite', 'None'); $l.Dispose() } catch { $held = $true }
+            Assert-True $held 'launch lock is NOT held although the server runs (lock released early)'
+            return ('exit 0 after ' + $w.Seconds + ' s; events: ' + ($ev -join ' > ') + '; 1 server tree; launch lock held')
+        }
+        Invoke-Test 'G7' 'Window, second launch while running: opens LotRadar again, no second server, no setup steps' {
+            $w = Invoke-StartupWindow $realGui 120
+            $ev = @($w.Result.events)
+            Assert-True ($w.Exit -eq 0 -and $w.Result.mode -eq 'done') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
+            Assert-True (@($ev | Where-Object { $_ -eq 'open:complete' }).Count -eq 1) ('open count wrong: ' + ($ev -join ', '))
+            Assert-True ($ev -notcontains 'python:started' -and $ev -notcontains 'server:started') ('setup ran again: ' + ($ev -join ', '))
+            Assert-True ((Get-ServerRoots).Count -eq 1) ('expected 1 server process tree, found ' + (Get-ServerRoots).Count)
+            return ('exit 0; events: ' + ($ev -join ' > ') + '; still 1 server tree')
+        }
+        Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*server.py*' -and $_.CommandLine -like ('*' + $local + '*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Invoke-Test 'G8' 'After stopping the window-started LotRadar: no server, console closed, port free, launch lock free' {
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+                $left = @(Get-ServerRoots)
+                $consoles = @(Get-ProcessesMentioning ($program + '\Launch Marketplace Scanner.cmd'))
+                if ($left.Count -eq 0 -and $consoles.Count -eq 0 -and -not (Test-PortBusy)) { break }
+                Start-Sleep -Seconds 2
+            } while ((Get-Date) -lt $deadline)
+            Assert-True ($left.Count -eq 0) 'sandbox server still running'
+            Assert-True ($consoles.Count -eq 0) ('the LotRadar console of the window-started run is still open: ' + (($consoles | ForEach-Object { $_.Name + ' ' + $_.ProcessId }) -join ', '))
+            Assert-True (-not (Test-PortBusy)) 'something still listens on 127.0.0.1:8765'
+            $lock = [IO.File]::Open((Join-Path $runtimeDir 'marketplace-launch.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+            $lock.Dispose()
+            return 'no server; console closed with its server; port free; launch lock free'
         }
     }
 } catch {

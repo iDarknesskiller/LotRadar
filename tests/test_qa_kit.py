@@ -172,6 +172,20 @@ class QAKit(unittest.TestCase):
         self.assertIn('finally { $env:LOCALAPPDATA = $local }', od2)   # sandbox env always restored
         self.assertIn("return ('BLOCKED:", od2)                         # never a PASS without a real cloud tag
 
+    def test_startup_window_harness_cases(self):
+        text = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
+        for tid in ('G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8'):
+            self.assertIn("Invoke-Test '" + tid + "'", text)
+        self.assertIn("'-AutoCloseSeconds', '2', '-ResultFile'", text)
+        g4 = text[text.index("Invoke-Test 'G4'"):text.index("Invoke-Test 'G5'")]
+        self.assertIn("$w.Result.health -ne $true", g4)               # forged ready never accepted
+        g6 = text[text.index("Invoke-Test 'G6'"):text.index("Invoke-Test 'G7'")]
+        self.assertIn("Where-Object { $_ -eq 'open:complete' }).Count -eq 1", g6)   # browser opened exactly once
+        self.assertIn('Assert-True $held', g6)                              # launch lock still held by the bootstrap
+        info = json.loads(self.read('KIT_INFO.json'))
+        inner = zipfile.ZipFile(io.BytesIO(self.read('package/' + info['package_file'])))
+        self.assertIn('MarketplaceScanner/startup/Show-LotRadarStartup.ps1', inner.namelist())
+
     def test_full_launch_checks_clean_stop(self):
         text = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
         f5 = text[text.index("Invoke-Test 'F5'"):]

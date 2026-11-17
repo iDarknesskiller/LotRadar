@@ -48,6 +48,10 @@ Send ONLY the files in the RESULTS folder:
 These copies have your Windows user name, PC name and profile path removed.
 Do NOT send the "shortcut-backup" folder or the un-sanitized files in the "package" folder.
 
+SMALL LOTRADAR WINDOWS DURING THE TEST
+The tests now also check the new LotRadar startup window. A few small "LotRadar" windows (and minimized
+console windows in the taskbar) appear and close by themselves during the run. Do not click them.
+
 IF THE R3 LINE SAYS "SKIP"
 That means Windows did not allow a normal account to create the special test link. It is NOT a
 failure and NOT a pass. If you want R3 tested fully (optional):

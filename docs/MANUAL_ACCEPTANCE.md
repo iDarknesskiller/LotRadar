@@ -57,6 +57,18 @@ Health must show `ok=true, local_only=true, service="Marketplace Scanner"`; one 
    before the export and `-Mode PhotoCompare -Vin <VIN> -BeforeFile <file>` after it (read-only; changed/deleted originals must be 0).
 4. A DEV-NOBRANDING package must report `branding_assets_missing`.
 
+## E. Startup window (PR #5 candidate; Windows 11 and Windows 10)
+Automated: G1-G5 every run, G6-G8 with `-FullLaunch` (window over the real bootstrap). Still manual:
+1. Explorer double-click of the Desktop shortcut: one LotRadar startup window, steps change from Waiting to In progress
+   to Done, LotRadar opens once, the startup window closes by itself, "LotRadar Server" stays in the taskbar.
+2. Double-click again while LotRadar runs: LotRadar opens again; still one "LotRadar Server" window.
+3. Keyboard only: Tab moves between the buttons, Alt+S / Alt+C / Alt+R / Alt+L work, Esc closes.
+4. Display scaling 150% (Settings > Display): text and buttons are not cut off.
+5. Close the startup window while it shows "In progress": the "LotRadar Server" window comes up and LotRadar still
+   opens; nothing is stopped.
+6. Failure: with LotRadar running from a DIFFERENT folder or another program on port 8765, the window shows the port
+   message; Show console shows the output; Retry after closing the other program works; Close leaves no console behind.
+
 ## Result table
 | Item | Windows 10 | Windows 11 |
 |------|-----------|-----------|
@@ -64,3 +76,4 @@ Health must show `ok=true, local_only=true, service="Marketplace Scanner"`; one 
 | B1-B2 | | |
 | C | | |
 | D | | |
+| E1-E6 | | |
