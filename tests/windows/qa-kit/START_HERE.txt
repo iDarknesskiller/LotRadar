@@ -1,0 +1,70 @@
+LotRadar - Windows 11 / R3 test kit
+====================================
+Kit commit : {{COMMIT}}
+Installer  : {{PACKAGE_FILE}}  (DEVELOPMENT build, no private branding)
+Installer SHA-256 : {{PACKAGE_SHA256}}
+
+WHAT THIS IS
+This kit checks that the LotRadar installer works safely on this PC and that it refuses a
+booby-trapped package (the "R3 symlink" security test). It is a TEST ONLY. It does NOT install
+LotRadar for real, does NOT read or change any real LotRadar data, and does NOT post anything.
+It is not the new startup window. That will come in a later kit.
+
+YOU DO NOT NEED TO INSTALL ANYTHING
+Everything it needs is already part of Windows (Windows PowerShell). No Python, Git, Node or
+Chrome is needed for the main test. No internet is needed for the main test.
+
+BEFORE YOU START
+1. If LotRadar is open on this PC, close it (and its black server window). If LotRadar was never
+   installed here, there is nothing to close.
+2. Make sure the kit is EXTRACTED: right-click the kit ZIP > "Extract All..." > Extract.
+   Do not run it from inside the ZIP.
+3. Use your normal Windows account. Do NOT choose "Run as administrator".
+
+RUN THE TEST
+1. Open the extracted folder and double-click  RUN_WINDOWS11_TESTS.cmd
+2. Windows may show a security prompt because the file came from the internet:
+   - "Open File - Security Warning": click Run.
+   - "Windows protected your PC": click "More info", then "Run anyway".
+3. A window opens and runs the tests (usually 3-10 minutes). Do not close it.
+4. When it says "Finished", press any key.
+
+ABOUT YOUR DESKTOP SHORTCUT (please read)
+During the test, a temporary "LotRadar" shortcut appears on your Desktop, because the installer
+always creates one. If you already had a LotRadar shortcut, it is backed up first and put back
+at the end. The kit checks this and keeps its own extra copy in RESULTS\shortcut-backup.
+If you had none, the test shortcut is removed at the end.
+
+WHAT IT CHANGES
+Only temporary files in a test folder
+(%LOCALAPPDATA%\Temp\LotRadar Test Sandbox ...), which are deleted at the end, plus the
+RESULTS folder inside this kit. Your real %LOCALAPPDATA%\MarketplaceScanner is never touched.
+
+WHAT TO SEND BACK
+Send ONLY the files in the RESULTS folder:
+   SUMMARY.txt
+   SANITIZED-LotRadar-WindowsTest-....log
+   SANITIZED-LotRadar-WindowsTest-....json
+These copies have your Windows user name, PC name and profile path removed.
+Do NOT send the "shortcut-backup" folder or the un-sanitized files in the "package" folder.
+
+IF THE R3 LINE SAYS "SKIP"
+That means Windows did not allow a normal account to create the special test link. It is NOT a
+failure and NOT a pass. If you want R3 tested fully (optional):
+   Settings > System > For developers > turn ON "Developer Mode"
+   (Windows may ask for your password), then run RUN_WINDOWS11_TESTS.cmd again.
+   You can turn Developer Mode off again afterwards. Never run the kit "as administrator".
+
+OPTIONAL SECOND TEST (only if asked): RUN_FULL_LAUNCH_TESTS.cmd
+This also starts LotRadar for real inside the temporary test folder. It needs internet and
+downloads Python packages and a browser (several hundred MB, 10-30 minutes). It asks you to type
+YES first. If Python is not on this PC, LotRadar's own startup script installs Python 3.13 for
+your Windows user, and Python stays installed afterwards (you can remove it in Settings > Apps).
+
+IF IT STOPS EARLY
+The window says "STOPPED:" and why (for example LotRadar still running, or the kit opened
+inside the ZIP). Nothing is changed in that case. Fix the reason and run it again.
+
+CHECKING THE KIT FILES (optional)
+KIT_SHA256SUMS.txt lists a checksum for every kit file. The kit checks them automatically before
+running and refuses to run if anything was changed.

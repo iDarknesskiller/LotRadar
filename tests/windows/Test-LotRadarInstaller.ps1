@@ -510,18 +510,44 @@ try {
         Assert-Unchanged $good 'payload root junction'
         return 'refused'
     }
-    Invoke-Test 'R3' 'File symlink inside payload is refused (reported SKIP/BLOCKED if symlinks cannot be created)' {
+    Invoke-Test 'R3' 'File symlink inside payload is refused BECAUSE it is a link (SKIP/BLOCKED if symlinks cannot be created)' {
+        # Hardened (PR #5 QA): the symlink points at a file with the ORIGINAL bytes, so the checksum would pass.
+        # A refusal can therefore only come from the link/reparse check, never from a coincidental checksum failure.
         $pkg = New-PkgCopy 'r3'
         $victim = Join-Path $pkg 'MarketplaceScanner\requirements.txt'
-        $other = Join-Path $root 'r3-other.txt'
-        [IO.File]::WriteAllText($other, 'other', $utf8NoBom)
+        $entry = @($manifest.payload_files | Where-Object { $_.path -eq 'requirements.txt' })
+        Assert-True ($entry.Count -eq 1) 'test setup: requirements.txt is not listed in the manifest'
+        $outside = Join-Path $root 'outside r3'
+        New-Item -ItemType Directory -Path $outside -Force | Out-Null
+        $target = Join-Path $outside 'requirements-original.txt'
+        Copy-Item -LiteralPath $victim -Destination $target
+        $targetSha = Get-Sha $target
+        Assert-True ($targetSha -eq [string]$entry[0].sha256) 'test setup: outside copy does not match the manifest hash'
         Remove-Item -LiteralPath $victim -Force
-        $mk = Invoke-Cmd ('mklink "' + $victim + '" "' + $other + '"')
-        if ($mk.Code -ne 0) { return 'BLOCKED: this account cannot create file symlinks (needs Developer Mode or elevation): ' + $mk.Output.Trim() }
-        $r = Invoke-Installer $pkg
-        Assert-True ($r.Code -ne 0) ('installer accepted a file symlink: ' + $r.Output)
+        $mk = Invoke-Cmd ('mklink "' + $victim + '" "' + $target + '"')
+        if ($mk.Code -ne 0 -or -not (Test-Path -LiteralPath $victim)) {
+            return ('BLOCKED: this account cannot create file symlinks (enable Windows Developer Mode; do NOT run as administrator). mklink said: ' + $mk.Output.Trim())
+        }
+        try {
+            $li = Get-Item -LiteralPath $victim -Force
+            Assert-True ($li.LinkType -eq 'SymbolicLink') ('mklink reported success but the item is not a symlink (LinkType=' + $li.LinkType + ')')
+            Assert-True ((($li.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) 'symlink has no ReparsePoint attribute'
+            Assert-True ((Get-Sha $victim) -eq [string]$entry[0].sha256) 'reading through the symlink does not give the manifest bytes (fixture invalid)'
+            $r = Invoke-Installer $pkg
+        } finally {
+            $chk = Get-Item -LiteralPath $victim -Force -ErrorAction SilentlyContinue
+            if ($chk -and $chk.LinkType -eq 'SymbolicLink') { [IO.File]::Delete($victim) }
+        }
+        Assert-True ($r.Code -ne 0) ('installer ACCEPTED a file symlink: ' + $r.Output)
+        Assert-True ($r.Output -match 'link/reparse point') ('installer failed, but not with a link/reparse refusal: ' + $r.Output)
+        Assert-True ($r.Output -notmatch 'checksum mismatch') ('refusal mentions a checksum mismatch, so it is not proof of the link check: ' + $r.Output)
+        $names = @(Get-ChildItem -LiteralPath $outside -Force | ForEach-Object { $_.Name })
+        Assert-True ($names.Count -eq 1 -and $names[0] -eq 'requirements-original.txt') ('outside folder was modified: ' + ($names -join ', '))
+        Assert-True ((Get-Sha $target) -eq $targetSha) 'outside symlink target changed'
         Assert-Unchanged $good 'file symlink'
-        return 'refused'
+        $line = ([string]($r.Output -split "`n" | Where-Object { $_ -match 'link/reparse' } | Select-Object -First 1)).Trim()
+        $line = $line.Replace($root, '<sandbox>')
+        return ('symlink created (LinkType=SymbolicLink, ReparsePoint), checksum-valid target; installer exit ' + $r.Code + '; refused: ' + $line + '; outside target unchanged; program/data unchanged')
     }
     Invoke-Test 'R4' 'Programs\MarketplaceScanner (install target) is a junction: refused, target sentinel untouched' {
         $sent = New-Sentinel 'r4'
@@ -854,12 +880,21 @@ try {
     try {
         if ($desktopHadLnk) {
             Copy-Item -LiteralPath $desktopBackup -Destination $desktopLnk -Force
-            Write-Host 'Original Desktop LotRadar.lnk restored.'
+            if ((Get-Sha $desktopLnk) -ne (Get-Sha $desktopBackup)) { throw 'restored shortcut does not match the backup' }
+            Write-Host 'Original Desktop LotRadar.lnk restored (verified).'
         } elseif (Test-Path -LiteralPath $desktopLnk) {
             Remove-Item -LiteralPath $desktopLnk -Force
             Write-Host 'Test Desktop LotRadar.lnk removed.'
         }
-    } catch { Write-Host ('WARNING: could not restore Desktop shortcut: ' + $_.Exception.Message) -ForegroundColor Red }
+    } catch {
+        Write-Host ('WARNING: could not restore Desktop shortcut: ' + $_.Exception.Message) -ForegroundColor Red
+        if ($desktopHadLnk) {
+            # Never delete the only backup copy: keep the sandbox so the original shortcut can be copied back by hand.
+            $KeepSandbox = $true
+            Write-Host ('Your original shortcut backup is kept here: ' + $desktopBackup) -ForegroundColor Red
+            Add-Result 'SC1' 'Desktop shortcut restored' 'FAIL' 'restore failed; backup kept in the sandbox folder'
+        }
+    }
     try { Stop-SandboxProcesses } catch { Write-Host ('NOTE: could not stop sandbox processes: ' + $_.Exception.Message) -ForegroundColor Yellow }
     if (-not $KeepSandbox) {
         for ($try = 1; $try -le 3; $try++) {
