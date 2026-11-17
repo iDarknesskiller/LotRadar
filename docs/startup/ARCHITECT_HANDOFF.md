@@ -81,10 +81,43 @@ The Project Owner wants a custom LotRadar-branded Windows window when launching 
 - Real Windows Explorer double-click of production shortcut: fast existing-runtime path, first-run dependency setup, offline failure, retry and second launch. Confirm UI responsiveness, correct error descriptions and exactly one listener on port 8765.
 - Explicit GUI opt-out scripted launch, environment with PowerShell WinForms unavailable, lock contention and unexpected server termination.
 - Snapshot original data hashes before and after UI-only startup, including a previously healthy installation; test with paths containing spaces.
-- Keyboard navigation, high-DPI scaling and closing/minimizing window during setup; no UI deadlock. Repeat Windows 11 only if waiver is lifted (currently unverified).
+- Keyboard navigation, high-DPI scaling and closing/minimizing window during setup; no UI deadlock. Repeat these startup-window GUI and lifecycle checks on **Windows 11** under the expanded Owner-approved test scope; report Windows version/build and do not mark Windows 11 as verified until actual execution succeeds.
 
 ## Risks
 GUI/main-thread deadlocks; `Start-Process -NoNewWindow` and redirected stream lifetime; early bootstrap exit releasing launch lock; zombie child server; duplicated Chrome windows; race between health, event files, and actual server readiness; failed download retries; orphaned status/log files; WinForms availability and execution policy; auth/path/log leakage; first-run long stalls; missing installer file allowlist; launch while installer swaps program directories.
 
 ## Git instructions
-Work on `feat/windows-startup-status-window` based on approved `main` `b9e843111ce1ed39f7d4003dd39c06eb75724325`. Create/continue the draft PR for *startup only*. The official logo-size changes belong to PR #4, photo-gallery work belongs to PR #3. **No merge to `main` and no release without explicit Project Owner authorization after Gemini and Architect review.**
+Continue `feat/windows-startup-status-window`, first integrating the latest approved `main` `bf61207a21999c8ff256b08c0d17650193e3835f` (PR #4 branding and PR #3 photo gallery are already merged). Record both the pre-integration HEAD and new implementation HEAD. Keep PR #5 draft. **Do not merge to `main` and do not release without explicit Project Owner authorization after Gemini and Chief Architect review.**
+
+## Owner-requested expanded QA: Windows 11 and R3 file symlink (2026-11-17)
+
+### Request and baseline
+The Project Owner can now test on a home Windows PC and has authorized **adding Windows 11 and R3 symlink-refusal testing** to PR #5's acceptance program. This changes **test scope only**, not the planned startup UI architecture. Do **not** infer Windows 11 is installed; verify it with the test harness and record the reported OS name/build. Previous waivers for Windows 11 and R3 are **not automatically removed** by requesting tests. OneDrive-redirected extraction remains a separate waiver until actually tested.
+
+At the time of this instruction, PR #5 HEAD `db1c82b6959a7f7f1baf79060bc264d784c7d545` contained **only this architecture document**, not production startup-window code. The approved `main` is `bf61207a21999c8ff256b08c0d17650193e3835f`. Perform R3 and baseline installer testing first, then retest the actual GUI implementation once Claude has built it. A test on an old installer package is not proof of the newer PR #5 build.
+
+### Relevant source and protected functionality
+- `tests/windows/Test-LotRadarInstaller.ps1` implements PowerShell 5.1 normal-user, synthetic-data, redirected `LOCALAPPDATA` and `APPDATA` installer tests. Its **R3** block (lines 513–525 in approved main) substitutes a symlinked `requirements.txt` in a *disposable package copy* and expects the installer to refuse. The harness emits **SKIP**, not PASS, if `mklink` cannot create a file symlink (Windows Developer Mode or permissions may be required).
+- `installer/Install-LotRadar.ps1` rejects symlink/reparse-point payload folders/files through `Test-UnsafeLink`; never weaken this validation, follow symlinks into external folders, or edit/delete the actual installed program/data to create a test fixture.
+- Preserve `%LOCALAPPDATA%\\MarketplaceScanner\\data` (original dealer photos, photo selection, inventory, drafts), the 190px radar branding, photo-gallery export order, local-only server and launch/installer locks. The test harness may temporarily replace the **real Desktop LotRadar.lnk** but backs up/restores an existing shortcut. Check its restoration afterward.
+
+### Ordered implementation and testing instructions to Claude
+1. **Preflight the machine and files:** record `(Get-CimInstance Win32_OperatingSystem).Caption` and `BuildNumber`; verify `$PSVersionTable.PSVersion` is 5.1, session is non-elevated, test ZIP manifest `source_commit` matches the intended baseline/PR head, and package SHA-256. Make a verified backup of any existing Desktop `LotRadar.lnk`. Close LotRadar completely and ensure nothing is listening on `127.0.0.1:8765` before the test.
+2. **Now, baseline Windows 11 + R3:** use an actual installer ZIP whose manifest identifies approved `main` `bf61207...` (or clearly document any older baseline). From the repo root in a normal Windows PowerShell 5.1 session run:
+
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\tests\\windows\\Test-LotRadarInstaller.ps1 -PackageZip "C:\\Private\\LotRadar-Test\\LotRadar-Installer-<version>.zip"
+   ```
+
+   Read the emitted `LotRadar-WindowsTest-*.json` and `.log` **beside the ZIP**. Confirm `T00` identifies Windows 11 and `R3` reports **PASS** with an installer refusal, external target/sentinel intact, no data mutation, and `FAIL=0`. `R3 SKIP` does not satisfy the R3 acceptance gate. If symlinks are disallowed, enable Windows **Developer Mode only if permitted and desired**, rerun as a **normal user**, and preserve the SKIP/blocked status if Windows policy still forbids it; do not escalate to administrator to manufacture a pass.
+3. After the baseline passes, optionally rerun with `-FullLaunch` for the real sandbox bootstrap. This can install Python/Chromium packages and open an app window. Capture health response and single-listener evidence; ensure installer/launcher interlock and Desktop shortcut restoration. Do not run while the real server is in use.
+4. **After PR #5 implementation:** integrate approved `main`, build a deterministic **private** test package from the feature HEAD, confirm manifest commit, and rerun the entire Windows 11 harness with `-FullLaunch` plus R3. Manual Explorer double-click checks must verify the custom startup UI, real progress phases, offline dependency error and recovery, noninteractive opt-out, busy installer/foreign listener, launch twice without duplicate server, GUI close during setup, focus/keyboard/high-DPI (100%, 125%, 150%) and no orphaned locks/processes. Verify Windows 10 remains supported through its own evidence; Windows 11 results do not replace the Windows 10 gate.
+5. **Data-integrity proof:** where appropriate, use `tests/windows/Get-LotRadarEvidence.ps1` to snapshot/check original photo SHA-256 before/after the *actual* startup/installation test without overwriting source photos. Also confirm inventory/drafts survive and no private asset appears in public Git or logs. Do not use the live data directory for the adversarial R3 fixture.
+6. Deliver `CLAUDE_WINDOWS11_R3_HANDOFF.md` with exact tested source/installer SHA, Windows build, PowerShell version, non-admin status, command transcript, JSON result summary (especially R3), normal and failure modes, redacted screenshots, ZIP SHA-256 and safety notes. Request Gemini independently audit the same feature SHA and real evidence before asking the Architect to lift the relevant test waivers.
+
+### Acceptance criteria and risk areas
+- Windows 11: real test environment confirmed, **zero installer/launcher failures**, stage-window and lifecycle checks pass on the implemented PR #5 candidate, shortcut restored, one healthy local server, zero orphaned server or installer lock.
+- R3: **PASS** only when the symlink was actually created *inside sandbox*, installer rejected it, external sentinel unchanged and the production data/installed program untouched. `SKIP` remains an explicitly unverified security test; never relabel as PASS.
+- Do not confuse a baseline installer test on approved main with post-implementation PR #5 GUI acceptance. Any package whose manifest does not match tested HEAD must be identified as a different build.
+- Risks: Windows 11 PowerShell/Developer Mode differences, symlink privilege restrictions, reparse-point traversal, shortcut restoration, port conflict, first-run downloads, sandbox cleanup, GUI focus/high-DPI, launcher lock lifetime and inadvertent live-data modification. Treat private data and branding as protected.
+- Do not alter unrelated source or merge PR #5 into `main`. Owner authority remains required.
