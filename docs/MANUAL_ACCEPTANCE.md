@@ -1,13 +1,20 @@
 # Manual acceptance checklist (cannot be automated)
 
-**Scope for the current release candidate (Project Owner waivers, recorded 2026-11-16):** Windows 10 is the verified
-platform. **Windows 11, OneDrive-redirected extraction/installation and the R3 file-symlink refusal test are
-WAIVED - NOT VERIFIED** (not passed). The installer's link/reparse-point guard (`Test-UnsafeLink`), path containment
-and checksums stay enabled; the R3 test code stays in the harness and may show SKIP. Release label: **"Windows 10
-verified; Windows 11 untested."** Extract packages into an ordinary local folder (for example `C:\LotRadarInstall`),
-not into OneDrive. Where this checklist says "Windows 10 and Windows 11", the Windows 11 column is waived.
+**Scope for the approved `main` release (`bf61207`; Project Owner waivers, recorded 2026-11-16):** Windows 10 is the
+verified platform. **Windows 11, OneDrive-redirected extraction/installation and the R3 file-symlink refusal test are
+WAIVED - NOT VERIFIED** for that release (not passed). Its link/reparse-point guard (`Test-UnsafeLink`), path containment
+and checksums stay enabled. Release label: **"Windows 10 verified; Windows 11 untested."** Extract that release into an
+ordinary local folder (for example `C:\LotRadarInstall`), not into OneDrive.
 
-Run each item on **Windows 10 (Windows 11 waived, see above)**, as a standard user, using a package built from the commit under
+**PR #5 candidate (unmerged; automated evidence at `673fe9d`, 2026-11-17):** Windows 11 Home build 26200, standard
+user, Developer Mode on: installer suite 48 PASS / 0 FAIL / 1 SKIP, **R3 PASS**; extraction inside a hydrated
+**Personal OneDrive** Files On-Demand folder 51 PASS / 0 FAIL / 1 SKIP (cloud placeholders accepted for the package
+source only; links inside the package and cloud/linked install destinations still refused). **Still open for the
+candidate:** F1 full launch (skipped, not passed), this manual checklist on Windows 11, Windows 10 re-run, online-only
+placeholders, OneDrive for Business and other cloud providers. These results are automated only; they do not fill in
+the Windows 11 column below.
+
+Run each item on **Windows 10** (and on Windows 11 for the PR #5 candidate), as a standard user, using a package built from the commit under
 test. Record OS build, package version and PASS/FAIL. Do not use real customer data; do not post to Facebook.
 Use a test profile or a machine where overwriting `%LOCALAPPDATA%\Programs\MarketplaceScanner` is acceptable
 (data in `%LOCALAPPDATA%\MarketplaceScanner\data` is preserved, but back it up first).
