@@ -563,7 +563,7 @@ try {
         $sent = New-Sentinel 'r2'
         $pkg = New-PkgCopy 'r2'
         $real = Join-Path $pkg 'MarketplaceScanner'
-        $moved = Join-Path $root 'r2-real-payload'
+        $moved = Join-Path $pkgRoot 'r2-real-payload'   # same folder as the package, so the move never crosses drives
         Move-Item -LiteralPath $real -Destination $moved
         try {
             New-Junction $real $moved

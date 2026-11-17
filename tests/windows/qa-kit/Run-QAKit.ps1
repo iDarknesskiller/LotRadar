@@ -38,7 +38,11 @@ function Protect-Text([string]$Text) {
     $out = $Text
     foreach ($p in @($script:Redact)) {
         $find = [string]$p[0]
-        if ($find.Length -ge 3) { $out = [regex]::Replace($out, [regex]::Escape($find), [string]$p[1], [Text.RegularExpressions.RegexOptions]::IgnoreCase) }
+        if ($find.Length -ge 3) {
+            # also the JSON-escaped form (backslashes doubled)
+            $out = [regex]::Replace($out, [regex]::Escape($find.Replace('\', '\\')), [string]$p[1], [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            $out = [regex]::Replace($out, [regex]::Escape($find), [string]$p[1], [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        }
     }
     $short = ''
     try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:USERPROFILE).ShortPath } catch { $short = '' }
@@ -51,6 +55,7 @@ function Protect-Text([string]$Text) {
     foreach ($p in $pairs) {
         $find = [string]$p[0]
         if ($find.Length -ge 3) {
+            $out = [regex]::Replace($out, [regex]::Escape($find.Replace('\', '\\')), [string]$p[1], [Text.RegularExpressions.RegexOptions]::IgnoreCase)
             $out = [regex]::Replace($out, [regex]::Escape($find), [string]$p[1], [Text.RegularExpressions.RegexOptions]::IgnoreCase)
         }
     }
