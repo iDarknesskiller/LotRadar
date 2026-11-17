@@ -417,9 +417,32 @@ class TestInstallerHardeningStatic(unittest.TestCase):
 
     def test_link_guard_present_and_used(self):
         self.assertIn('function Test-UnsafeLink', self.text)
-        self.assertGreaterEqual(self.text.count('Test-UnsafeLink'), 5)
         self.assertIn("'Junction'", self.text)
         self.assertIn("'SymbolicLink'", self.text)
+        # DESTINATION guard (unchanged, strict) on the install parent/target/backups and on the staged tree.
+        self.assertIn('(Test-Path -LiteralPath $guarded) -and (Test-UnsafeLink $guarded)', self.text)
+        self.assertIn('if (Test-UnsafeLink $staged.FullName)', self.text)
+
+    def test_source_guard_is_tag_based_and_source_only(self):
+        t = self.text
+        self.assertIn('function Test-UnsafeSourceEntry', t)
+        self.assertIn('GetFileInformationByHandleEx(h, 9,', t)          # FileAttributeTagInfo
+        self.assertIn('0x02000000 | 0x00200000', t)                       # BACKUP_SEMANTICS | OPEN_REPARSE_POINT: never follow/hydrate
+        self.assertIn('(tag & 0xFFFF0FFF) == 0x9000001A', t)             # IO_REPARSE_TAG_CLOUD .. CLOUD_F only
+        self.assertIn('if ($tag -ne 0 -and [LotRadarInstaller.ReparseTag]::IsCloud($tag)) { return $false }\r\n    return $true', t)
+        # source guard used for package root, manifest, payload root and every payload segment (verify + pre-copy)
+        self.assertIn('if (Test-UnsafeSourceEntry $PSScriptRoot)', t)
+        self.assertIn('(Test-UnsafeSourceEntry $manifestPath)', t)
+        self.assertIn('if (Test-UnsafeSourceEntry $payloadDir)', t)
+        self.assertEqual(t.count('Assert-SafeSourcePath $payloadFull'), 2)
+        # never used for destinations, and the destination guard still refuses every reparse-point directory
+        body = t[t.index('function Test-UnsafeLink'):t.index('$script:ReparseTagSource')]
+        self.assertIn('return [bool]$item.PSIsContainer', body)
+        self.assertNotIn('IsCloud', body)
+        for dest in ('$guarded', '$staged.FullName', '$program', '$backupRoot', '$stageDir'):
+            self.assertNotIn('Test-UnsafeSourceEntry ' + dest, t)
+        # fail closed: a failed tag read throws with an actionable message
+        self.assertIn('Could not check a link/reparse point inside the installer package', t)
 
     def test_containment_uses_directory_boundary(self):
         self.assertIn("StartsWith($payloadFull + '\\', [StringComparison]::OrdinalIgnoreCase)", self.text)

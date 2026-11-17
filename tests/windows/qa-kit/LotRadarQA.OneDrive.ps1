@@ -294,13 +294,20 @@ if ($verifiedRoots.Count -eq 0) {
                 Note ('  T03 ' + (Get-Row $od.Rows 'T03'))
                 Note ('  R1  ' + (Get-Row $od.Rows 'R1'))
                 Note ('  R3  ' + (Get-Row $od.Rows 'R3'))
+                Note ('  R6  ' + (Get-Row $od.Rows 'R6'))
+                Note ('  OD2 ' + (Get-Row $od.Rows 'OD2'))
+                Note ('  OD3 ' + (Get-Row $od.Rows 'OD3'))
                 $zipAfter = ((Test-Path -LiteralPath $odZip) -and ((Get-Sha $odZip) -eq [string]$info.package_sha256))
                 Note ('Package copy after OneDrive run: checksum ' + $(if ($zipAfter) { 'unchanged' } else { 'CHANGED or missing' }))
                 if (-not $zipAfter) { $failures++ }
                 $t03 = @($od.Rows | Where-Object { $_.Id -eq 'T03' }) | Select-Object -First 1
                 $od0 = [string](Get-Row $od.Rows 'OD0')
-                if ($od.Exit -eq 0) {
-                    $odStatus = 'PASS: installed from a OneDrive-extracted package into the local sandbox; all checks passed'
+                $od2 = [string](Get-Row $od.Rows 'OD2')
+                if ($od.Exit -eq 0 -and ($od0 -match 'dir:cloud') -and ($od2 -like 'PASS*')) {
+                    $odStatus = 'PASS: installed from a OneDrive-extracted package whose folders were cloud-tagged, into the local sandbox; full suite FAIL=0; cloud-tagged destination still refused'
+                } elseif ($od.Exit -eq 0) {
+                    $odStatus = 'INCONCLUSIVE (not a pass): the suite passed but OneDrive never cloud-tagged the package, or OD2 did not run'
+                    $failures++
                 } elseif ($t03 -and $t03.Status -eq 'FAIL' -and ([string]$t03.Detail -match 'link/reparse') -and ($od0 -match 'dir:cloud')) {
                     $odStatus = 'SAFE REFUSAL (compatibility FAIL): the installer refuses OneDrive cloud folders as if they were links. Nothing was installed or changed. Reported to the Architect; installer not modified.'
                     $failures++

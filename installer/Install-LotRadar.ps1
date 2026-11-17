@@ -9,6 +9,7 @@ $success = $false
 $installLock = $null
 $launchLock = $null
 
+# DESTINATION guard (install target, its parent, backups, staging): unchanged and strict.
 # True for junctions/symlinks and for any other reparse-point DIRECTORY. Reparse-point FILES with other tags
 # (e.g. OneDrive cloud placeholders) are allowed because their content is SHA-256 verified.
 function Test-UnsafeLink([string]$Path) {
@@ -18,10 +19,65 @@ function Test-UnsafeLink([string]$Path) {
     return [bool]$item.PSIsContainer
 }
 
+# Exact reparse tag via GetFileInformationByHandleEx(FileAttributeTagInfo). The entry itself is opened
+# (FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES only): a link is never followed and a cloud
+# placeholder is never hydrated. Compiled in memory on first use only (no download, no elevation).
+$script:ReparseTagSource = @'
+using System; using System.ComponentModel; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHandles;
+namespace LotRadarInstaller {
+  public static class ReparseTag {
+    [StructLayout(LayoutKind.Sequential)] struct FILE_ATTRIBUTE_TAG_INFO { public uint FileAttributes; public uint ReparseTag; }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandleEx(SafeFileHandle h, int infoClass, out FILE_ATTRIBUTE_TAG_INFO info, uint size);
+    // 0 = not a reparse point. Throws when the entry cannot be opened or queried (callers fail closed).
+    public static uint Get(string path) {
+      using (SafeFileHandle h = CreateFileW(path, 0x80, 7, IntPtr.Zero, 3, 0x02000000 | 0x00200000, IntPtr.Zero)) {
+        if (h.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+        FILE_ATTRIBUTE_TAG_INFO info;
+        if (!GetFileInformationByHandleEx(h, 9, out info, (uint)Marshal.SizeOf(typeof(FILE_ATTRIBUTE_TAG_INFO)))) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return ((info.FileAttributes & 0x400) != 0) ? info.ReparseTag : 0;
+      }
+    }
+    // IO_REPARSE_TAG_CLOUD .. IO_REPARSE_TAG_CLOUD_F = 0x9000001A + n*0x1000 (n = 0..15), i.e. OneDrive/Cloud Files placeholders.
+    public static bool IsCloud(uint tag) { return (tag & 0xFFFF0FFF) == 0x9000001A; }
+  }
+}
+'@
+
+# SOURCE guard: ONLY for the extracted, read-only installer package (whose every file is SHA-256 verified).
+# A Cloud Files placeholder (OneDrive Files On-Demand, IO_REPARSE_TAG_CLOUD*) is accepted; every other reparse point
+# (junction/mount point, symlink, unknown or unreadable tag, attribute without a tag) is refused. Fails closed.
+# Never use this for the install target, staging, backups or runtime: those use Test-UnsafeLink.
+function Test-UnsafeSourceEntry([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) { return $false }
+    try {
+        if (-not ('LotRadarInstaller.ReparseTag' -as [type])) { Add-Type -TypeDefinition $script:ReparseTagSource }
+        $tag = [LotRadarInstaller.ReparseTag]::Get($Path)
+    } catch {
+        throw ('Could not check a link/reparse point inside the installer package (' + $_.Exception.Message + '). Extract the installer ZIP to a normal local folder such as Downloads (not a cloud or network folder) and run it again: ' + $Path)
+    }
+    if ($tag -ne 0 -and [LotRadarInstaller.ReparseTag]::IsCloud($tag)) { return $false }
+    return $true
+}
+# Every existing segment from the payload folder down to $Path must pass the SOURCE guard.
+function Assert-SafeSourcePath([string]$PayloadFull, [string]$Path) {
+    $walk = $PayloadFull
+    foreach ($segment in $Path.Substring($PayloadFull.Length + 1).Split('\')) {
+        $walk = Join-Path $walk $segment
+        if ((Test-Path -LiteralPath $walk) -and (Test-UnsafeSourceEntry $walk)) { throw ('Refusing a link/reparse point inside the package: ' + $walk) }
+    }
+}
+
 try {
     if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA could not be found.' }
     $payloadDir = Join-Path $PSScriptRoot 'MarketplaceScanner'
     $manifestPath = Join-Path $PSScriptRoot 'Install-Manifest.json'
+    # The extracted package folder and its manifest are SOURCE entries (OneDrive placeholders allowed, links refused).
+    if (Test-UnsafeSourceEntry $PSScriptRoot) { throw ('Refusing to install: the installer folder is a link/reparse point: ' + $PSScriptRoot) }
+    if ((Test-Path -LiteralPath $manifestPath) -and (Test-UnsafeSourceEntry $manifestPath)) { throw ('Refusing to install: the manifest is a link/reparse point: ' + $manifestPath) }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($manifest.product -ne 'LotRadar / Marketplace Scanner') { throw 'Invalid installer manifest.' }
     # Reject manifests that could write outside the staging folder or are malformed (hardening added to the ported installer).
@@ -79,9 +135,10 @@ try {
         }
     } finally { $client.Dispose() }
 
-    # Confinement: the payload folder and the install/backup parents must be real folders, not junctions/symlinks.
+    # Confinement: the payload folder must not be a link (SOURCE guard: a OneDrive placeholder folder is allowed);
+    # the install/backup parents must be real folders (DESTINATION guard, unchanged).
     if (-not (Test-Path -LiteralPath $payloadDir -PathType Container)) { throw 'Installer payload folder (MarketplaceScanner) is missing.' }
-    if (Test-UnsafeLink $payloadDir) { throw ('Refusing to install: the payload folder is a link/reparse point: ' + $payloadDir) }
+    if (Test-UnsafeSourceEntry $payloadDir) { throw ('Refusing to install: the payload folder is a link/reparse point: ' + $payloadDir) }
     $payloadFull = [IO.Path]::GetFullPath($payloadDir).TrimEnd('\')
     foreach ($guarded in @($parentDir, $program, $backupRoot)) {
         if ((Test-Path -LiteralPath $guarded) -and (Test-UnsafeLink $guarded)) {
@@ -93,11 +150,7 @@ try {
         $file = Join-Path $payloadDir ([string]$item.path).Replace('/', '\')
         $full = [IO.Path]::GetFullPath($file)
         if (-not $full.StartsWith($payloadFull + '\', [StringComparison]::OrdinalIgnoreCase)) { throw ('Payload path escapes the package folder: ' + $item.path) }
-        $walk = $payloadFull
-        foreach ($segment in $full.Substring($payloadFull.Length + 1).Split('\')) {
-            $walk = Join-Path $walk $segment
-            if ((Test-Path -LiteralPath $walk) -and (Test-UnsafeLink $walk)) { throw ('Refusing a link/reparse point inside the package: ' + $walk) }
-        }
+        Assert-SafeSourcePath $payloadFull $full
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
             throw ('Installer is missing: ' + $item.path)
         }
@@ -115,6 +168,8 @@ try {
         $dstFile = Join-Path $stageDir $relPath
         $dstFolder = Split-Path -Parent $dstFile
         if (-not (Test-Path -LiteralPath $dstFolder)) { New-Item -ItemType Directory -Path $dstFolder -Force | Out-Null }
+        # Re-check the source path right before copying (narrows a swap-in-a-link race); the staged hash is checked below.
+        Assert-SafeSourcePath $payloadFull ([IO.Path]::GetFullPath($srcFile))
         Copy-Item -LiteralPath $srcFile -Destination $dstFile -Force
         if ((Get-FileHash -LiteralPath $dstFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$item.sha256) {
             throw ('Staging checksum mismatch: ' + $item.path)

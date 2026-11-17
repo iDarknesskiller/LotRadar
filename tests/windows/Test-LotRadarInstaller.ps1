@@ -120,6 +120,19 @@ function Get-ReparseKind([string]$Path) {
     return ('other:0x' + $t.ToString('X8'))
 }
 
+function Get-ReparseTagHex([string]$Path) {
+    try {
+        if (-not ('LotRadarQA.ReparseTag' -as [type])) { Add-Type -TypeDefinition $script:ReparseTagSource }
+        return ('0x' + ([LotRadarQA.ReparseTag]::Get($Path)).ToString('X8'))
+    } catch { return 'unknown' }
+}
+# OneDrive QA: wait (bounded) until OneDrive has turned a freshly created folder into a cloud placeholder.
+function Wait-CloudTag([string]$Path, [int]$Seconds = 90) {
+    $waited = 0
+    while ($waited -lt $Seconds -and (Get-ReparseKind $Path) -ne 'cloud') { Start-Sleep -Seconds 3; $waited += 3 }
+    return (Get-ReparseKind $Path)
+}
+
 function Get-Sha([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Get-Inventory([string]$Dir) {
     if (-not (Test-Path -LiteralPath $Dir)) { return @('<absent>') }
@@ -173,9 +186,11 @@ function Test-PortBusy {
         return ($probe.AsyncWaitHandle.WaitOne(500) -and $client.Connected)
     } catch { return $false } finally { $client.Dispose() }
 }
-function New-PkgCopy([string]$Name) {
+function New-PkgCopy([string]$Name, [switch]$WaitCloud) {
     $dst = Join-Path $pkgRoot ('pkg ' + $Name)
     Copy-Item -LiteralPath $pkgDir -Destination $dst -Recurse
+    # OneDrive QA: make the "cloud parent + nested malicious link" case real, not a race with the sync client.
+    if ($ExtractTo -and $WaitCloud) { [void](Wait-CloudTag (Join-Path $dst 'MarketplaceScanner')) }
     return $dst
 }
 function Get-Manifest([string]$Dir) { return (Get-Content -LiteralPath (Join-Path $Dir 'Install-Manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json) }
@@ -291,7 +306,7 @@ try {
             if ($kinds.ContainsKey($k)) { $kinds[$k]++ } else { $kinds[$k] = 1 }
         }
         $kindText = (($kinds.Keys | Sort-Object | ForEach-Object { $_ + '=' + $kinds[$_] }) -join ' ')
-        Add-Result 'OD0' 'OneDrive extraction state' 'INFO' ('waited ' + $waited + 's; payload folder reparse=' + (Get-ReparseKind (Join-Path $pkgDir 'MarketplaceScanner')) + '; items by kind: ' + $kindText)
+        Add-Result 'OD0' 'OneDrive extraction state' 'INFO' ('waited ' + $waited + 's; payload folder reparse=' + (Get-ReparseKind (Join-Path $pkgDir 'MarketplaceScanner')) + ' tag=' + (Get-ReparseTagHex (Join-Path $pkgDir 'MarketplaceScanner')) + '; items by kind: ' + $kindText)
         Invoke-Test 'OD1' 'Package extracted under -ExtractTo while install target, data and runtime stay in the local sandbox' {
             Assert-True ($pkgDir.StartsWith($ExtractTo + '\', [StringComparison]::OrdinalIgnoreCase)) 'package was not extracted under -ExtractTo'
             foreach ($p in @($program, $dataDir, $runtimeDir, $backupRoot)) {
@@ -545,7 +560,8 @@ try {
     # ---- reparse points / junctions (harmless sentinel folders; links are removed with Directory.Delete only)
     Invoke-Test 'R1' 'Junction INSIDE the payload folder is refused; outside sentinel untouched; nothing changes' {
         $sent = New-Sentinel 'r1'
-        $pkg = New-PkgCopy 'r1'
+        $pkg = New-PkgCopy 'r1' -WaitCloud
+        $script:R1Parent = Get-ReparseKind (Join-Path $pkg 'MarketplaceScanner')
         try {
             $victim = Join-Path $pkg 'MarketplaceScanner\chrome-extension'
             Assert-True (Test-Path -LiteralPath $victim) 'test setup: chrome-extension folder missing in package'
@@ -554,10 +570,10 @@ try {
             $r = Invoke-Installer $pkg
         } finally { Remove-Junction (Join-Path $pkg 'MarketplaceScanner\chrome-extension') }
         Assert-True ($r.Code -ne 0) ('installer accepted a junction inside the payload: ' + $r.Output)
-        Assert-True ($r.Output -match 'link|reparse|missing|escape') ('unexpected message: ' + $r.Output)
+        Assert-True ($r.Output -match '(?s)Refusing a link/reparse point inside the package: .*chrome-extension') ('not refused at the junction itself: ' + $r.Output)
         Assert-SentinelIntact $sent 'r1'
         Assert-Unchanged $good 'payload junction'
-        return 'refused: ' + ([string]($r.Output -split "`n" | Where-Object { $_ -match 'INSTALL ERROR' } | Select-Object -First 1)).Trim()
+        return 'payload folder=' + $script:R1Parent + '; refused: ' + ([string]($r.Output -split "`n" | Where-Object { $_ -match 'INSTALL ERROR' } | Select-Object -First 1)).Trim()
     }
     Invoke-Test 'R2' 'Payload ROOT folder is a junction: refused' {
         $sent = New-Sentinel 'r2'
@@ -578,7 +594,8 @@ try {
     Invoke-Test 'R3' 'File symlink inside payload is refused BECAUSE it is a link (SKIP/BLOCKED if symlinks cannot be created)' {
         # Hardened (PR #5 QA): the symlink points at a file with the ORIGINAL bytes, so the checksum would pass.
         # A refusal can therefore only come from the link/reparse check, never from a coincidental checksum failure.
-        $pkg = New-PkgCopy 'r3'
+        $pkg = New-PkgCopy 'r3' -WaitCloud
+        $script:R3Parent = Get-ReparseKind (Join-Path $pkg 'MarketplaceScanner')
         $victim = Join-Path $pkg 'MarketplaceScanner\requirements.txt'
         $entry = @($manifest.payload_files | Where-Object { $_.path -eq 'requirements.txt' })
         Assert-True ($entry.Count -eq 1) 'test setup: requirements.txt is not listed in the manifest'
@@ -604,7 +621,7 @@ try {
             if ($chk -and $chk.LinkType -eq 'SymbolicLink') { [IO.File]::Delete($victim) }
         }
         Assert-True ($r.Code -ne 0) ('installer ACCEPTED a file symlink: ' + $r.Output)
-        Assert-True ($r.Output -match 'link/reparse point') ('installer failed, but not with a link/reparse refusal: ' + $r.Output)
+        Assert-True ($r.Output -match '(?s)link/reparse point.*requirements\.txt') ('installer failed, but not with a link/reparse refusal of the symlink: ' + $r.Output)
         Assert-True ($r.Output -notmatch 'checksum mismatch') ('refusal mentions a checksum mismatch, so it is not proof of the link check: ' + $r.Output)
         $names = @(Get-ChildItem -LiteralPath $outside -Force | ForEach-Object { $_.Name })
         Assert-True ($names.Count -eq 1 -and $names[0] -eq 'requirements-original.txt') ('outside folder was modified: ' + ($names -join ', '))
@@ -612,7 +629,7 @@ try {
         Assert-Unchanged $good 'file symlink'
         $line = ([string]($r.Output -split "`n" | Where-Object { $_ -match 'link/reparse' } | Select-Object -First 1)).Trim()
         $line = $line.Replace($root, '<sandbox>')
-        return ('symlink created (LinkType=SymbolicLink, ReparsePoint), checksum-valid target; installer exit ' + $r.Code + '; refused: ' + $line + '; outside target unchanged; program/data unchanged')
+        return ('payload folder=' + $script:R3Parent + '; symlink created (LinkType=SymbolicLink, ReparsePoint), checksum-valid target; installer exit ' + $r.Code + '; refused: ' + $line + '; outside target unchanged; program/data unchanged')
     }
     Invoke-Test 'R4' 'Programs\MarketplaceScanner (install target) is a junction: refused, target sentinel untouched' {
         $sent = New-Sentinel 'r4'
@@ -643,6 +660,51 @@ try {
         Assert-SentinelIntact $sent 'r5'
         Assert-Unchanged $good 'backup-root junction'
         return 'refused'
+    }
+
+    Invoke-Test 'R6' 'Directory symlink INSIDE the payload is refused (SKIP/BLOCKED if symlinks cannot be created)' {
+        $sent = New-Sentinel 'r6'
+        $pkg = New-PkgCopy 'r6' -WaitCloud
+        $parent = Get-ReparseKind (Join-Path $pkg 'MarketplaceScanner')
+        $victim = Join-Path $pkg 'MarketplaceScanner\chrome-extension'
+        Assert-True (Test-Path -LiteralPath $victim) 'test setup: chrome-extension folder missing in package'
+        Remove-Item -LiteralPath $victim -Recurse -Force
+        $mk = Invoke-Cmd ('mklink /D "' + $victim + '" "' + $sent + '"')
+        if ($mk.Code -ne 0 -or -not (Test-Path -LiteralPath $victim)) {
+            return ('BLOCKED: this account cannot create directory symlinks (enable Windows Developer Mode; do NOT run as administrator). mklink said: ' + $mk.Output.Trim())
+        }
+        try {
+            Assert-True ((Get-Item -LiteralPath $victim -Force).LinkType -eq 'SymbolicLink') 'mklink /D did not create a symbolic link'
+            $r = Invoke-Installer $pkg
+        } finally { Remove-Junction $victim }
+        Assert-True ($r.Code -ne 0) ('installer accepted a directory symlink inside the payload: ' + $r.Output)
+        Assert-True ($r.Output -match '(?s)Refusing a link/reparse point inside the package: .*chrome-extension') ('not refused at the symlink itself: ' + $r.Output)
+        Assert-SentinelIntact $sent 'r6'
+        Assert-Unchanged $good 'payload directory symlink'
+        return ('payload folder=' + $parent + '; refused')
+    }
+    if ($ExtractTo) {
+        Invoke-Test 'OD2' 'Cloud-tagged DESTINATION (Programs under OneDrive) is still refused; nothing installed there' {
+            $odLocal = Join-Path $ExtractTo 'dest-localappdata'
+            $odPrograms = Join-Path $odLocal 'Programs'
+            New-Item -ItemType Directory -Path $odPrograms -Force | Out-Null
+            $kind = Wait-CloudTag $odPrograms
+            if ($kind -ne 'cloud') { return ('BLOCKED: OneDrive did not tag the test Programs folder (kind=' + $kind + ')') }
+            $env:LOCALAPPDATA = $odLocal
+            try { $r = Invoke-Installer $pkgDir } finally { $env:LOCALAPPDATA = $local }
+            Assert-True ($r.Code -ne 0) ('installer ACCEPTED a cloud-tagged destination: ' + $r.Output)
+            Assert-True ($r.Output -match '(?s)Programs\s+is a link/reparse point\s+\(junction/symlink\)') ('not refused by the destination guard: ' + $r.Output)
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $odPrograms 'MarketplaceScanner'))) 'a program folder was created in the cloud destination'
+            Assert-True (@(Get-ChildItem -LiteralPath $odPrograms -Force | Where-Object { $_.Name -like '.MarketplaceScanner-stage-*' }).Count -eq 0) 'a staging folder was created in the cloud destination'
+            Assert-Unchanged $good 'cloud destination'
+            return ('destination Programs tag=' + (Get-ReparseTagHex $odPrograms) + '; refused by destination guard; nothing created')
+        }
+        $r1 = @($script:Results | Where-Object { $_.Id -eq 'R1' }) | Select-Object -First 1
+        $r3 = @($script:Results | Where-Object { $_.Id -eq 'R3' }) | Select-Object -First 1
+        $r6 = @($script:Results | Where-Object { $_.Id -eq 'R6' }) | Select-Object -First 1
+        $cloudCases = ('R1(junction) parent=' + $script:R1Parent + ' ' + $r1.Status + '; R3(file symlink) parent=' + $script:R3Parent + ' ' + $r3.Status + '; R6(dir symlink) ' + $r6.Status + ' ' + $r6.Detail.Split(';')[0])
+        if ($script:R1Parent -eq 'cloud' -and $r1.Status -eq 'PASS') { Add-Result 'OD3' 'Cloud-tagged parent + nested malicious link is refused' 'PASS' $cloudCases }
+        else { Add-Result 'OD3' 'Cloud-tagged parent + nested malicious link is refused' 'SKIP' ('BLOCKED: not exercised with a cloud-tagged parent: ' + $cloudCases) }
     }
 
     # ---- install/launch interlock

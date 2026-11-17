@@ -109,7 +109,7 @@ class QAKit(unittest.TestCase):
         text = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
         r3 = text[text.index("Invoke-Test 'R3'"):text.index("Invoke-Test 'R4'")]
         self.assertIn("LinkType -eq 'SymbolicLink'", r3)
-        self.assertIn("-match 'link/reparse point'", r3)
+        self.assertIn("-match '(?s)link/reparse point.*requirements\\.txt'", r3)
         self.assertIn("-notmatch 'checksum mismatch'", r3)
         self.assertIn('BLOCKED:', r3)
         # The fixture target carries the original (manifest-valid) bytes, so only the link check can refuse it.
@@ -152,6 +152,25 @@ class QAKit(unittest.TestCase):
                        "$dst = Join-Path $pkgRoot ('pkg ' + $Name)", 'ftCreationLow'):
             self.assertIn(needle, text)
         self.assertNotIn('public long ft', text)
+
+
+    def test_onedrive_fix_harness_cases(self):
+        text = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
+        for needle in ("Invoke-Test 'R6'", "mklink /D", "Invoke-Test 'OD2'", "Add-Result 'OD3'",
+                       "New-PkgCopy 'r1' -WaitCloud", "New-PkgCopy 'r3' -WaitCloud", "New-PkgCopy 'r6' -WaitCloud",
+                       'function Wait-CloudTag', ' tag=', "installer ACCEPTED a cloud-tagged destination"):
+            self.assertIn(needle, text)
+        od2 = text[text.index("Invoke-Test 'OD2'"):text.index("Add-Result 'OD3'")]
+        self.assertIn('$env:LOCALAPPDATA = $odLocal', od2)
+        self.assertIn('finally { $env:LOCALAPPDATA = $local }', od2)   # sandbox env always restored
+        self.assertIn("return ('BLOCKED:", od2)                         # never a PASS without a real cloud tag
+
+    def test_onedrive_pass_requires_cloud_tag_and_destination_refusal(self):
+        od = self.read('tools/LotRadarQA.OneDrive.ps1').decode('ascii')
+        self.assertIn("$od.Exit -eq 0 -and ($od0 -match 'dir:cloud') -and ($od2 -like 'PASS*')", od)
+        self.assertIn('INCONCLUSIVE (not a pass)', od)
+        for row in ("'R6'", "'OD2'", "'OD3'"):
+            self.assertIn('Get-Row $od.Rows ' + row, od)
 
 
 if __name__ == '__main__':
