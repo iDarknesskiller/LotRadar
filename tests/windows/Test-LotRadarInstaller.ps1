@@ -1043,6 +1043,22 @@ try {
         # stop the sandbox server again
         Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*server.py*' -and $_.CommandLine -like ('*' + $local + '*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         if ($script:launchProc) { [void]$script:launchProc.WaitForExit(60000) }
+        # Architect b150a4d step 4: after stopping, nothing may be left running and no lock may be stranded.
+        # NOTE: "stop" here is terminating the sandbox server process; the product has no graceful-quit path yet.
+        Invoke-Test 'F5' 'After stopping: no sandbox server left, port 8765 free, launcher exited, launch lock not stranded' {
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+                $left = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*server.py*' -and $_.CommandLine -like ('*' + $local + '*') })
+                if ($left.Count -eq 0 -and -not (Test-PortBusy)) { break }
+                Start-Sleep -Seconds 2
+            } while ((Get-Date) -lt $deadline)
+            Assert-True ($left.Count -eq 0) ('sandbox server processes still running: ' + (($left | ForEach-Object { $_.ProcessId }) -join ', '))
+            Assert-True (-not (Test-PortBusy)) 'something still listens on 127.0.0.1:8765'
+            Assert-True ((-not $script:launchProc) -or $script:launchProc.HasExited) 'the launcher process did not exit after its server stopped'
+            $lock = [IO.File]::Open((Join-Path $runtimeDir 'marketplace-launch.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+            $lock.Dispose()
+            return 'no sandbox server process; port free; launcher exited; marketplace-launch.lock free (stop = process termination; no graceful-quit path exists yet)'
+        }
     }
 } catch {
     Add-Result 'FATAL' 'Test run aborted' 'FAIL' $_.Exception.Message

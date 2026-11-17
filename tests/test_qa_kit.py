@@ -172,6 +172,16 @@ class QAKit(unittest.TestCase):
         self.assertIn('finally { $env:LOCALAPPDATA = $local }', od2)   # sandbox env always restored
         self.assertIn("return ('BLOCKED:", od2)                         # never a PASS without a real cloud tag
 
+    def test_full_launch_checks_clean_stop(self):
+        text = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
+        f5 = text[text.index("Invoke-Test 'F5'"):]
+        f5 = f5[:f5.index('} catch {')]
+        for needle in ("-not (Test-PortBusy)", "$script:launchProc.HasExited", "'marketplace-launch.lock'), 'OpenOrCreate', 'ReadWrite', 'None')",
+                       "$lock.Dispose()", "no graceful-quit path exists yet"):
+            self.assertIn(needle, f5)
+        for tid in ("'F1'", "'F4'"):
+            self.assertIn('Invoke-Test ' + tid, text)
+
     def test_destination_preflight_harness_cases(self):
         text = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
         for tid, var in (("'R7'", 'New-Junction $userRoot $sent'), ("'R8'", 'New-Junction $runtimeDir $sent')):
