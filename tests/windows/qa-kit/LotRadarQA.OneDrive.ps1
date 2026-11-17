@@ -150,6 +150,7 @@ Note ('Mode            : OneDrive QA (kit commit ' + $info.source_commit + ')')
 Note ('Windows         : ' + $os.Caption + ' version ' + $os.Version + ' build ' + $os.BuildNumber + ' (Windows 11: ' + $isWin11 + ')')
 Note ('PowerShell      : ' + $PSVersionTable.PSVersion + '; administrator: ' + $isAdmin)
 Note ('Package         : ' + $info.package_file + ' sha256=' + $info.package_sha256 + ' build_type=' + $info.build_type)
+Note ('Leftover repair : ' + ($script:LeftoverReport -join '; '))
 
 # ---- A. OneDrive detection (read-only)
 $roots = @(Get-SyncRoots)

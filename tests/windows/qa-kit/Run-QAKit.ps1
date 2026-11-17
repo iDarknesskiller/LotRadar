@@ -169,6 +169,50 @@ if ($busy) { Stop-Kit 'Something is using 127.0.0.1:8765 (probably LotRadar). Cl
 New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null
 $desktop = [Environment]::GetFolderPath('Desktop')
 $desktopLnk = Join-Path $desktop 'LotRadar.lnk'
+
+# ---- 6a. Repair leftovers of an earlier, INTERRUPTED kit run (a closed window skips its own cleanup).
+# Only kit-created things are touched: a Desktop LotRadar.lnk that points into a "LotRadar Test Sandbox",
+# "%LOCALAPPDATA%\Temp\LotRadar Test Sandbox *" folders and marker-tagged "LotRadar QA TEST ONLY *" OneDrive folders.
+$qaHome = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LotRadar QA Results'
+$originalLnk = Join-Path $qaHome 'shortcut-original\LotRadar.lnk'
+$script:LeftoverReport = @()
+$otherRun = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*Test-LotRadarInstaller.ps1*' }).Count -gt 0
+if ($otherRun) { Stop-Kit 'Another LotRadar test run is still running (or its window is still open). Let it finish or close it, then run the kit again.' 5 }
+if (Test-Path -LiteralPath $desktopLnk) {
+    $curTarget = (New-Object -ComObject WScript.Shell).CreateShortcut($desktopLnk).TargetPath
+    if ($curTarget -like '*LotRadar Test Sandbox*') {
+        if (Test-Path -LiteralPath $originalLnk) {
+            Copy-Item -LiteralPath $originalLnk -Destination $desktopLnk -Force
+            if ((Get-Sha $desktopLnk) -ne (Get-Sha $originalLnk)) { Stop-Kit 'A leftover test shortcut was found on the Desktop but the saved original could not be restored.' 6 }
+            $script:LeftoverReport += 'leftover TEST Desktop shortcut found; your saved original was restored (verified)'
+        } else {
+            Remove-Item -LiteralPath $desktopLnk -Force
+            $script:LeftoverReport += 'leftover TEST Desktop shortcut found and removed (no saved original existed; reinstall LotRadar or recreate the shortcut)'
+        }
+    }
+}
+if (Test-Path -LiteralPath $desktopLnk) {
+    # keep a persistent copy of the REAL shortcut for any future repair
+    $curTarget = (New-Object -ComObject WScript.Shell).CreateShortcut($desktopLnk).TargetPath
+    if ($curTarget -notlike '*LotRadar Test Sandbox*') {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $originalLnk) -Force | Out-Null
+        Copy-Item -LiteralPath $desktopLnk -Destination $originalLnk -Force
+    }
+}
+$leftDirs = @(Get-ChildItem -LiteralPath (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp') -Directory -Filter 'LotRadar Test Sandbox *' -ErrorAction SilentlyContinue)
+if ($env:OneDrive -and (Test-Path -LiteralPath $env:OneDrive)) {
+    $leftDirs += @(Get-ChildItem -LiteralPath $env:OneDrive -Directory -Filter 'LotRadar QA TEST ONLY *' -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'LOTRADAR_QA_TEST_FOLDER.txt') })
+}
+foreach ($d in $leftDirs) {
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    & cmd.exe /d /c ('rmdir /s /q "' + $d.FullName + '"') 2>&1 | Out-Null
+    $ErrorActionPreference = $old
+    $state = 'removed'
+    if (Test-Path -LiteralPath $d.FullName) { $state = 'could NOT be removed (safe to delete by hand)' }
+    $script:LeftoverReport += ('leftover test folder ' + $d.Name + ': ' + $state)
+}
+if ($script:LeftoverReport.Count -eq 0) { $script:LeftoverReport += 'none' }
+foreach ($l in $script:LeftoverReport) { Say ('Earlier interrupted run: ' + $l) 'Yellow' }
 $shortcutBackup = Join-Path $resultsDir 'shortcut-backup\LotRadar.lnk'
 $hadShortcut = Test-Path -LiteralPath $desktopLnk
 $shortcutSha = ''
@@ -264,7 +308,8 @@ $summary = @(
     ('Results         : ' + $counts),
     ('R3 symlink test : ' + $r3),
     ('Environment     : ' + $t00),
-    ('Desktop shortcut: ' + $shortcutStatus)
+    ('Desktop shortcut: ' + $shortcutStatus),
+    ('Leftover repair : ' + ($script:LeftoverReport -join '; '))
 )
 $summaryText = Protect-Text ($summary -join "`r`n")
 [IO.File]::WriteAllText((Join-Path $resultsDir 'SUMMARY.txt'), $summaryText + "`r`n", $utf8NoBom)

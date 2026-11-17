@@ -78,6 +78,11 @@ LotRadar shortcut is handled exactly like in the main test. Results go to a fold
 (%LOCALAPPDATA%\LotRadar QA Results\...), which opens automatically at the end. Send back only
 SUMMARY.txt and the SANITIZED-... files from that folder.
 
+IF YOU CLOSED A TEST WINDOW BEFORE IT FINISHED
+Closing the window skips the test's own cleanup, so a temporary test shortcut or test folder can be
+left behind. The next time you run any of the kit's .cmd files, it repairs that first: it puts your
+saved original LotRadar shortcut back and deletes only its own leftover test folders, and says so.
+
 IF IT STOPS EARLY
 The window says "STOPPED:" and why (for example LotRadar still running, or the kit opened
 inside the ZIP). Nothing is changed in that case. Fix the reason and run it again.

@@ -178,5 +178,22 @@ class QAKit(unittest.TestCase):
             self.assertIn('Get-Row $od.Rows ' + row, od)
 
 
+    def test_interrupted_run_leftovers_are_repaired(self):
+        runner = self.read('tools/Run-QAKit.ps1').decode('ascii')
+        rep = runner[runner.index('# ---- 6a.'):runner.index("$shortcutBackup = Join-Path $resultsDir")]
+        # only kit-created things are touched
+        self.assertIn("$curTarget -like '*LotRadar Test Sandbox*'", rep)
+        self.assertIn("-Filter 'LotRadar Test Sandbox *'", rep)
+        self.assertIn("-Filter 'LotRadar QA TEST ONLY *'", rep)
+        self.assertIn("LOTRADAR_QA_TEST_FOLDER.txt", rep)
+        self.assertIn('rmdir /s /q', rep)                                 # never follows junctions
+        self.assertNotIn('Remove-Item -LiteralPath $d', rep)
+        self.assertIn('Another LotRadar test run is still running', rep)  # never cleans under a live run
+        self.assertIn("shortcut-original", rep)
+        self.assertIn('(Get-Sha $desktopLnk) -ne (Get-Sha $originalLnk)', rep)
+        self.assertIn("'Leftover repair : '", runner)
+        self.assertIn("Note ('Leftover repair : '", self.read('tools/LotRadarQA.OneDrive.ps1').decode('ascii'))
+
+
 if __name__ == '__main__':
     unittest.main()
