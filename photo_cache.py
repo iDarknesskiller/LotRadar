@@ -1093,25 +1093,26 @@ def select_export_frames(frames, keys=None, *, limit=None, groups=None):
     frames: prepared_export_frames() output, already in gallery order
             [('photos/01.jpg', bytes, url), ('photos/02.jpg', bytes, None), ...]
     keys:   the user's selection (frame keys). None = everything (old behavior).
-    Order ALWAYS follows the gallery (numerical) order, never click order, and the
+    Order is the validated click order of `keys` (never gallery or category order), and the
     chosen files are renumbered 01..N with no gaps so file order = upload order.
+    `groups` is accepted for compatibility and intentionally ignored.
     Keys that no longer exist (photo removed on refresh) are reported, not guessed."""
     available = [frame_key(f) for f in frames]
+    avail_set = set(available)
     if keys is None:
         wanted = list(available)
+        missing = []
     else:
         if not isinstance(keys, (list, tuple)) or not all(isinstance(k, str) for k in keys):
             raise ValueError('invalid_photo_selection')
-        wanted_set = set(keys)
-        wanted = [k for k in available if k in wanted_set]
-    missing = [k for k in (keys or []) if k not in set(available)]
+        if len(set(keys)) != len(keys):
+            raise ValueError('duplicate_photo_selection_keys')
+        wanted = [k for k in keys if k in avail_set]
+        missing = [k for k in keys if k not in avail_set]
     if limit is not None and len(wanted) > limit:
         raise ValueError(f'too_many_photos_selected; {len(wanted)} selected, limit {limit}')
     if not wanted:
         raise ValueError('no_photos_selected')
-    if groups is not None:
-        ranks={key:(i if i<2 else {'exterior':2,'interior':3}.get(groups.get(key),4)) for i,key in enumerate(available)}
-        wanted.sort(key=lambda key:ranks[key])
     by_key = {frame_key(f): f for f in frames}
     out, rows = [], []
     for position, key in enumerate(wanted, start=1):

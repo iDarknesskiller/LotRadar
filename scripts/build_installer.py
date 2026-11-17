@@ -26,6 +26,7 @@ import re
 import subprocess
 import sys
 import time
+import struct
 import zipfile
 
 PRODUCT = 'LotRadar / Marketplace Scanner'
@@ -88,7 +89,10 @@ PACKAGE_FILES = {
 ASSETS = {
     'branding/business_card.png': ('business_card.png', b'\x89PNG\r\n\x1a\n', True),
     'branding/dedication.jpg': ('dedication.jpg', b'\xff\xd8\xff', True),
-    'LotRadar.ico': ('LotRadar.ico', b'\x00\x00\x01\x00', False),
+    'branding/lotradar_logo.png': ('lotradar_logo.png', b'\x89PNG\r\n\x1a\n', True),
+    # Must be the icon made from lotradar_logo.png; production refuses to ship without it
+    # (no silent substitution of an older icon).
+    'LotRadar.ico': ('LotRadar.ico', b'\x00\x00\x01\x00', True),
 }
 MAX_ASSET_BYTES = 25 * 1024 * 1024
 
@@ -163,12 +167,32 @@ def load_committed_source(root):
     return commit, epoch, blobs
 
 
+def check_asset_structure(name, data):
+    """Reject truncated/corrupt branding files (header-only checks; bytes are never modified)."""
+    if name == 'lotradar_logo.png':
+        if len(data) < 33 or data[12:16] != b'IHDR':
+            raise BuildError('Asset %s is a corrupt PNG (no IHDR).' % name)
+        width, height = struct.unpack('>II', data[16:24])
+        if not (16 <= width <= 4096 and 16 <= height <= 4096) or data[25] != 6:
+            raise BuildError('Asset %s must be an RGBA (transparent) PNG of 16..4096 px.' % name)
+        if not data.rstrip(b'\x00').endswith(b'IEND\xaeB`\x82'):
+            raise BuildError('Asset %s is a truncated PNG (no IEND).' % name)
+    elif name == 'LotRadar.ico':
+        count = struct.unpack('<H', data[4:6])[0] if len(data) >= 6 else 0
+        if not 1 <= count <= 32 or len(data) < 6 + 16 * count:
+            raise BuildError('Asset %s is a corrupt ICO (bad frame directory).' % name)
+        for i in range(count):
+            offset, size = struct.unpack('<II', data[6 + 16 * i + 8:6 + 16 * i + 16])
+            if size == 0 or offset + size > len(data):
+                raise BuildError('Asset %s is a truncated ICO (frame %d outside file).' % (name, i))
+
+
 def load_assets(root, asset_dir, mode):
     """Validate and read private assets. Returns {payload_path: bytes}."""
     found = {}
     if not asset_dir:
         if mode == 'production':
-            raise BuildError('Production builds require --asset-dir containing business_card.png and dedication.jpg.')
+            raise BuildError('Production builds require --asset-dir containing business_card.png, dedication.jpg, lotradar_logo.png and LotRadar.ico.')
         return found
     asset_dir = os.path.realpath(asset_dir)
     if not os.path.isdir(asset_dir):
@@ -195,6 +219,7 @@ def load_assets(root, asset_dir, mode):
             data = handle.read()
         if not data.startswith(magic):
             raise BuildError('Asset %s is not the expected file type (bad header).' % name)
+        check_asset_structure(name, data)
         found[payload_path] = data
     if mode == 'production':
         for payload_path, (name, _magic, required) in ASSETS.items():
@@ -356,7 +381,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='command', required=True)
     b = sub.add_parser('build', help='build an installer ZIP from committed source')
     b.add_argument('--mode', choices=('production', 'development'), required=True)
-    b.add_argument('--asset-dir', help='private folder with business_card.png, dedication.jpg [, LotRadar.ico]')
+    b.add_argument('--asset-dir', help='private folder with business_card.png, dedication.jpg, lotradar_logo.png, LotRadar.ico (logo + icon required for production)')
     b.add_argument('--out-dir', default=None, help='output folder (default: <repo>/dist)')
     b.add_argument('--repo-root', default=os.path.dirname(here))
     v = sub.add_parser('verify', help='verify an existing installer ZIP')

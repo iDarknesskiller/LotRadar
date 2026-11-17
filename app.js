@@ -18,25 +18,19 @@ let photoStatusPendingKey='',liveVerifyStatusPending=false,siteScanStatusPending
 let gallery={vin:'',source:'',index:0,cache:null,pictures:[],initial:true};
 
 // Phase 1: selections affect local exports only, never Facebook posting.
-let photoSelection={vin:'',source:'',keys:new Set(),saved:null,limit:20,ready:false,missing:[],dirty:false,error:''};
-let photoGridExpanded=false,photoGroupFilter='all';
-function photoCategory(key){const manual=photoSelection.groups||{};if(Object.hasOwn(manual,key))return manual[key];const auto=photoSelection.autoGroups?.[key];return auto==='other'?'unknown':auto||'unknown';}
-// 1.9.13: grid display order = Cover, Dedication, Exterior, Interior, Unclassified (gallery order inside each group).
-const PHOTO_GROUP_RANK={cover:0,dedication:1,exterior:2,interior:3,unknown:4},PHOTO_GROUP_TITLE={cover:'Cover',dedication:'Dedication',exterior:'Exterior',interior:'Interior',unknown:'Unclassified'};
-function photoGroupOf(p,i){return i===0?'cover':i===1?'dedication':photoCategory(exportFrameKey(p));}
-function photoDisplayOrder(photos){return photos.map((p,i)=>i).sort((a,b)=>PHOTO_GROUP_RANK[photoGroupOf(photos[a],a)]-PHOTO_GROUP_RANK[photoGroupOf(photos[b],b)]||a-b);}
-function shownPhoto(p,i){return photoGroupFilter==='all'||(i>=2&&photoCategory(exportFrameKey(p))===photoGroupFilter);}  // 01/02 appear only under All
+let photoSelection={vin:'',source:'',keys:[],saved:null,limit:20,ready:false,missing:[],dirty:false,error:''};
+let photoGridExpanded=false;
+let photoProgress={vin:'',source:'',data:null,revision:'',watching:''},photoOpenGuard=new Map();
 
 let photoSaveTimer=null,photoSaveChain=Promise.resolve();
 const exportFrameKey=photo=>photo.kind==='dedication'?'dedication':photo.url;
-function orderedPhotoKeys(){return exportPreview.photos.map((p,i)=>({key:exportFrameKey(p),rank:i<2?i:({exterior:2,interior:3}[photoCategory(exportFrameKey(p))]??4)})).filter(p=>photoSelection.keys.has(p.key)).sort((a,b)=>a.rank-b.rank).map(p=>p.key);}
+function orderedPhotoKeys(){const have=new Set(exportPreview.photos.map(exportFrameKey));return photoSelection.keys.filter(k=>have.has(k));}
 function selectionActive(){return photoSelection.ready&&photoSelection.vin===exportPreview.vin&&photoSelection.source===exportPreview.actualSource;}
 async function loadPhotoSelection(p){
  const saved=await api(`/api/photos/selection?vin=${encodeURIComponent(p.vin)}&source=${encodeURIComponent(p.actualSource)}`);
  if(exportPreview!==p)return;
  if(saved.source!==p.actualSource)throw Error('Photo source changed; refresh preview');
- photoSelection={vin:p.vin,source:p.actualSource,keys:new Set(saved.keys),groups:saved.groups||{},autoGroups:saved.auto_groups||{},classifyAvailable:!!saved.classify_available,autoSort:saved.auto_sort||{},saved:saved.saved?[...saved.keys]:null,limit:saved.limit,ready:true,missing:saved.missing_keys||[],dirty:false,error:''};
- if(photoSelection.autoSort.running)void watchAutoSort(p);
+ photoSelection={vin:p.vin,source:p.actualSource,keys:[...saved.keys],groups:saved.groups||{},autoGroups:saved.auto_groups||{},classifyAvailable:!!saved.classify_available,autoSort:saved.auto_sort||{},saved:saved.saved?[...saved.keys]:null,limit:saved.limit,ready:true,missing:saved.missing_keys||[],dirty:false,error:''};
 }
 function persistPhotoSelection(){
  clearTimeout(photoSaveTimer);
@@ -46,92 +40,32 @@ function persistPhotoSelection(){
  return photoSaveChain;
 }
 function selectionChanged(){photoSelection.dirty=true;photoSelection.version=(photoSelection.version||0)+1;const strip=document.querySelector('.gallery-thumbs'),left=strip?strip.scrollLeft:0,top=strip?strip.scrollTop:0,focusLabel=document.activeElement?.getAttribute?.('aria-label'),limitFocus=document.activeElement?.matches?.('[data-photo-limit]');renderDetail();const again=document.querySelector('.gallery-thumbs');if(again){again.scrollLeft=left;again.scrollTop=top;};if(focusLabel)document.querySelector(`[aria-label="${CSS.escape(focusLabel)}"]`)?.focus({preventScroll:true});if(limitFocus)document.querySelector('[data-photo-limit]')?.focus({preventScroll:true});if(again){again.scrollLeft=left;again.scrollTop=top;};clearTimeout(photoSaveTimer);photoSaveTimer=setTimeout(()=>{void persistPhotoSelection().catch(()=>{});},400);}
-function selectPhotoPreset(mode){
- const available=exportPreview.photos.map((p,i)=>({key:exportFrameKey(p),index:i}));
- photoSelection.keys=new Set(mode==='saved'?(photoSelection.saved||[]):mode==='all'?available.map(p=>p.key):mode==='clear'?available.filter(p=>p.index<2).map(p=>p.key):available.slice(0,2).map(p=>p.key));
- selectionChanged();
+// Selection order IS click history: append on select, remove on deselect, re-select appends again.
+function togglePhotoKey(key){
+ if(!selectionActive())return false;
+ const at=photoSelection.keys.indexOf(key);
+ if(at>=0)photoSelection.keys=photoSelection.keys.filter(k=>k!==key);
+ else if(orderedPhotoKeys().length>=photoSelection.limit){photoSelection.notice=`Limit reached: select no more than ${photoSelection.limit} photos.`;notify(photoSelection.notice);renderPhotoControls();return false;}
+ else photoSelection.keys=[...photoSelection.keys,key];
+ photoSelection.notice='';selectionChanged();return true;
 }
+function selectPhotoPreset(){photoSelection.keys=exportPreview.photos.slice(0,2).map(exportFrameKey);photoSelection.notice='';selectionChanged();}
 function photoSelectionToolbar(){
  if(!selectionActive())return photoSelection.error?'<p class="photo-selection-note">Photo selection didn’t load · <button type="button" data-act="retry-photo-selection">Retry</button></p>':'<p class="photo-selection-note">Loading photo selection…</p>';
- const count=orderedPhotoKeys().length,total=exportPreview.photos.length;
- const warning=count>photoSelection.limit?`Select no more than ${photoSelection.limit} photos.`:count===0?'Select at least one photo.':'';
- const cover=exportPreview.photos[0];
- const selected=orderedPhotoKeys().map((key,n)=>{const i=exportPreview.photos.findIndex(p=>exportFrameKey(p)===key),p=exportPreview.photos[i];return `<button type="button" class="selected-photo-thumb" data-gallery-index="${i}" aria-label="Preview selected photo ${n+1}">${exportPreview.urls.has(i)?`<img src="${esc(exportPreview.urls.get(i))}" alt="Selected photo ${n+1}">`:'<span class="preview-thumb-pending">Loading…</span>'}<span>${String(n+1).padStart(2,'0')}</span></button>`;}).join('');
- return `${photoGroupTools()}<div class="selected-photo-heading"><strong>Selected photos · ${count}</strong><button type="button" class="btn secondary" data-photo-default>Reset to 01 + 02</button></div><div class="selected-photo-strip" aria-label="Selected photos in download order">${selected||'<span>No photos selected</span>'}</div>${warning?`<p class="photo-selection-note" role="status">${warning}</p>`:''}<p class="photo-selection-note">Cover → Dedication → Exterior → Interior → Unclassified</p>`;
+ const keys=orderedPhotoKeys(),count=keys.length;
+ const warning=photoSelection.notice||(count>photoSelection.limit?`Select no more than ${photoSelection.limit} photos.`:count===0?'Select at least one photo.':'');
+ const selected=keys.map((key,n)=>{const i=exportPreview.photos.findIndex(p=>exportFrameKey(p)===key);return `<button type="button" class="selected-photo-thumb" data-gallery-index="${i}" data-preview-only="1" aria-label="Preview selected photo ${n+1}">${exportPreview.urls.has(i)?`<img src="${esc(exportPreview.urls.get(i))}" alt="Selected photo ${n+1}">`:'<span class="preview-thumb-pending">Loading…</span>'}<span>${String(n+1).padStart(2,'0')}</span></button>`;}).join('');
+ return `<div class="selected-photo-heading"><strong>Selected photos · ${count}</strong><button type="button" class="btn secondary" data-photo-default>Reset to 01 + 02</button></div><div class="selected-photo-strip" aria-label="Selected photos in download order">${selected||'<span>No photos selected</span>'}</div>${warning?`<p class="photo-selection-note" role="status">${esc(warning)}</p>`:''}<p class="photo-selection-note">Photos download in the order you select them.</p>`;
 }
 function renderPhotoControls(){
  const strip=document.querySelector('.gallery-thumbs'),left=strip?.scrollLeft||0,top=strip?.scrollTop||0,label=document.activeElement?.getAttribute?.('aria-label');
  renderDetail();if(label)document.querySelector(`[aria-label="${CSS.escape(label)}"]`)?.focus({preventScroll:true});
  const again=document.querySelector('.gallery-thumbs');if(again){again.scrollLeft=left;again.scrollTop=top;}
 }
-function photoGroupTools(){
- const counts={all:exportPreview.photos.length,exterior:0,interior:0,unknown:0};exportPreview.photos.forEach((p,i)=>{if(i>=2)counts[photoCategory(exportFrameKey(p))]++;});
- return `<div class="photo-sort-tools"><span role="status">${esc(autoSortMessage())}</span>${photoSelection.autoSort?.paused&&photoSelection.classifyAvailable?'<button type="button" class="btn secondary" data-photo-resume>Resume</button>':''}<label class="photo-autosort-toggle"><input type="checkbox" data-photo-autosort ${photoSelection.autoSort?.enabled!==false?'checked':''} ${!photoSelection.classifyAvailable?'disabled':''}> Sort automatically after download</label></div><div class="photo-filter-tools">${[['all','All'],['exterior','Exterior'],['interior','Interior'],['unknown','Unclassified']].map(([v,t])=>`<button type="button" class="btn secondary" data-photo-filter="${v}" aria-label="Filter ${t}" aria-pressed="${photoGroupFilter===v}">${t} ${counts[v]}</button>`).join('')}</div><div class="photo-bulk-tools"><button type="button" class="btn secondary" data-photo-bulk="select">Select all shown</button><button type="button" class="btn secondary" data-photo-bulk="unselect">Unselect all shown</button>${photoGroupFilter==='unknown'?'<button type="button" class="btn secondary" data-photo-bulk="exterior">Mark shown as Exterior</button><button type="button" class="btn secondary" data-photo-bulk="interior">Mark shown as Interior</button>':''}</div>`;
-}
-function autoSortMessage(){
- const st=photoSelection.autoSort||{};
- if(!photoSelection.classifyAvailable)return 'Needs the OpenAI API key used by AI listing to sort photos';
- if(st.paused)return st.paused;
- if(st.enabled===false)return 'Automatic photo sorting is off';
- if(st.running)return st.total?`Sorting photos… ${st.classified||0} of ${st.total}`:'Sorting photos…';
- if(st.error)return st.error;
- const values=Object.values(photoSelection.autoGroups||{});
- return values.length?`Sorted · ${values.filter(v=>v==='exterior').length} exterior · ${values.filter(v=>v==='interior').length} interior · ${values.filter(v=>v==='other').length} other`:'Photos are sorted automatically after they download';
-}
-let autoSortWatching=null;
-async function watchAutoSort(p){
- // Polls while the server sorts this vehicle; regroups the grid when results arrive.
- if(autoSortWatching===p)return;autoSortWatching=p;
- try{
-  while(exportPreview===p&&photoSelection.vin===p.vin){
-   await new Promise(resolve=>setTimeout(resolve,2000));
-   if(exportPreview!==p)break;
-   const status=await api(`/api/photos/classify?vin=${encodeURIComponent(p.vin)}&source=${encodeURIComponent(p.actualSource)}`);
-   if(exportPreview!==p)break;
-   photoSelection.autoSort={...photoSelection.autoSort,...status};
-   if(!status.running){
-    const data=await api(`/api/photos/selection?vin=${encodeURIComponent(p.vin)}&source=${encodeURIComponent(p.actualSource)}`);
-    if(exportPreview!==p)break;
-    photoSelection.autoGroups=data.auto_groups||{};photoSelection.autoSort={...photoSelection.autoSort,...(data.auto_sort||{}),running:false};
-    renderPhotoControls();break;
-   }
-   const statusNode=document.querySelector('.photo-sort-tools [role="status"]');if(statusNode)statusNode.textContent=autoSortMessage();
-  }
- }catch(e){if(exportPreview===p){photoSelection.autoSort={...photoSelection.autoSort,running:false,error:String(e.message||e)};renderPhotoControls();}}
- finally{if(autoSortWatching===p)autoSortWatching=null;}
-}
-async function resumeAutoSort(){
- const p=exportPreview;if(!selectionActive())return;
- try{const status=await api('/api/photos/classify',{vin:p.vin,source:p.actualSource});if(exportPreview!==p)return;photoSelection.autoSort={...status,running:true};renderPhotoControls();void watchAutoSort(p);}
- catch(e){photoSelection.autoSort={...photoSelection.autoSort,error:String(e.message||e)};renderPhotoControls();}
-}
-async function setAutoSort(enabled){
- const p=exportPreview;
- try{await api('/api/photos/auto-sort',{enabled});if(exportPreview!==p)return;photoSelection.autoSort={...photoSelection.autoSort,enabled,paused:enabled?'':photoSelection.autoSort?.paused};
-  if(enabled){const data=await api(`/api/photos/selection?vin=${encodeURIComponent(p.vin)}&source=${encodeURIComponent(p.actualSource)}`);if(exportPreview!==p)return;photoSelection.autoGroups=data.auto_groups||{};photoSelection.autoSort={...photoSelection.autoSort,...(data.auto_sort||{})};if(photoSelection.autoSort.running)void watchAutoSort(p);}
-  renderPhotoControls();}
- catch(e){notify('Setting not saved: '+(e.message||e),true);renderPhotoControls();}
-}
-document.addEventListener('click',e=>{
- const filter=e.target.closest('[data-photo-filter]');if(filter){photoGroupFilter=filter.dataset.photoFilter;renderPhotoControls();document.querySelector(`[data-photo-filter="${photoGroupFilter}"]`)?.focus({preventScroll:true});return;}
- if(e.target.closest('[data-photo-resume]')){void resumeAutoSort();return;}
- const bulk=e.target.closest('[data-photo-bulk]');if(!bulk||!selectionActive())return;
- const mode=bulk.dataset.photoBulk;let limit=false;
- exportPreview.photos.forEach((p,i)=>{if(!shownPhoto(p,i))return;const key=exportFrameKey(p);
-  if(mode==='select'){if(!photoSelection.keys.has(key)){if(photoSelection.keys.size<photoSelection.limit)photoSelection.keys.add(key);else limit=true;}}
-  else if(mode==='unselect')photoSelection.keys.delete(key);
-  else if(i>1){photoSelection.groups??={};photoSelection.groups[key]=mode;}
- });
- selectionChanged();document.querySelector(`[data-photo-bulk="${mode}"]`)?.focus({preventScroll:true});if(limit)notify(`Limit ${photoSelection.limit} reached`);
-});
-const selectionStyle=document.createElement('link');selectionStyle.rel='stylesheet';selectionStyle.href='/photo-selection.css?v=auto-sort-1912';document.head.append(selectionStyle);
-document.addEventListener('click',e=>{if(e.target.closest('[data-photo-default]'))selectPhotoPreset('clear');});
+const selectionStyle=document.createElement('link');selectionStyle.rel='stylesheet';selectionStyle.href='/photo-selection.css?v=ordered-picker-1';document.head.append(selectionStyle);
+document.addEventListener('click',e=>{if(e.target.closest('[data-photo-default]'))selectPhotoPreset();});
 document.addEventListener('change',e=>{
- if(e.target.matches('[data-photo-autosort]')){void setAutoSort(e.target.checked);return;}
- if(e.target.matches('[data-photo-group]')){const p=exportPreview.photos[Number(e.target.dataset.photoGroup)];if(p&&selectionActive()){photoSelection.groups??={};photoSelection.groups[exportFrameKey(p)]=e.target.value;selectionChanged();}return;}
- if(e.target.matches('[data-photo-preset]'))selectPhotoPreset(e.target.value);
- if(e.target.matches('[data-photo-limit]')){const value=Number(e.target.value);if(Number.isInteger(value)&&value>=1&&value<=60){photoSelection.limit=value;selectionChanged();}}
- if(e.target.matches('[data-photo-check]')){const index=Number(e.target.dataset.photoCheck),p=exportPreview.photos[index];if(!p||!selectionActive())return;const key=exportFrameKey(p);if(e.target.checked)photoSelection.keys.add(key);else photoSelection.keys.delete(key);selectionChanged();}
+ if(e.target.matches('[data-photo-check]')){const index=Number(e.target.dataset.photoCheck),p=exportPreview.photos[index];if(!p||!selectionActive())return;gallery.index=index;if(!togglePhotoKey(exportFrameKey(p)))e.target.checked=photoSelection.keys.includes(exportFrameKey(p));}
 });
 
 let exportPreview={enabled:false,vin:'',source:'',revision:'',photos:[],urls:new Map(),pending:new Set(),failed:new Map(),counts:null,loading:false,error:'',actualSource:''};
@@ -238,7 +172,7 @@ async function toggleExportPreview(){
   if(exportPreview!==p||selectedVin!==vin||gallery.source!==source)return;
   p.revision=data.revision;p.photos=data.photos||[];p.actualSource=data.photo_source||source;
   p.counts=data.photo_counts||null;p.error='';p.loading=false;
-  try{await loadPhotoSelection(p);}catch(error){if(exportPreview===p)photoSelection={vin:p.vin,source:p.actualSource,keys:new Set(),saved:null,limit:20,ready:false,missing:[],dirty:false,error:String(error.message||error)};}
+  try{await loadPhotoSelection(p);}catch(error){if(exportPreview===p)photoSelection={vin:p.vin,source:p.actualSource,keys:[],saved:null,limit:20,ready:false,missing:[],dirty:false,error:String(error.message||error)};}
   if(exportPreview!==p)return;
   renderDetail();
   // Warm the cover/dedication and nearest shots, then progressively fill the
@@ -580,7 +514,7 @@ function renderGrid(){const readyButton=document.querySelector('[data-act="get-t
       ${tab==='outstock'&&issue?.can_trash&&facebookLink?`<button type="button" class="btn ghost fb-cleanup-move" data-cleanup-trash="${esc(r.vin)}">Move to Trash</button>`:''}
     </div>
   </div></article>`}).join('');document.querySelectorAll('.vehicle-photo img').forEach(img=>img.addEventListener('error',()=>{img.hidden=true}));}
-function openDetail(vin){if(!state.vehicles.some(v=>v.vin===vin))return;if(selectedVin!==vin)facebookUrlEdit=null;const car=state.vehicles.find(v=>v.vin===vin);facebookCompareOpenVin=car?.draft?.published_url?vin:'';if(selectedVin!==vin)draftEditBuffer=null;resetExportPreview();selectedVin=vin;gallery={vin,source:'',index:0,cache:null,pictures:[],initial:true};$('detail-overlay').hidden=false;renderDetail();void toggleExportPreview();void refreshPhotoStatus();if(car?.draft?.published_url)void loadFacebookComparison();}
+function openDetail(vin){if(!state.vehicles.some(v=>v.vin===vin))return;if(selectedVin!==vin)facebookUrlEdit=null;const car=state.vehicles.find(v=>v.vin===vin);facebookCompareOpenVin=car?.draft?.published_url?vin:'';if(selectedVin!==vin)draftEditBuffer=null;resetExportPreview();selectedVin=vin;gallery={vin,source:'',index:0,cache:null,pictures:[],initial:true};$('detail-overlay').hidden=false;renderDetail();void toggleExportPreview();void refreshPhotoStatus();void startPhotoAutoFetch(vin);if(car?.draft?.published_url)void loadFacebookComparison();}
 function closeOverlay(which){
  if(which==='chrome-bridge'){$('chrome-pair-key').value='';$('chrome-pair-controls').hidden=true;}
  $(which+'-overlay').hidden=true;
@@ -612,6 +546,24 @@ function updateScanDock(job){
 
 const selectedRecord=r=>{const pick=$('draft-source');const name=pick?.value||r.draft?.source||Object.keys(r.sources)[0];return r.sources[name]||primary(r);};
 function sectionHeader(text){return `<div class="detail-block"><h3>${text}</h3>`;}
+
+// Polling/progress re-renders must never steal focus, caret, selection or scroll from a field the user is typing in.
+function captureEditState(){
+ const el=document.activeElement,drawer=$('drawer-content');
+ const st={drawerTop:drawer?drawer.scrollTop:0,id:'',start:0,end:0,dir:'none',top:0};
+ if(el&&el.id&&drawer&&drawer.contains(el)&&el.matches('input,textarea,select')){
+  st.id=el.id;st.top=el.scrollTop||0;
+  try{st.start=el.selectionStart;st.end=el.selectionEnd;st.dir=el.selectionDirection||'none';}catch{}
+ }
+ return st;
+}
+function restoreEditState(st){
+ const drawer=$('drawer-content');if(!st||!drawer)return;
+ if(st.id){const el=document.getElementById(st.id);if(el){el.focus({preventScroll:true});
+  try{if(st.start!=null&&el.setSelectionRange)el.setSelectionRange(st.start,st.end,st.dir);}catch{}
+  el.scrollTop=st.top;}}
+ drawer.scrollTop=st.drawerTop;
+}
 function renderDetail(){
  const r=state.vehicles.find(v=>v.vin===selectedVin);
  if(!r){closeOverlay('detail');return;}
@@ -653,18 +605,12 @@ function renderDetail(){
  const active=pictures[gallery.index],main=active?.src||'';
  if(previewReady&&!main&&!exportPreview.failed.has(gallery.index))void loadExportPreviewFrame(gallery.index);
  // <photo-grid-thumbnails>
- // Grid shows Cover, Dedication, Exterior, Interior, Unclassified with headings; tiles keep their gallery number.
- let lastGroup='';const displayOrder=photoDisplayOrder(pictures);
- const groupSize=g=>displayOrder.filter(j=>photoGroupOf(pictures[j],j)===g).length;
- const thumbnails=displayOrder.map(i=>{const pic=pictures[i];if(!shownPhoto(pic,i))return '';const g=photoGroupOf(pic,i),head=g!==lastGroup&&!(g==='dedication'&&lastGroup==='cover')?`<div class="photo-group-heading" role="heading" aria-level="4">${g==='cover'&&displayOrder.some(j=>photoGroupOf(pictures[j],j)==='dedication')?'Cover & dedication':PHOTO_GROUP_TITLE[g]}${['exterior','interior','unknown'].includes(g)?' · '+groupSize(g):''}</div>`:'';lastGroup=g;return head+(()=>{const key=exportFrameKey(pic),order=orderedPhotoKeys().indexOf(key),checked=selectionActive()&&order>=0;return `<div class="photo-pick ${checked?'':'unselected'}"><button class="gallery-thumb ${gallery.index===i?'chosen':''} ${!previewActive&&pic.index===cover?'cover-choice':''}" type="button" data-gallery-index="${i}" aria-label="Export photo ${i+1}${previewActive?' · '+pic.title:''}" title="${esc(previewActive?pic.title:pic.index===cover?'Selected cover':pic.lowResolution?'Low-resolution source':pic.branded?'Dealer banner on image':'Vehicle photo')}">${pic.src?`<img src="${esc(pic.src)}" loading="lazy" alt="Photo ${i+1}">`:`<span class="preview-thumb-pending ${exportPreview.failed.has(i)?'preview-thumb-failed':''}">${exportPreview.failed.has(i)?'Retry photo':exportPreview.pending.has(i)?'Preparing':'Queued'}</span>`}<span>${previewActive?String(i+1).padStart(2,'0'):pic.index===cover?'★ '+(i+1):i+1}</span></button>${previewReady?`<label><input type="checkbox" data-photo-check="${i}" aria-label="Use photo ${String(i+1).padStart(2,'0')} on Facebook" ${checked?'checked':''} ${!selectionActive()?'disabled':''}> ${checked?'✓ '+String(order+1).padStart(2,'0'):'—'}</label>${i>1?`<select class="photo-group" data-photo-group="${i}" aria-label="Photo ${i+1} category" ${!selectionActive()?'disabled':''}>${[['unknown','Unclassified'],['exterior','Exterior'],['interior','Interior']].map(([v,t])=>`<option value="${v}" ${photoCategory(key)===v?'selected':''}>${t}</option>`).join('')}</select>${!Object.hasOwn(photoSelection.groups||{},key)&&photoSelection.autoGroups?.[key]?'<small class="photo-auto-tag">auto</small>':''}`:''}`:''}</div>`;})();}).join('');
+ // Gallery order. A number badge shows each selected photo's click-order position.
+ const selOrder=selectionActive()?orderedPhotoKeys():[];
+ const thumbnails=pictures.map((pic,i)=>{const key=exportFrameKey(pic),order=selOrder.indexOf(key),checked=order>=0;
+  return `<div class="photo-pick ${checked?'':'unselected'}"><button class="gallery-thumb ${gallery.index===i?'chosen':''}" type="button" data-gallery-index="${i}" aria-pressed="${checked}" aria-label="Photo ${i+1}${checked?', selected '+(order+1):', not selected'} · ${pic.title}" title="${esc(pic.title)}">${pic.src?`<img src="${esc(pic.src)}" loading="lazy" alt="Photo ${i+1}">`:`<span class="preview-thumb-pending ${exportPreview.failed.has(i)?'preview-thumb-failed':''}">${exportPreview.failed.has(i)?'Retry photo':exportPreview.pending.has(i)?'Preparing':'Queued'}</span>`}<span>${String(i+1).padStart(2,'0')}</span>${checked?`<b class="photo-order-badge" aria-hidden="true">${String(order+1).padStart(2,'0')}</b>`:''}</button>${previewReady?`<label><input type="checkbox" data-photo-check="${i}" aria-label="Use photo ${String(i+1).padStart(2,'0')} on Facebook" ${checked?'checked':''} ${!selectionActive()?'disabled':''}> ${checked?'✓ '+String(order+1).padStart(2,'0'):'—'}</label>`:''}</div>`;}).join('');
  // </photo-grid-thumbnails>
- const cc=exportPreview.counts;
- const imageAudit=previewReady&&cc?`<div class="photo-audit-panel" role="status" aria-live="polite">
-   <strong>Dealer photo audit · ${exportPreview.actualSource==='mitsubishi_used'?'Mitsubishi backup':'Toyota primary'}</strong>
-   <span>${r.sources[exportPreview.actualSource]?.photo_gallery_expected? r.sources[exportPreview.actualSource].photo_gallery_expected+'-photo gallery · ':''}${cc.links} links found (${cc.excluded||0} duplicates/hidden) · ${cc.downloaded} downloaded · ${cc.failed} failed · ${Math.max(0,pictures.length-1)} usable</span>
-   <span class="photo-preview-progress">Preview images: ${exportPreview.urls.size}/${pictures.length} ready${exportPreview.failed.size?' · '+exportPreview.failed.size+' failed (retry available)':''}</span>
-   ${cc.downloaded<cc.links?'<small>Some dealer images are not cached. Use Fetch missing photos, then refresh the preview.</small>':`<small>If the dealer gallery shows more than ${cc.links} photos, use Refresh vehicle to capture the complete viewer before downloading again.</small>`}
-  </div>`:'';
+const imageAudit=photoProgressPanel();
  const modelValue=name(first),mileageValue=first.mileage!=null&&Number.isFinite(Number(first.mileage))?Number(first.mileage).toLocaleString('en-US'):'',stockValue=chosen.stock||first.stock||'';
  const fields=[['model','Model',modelValue],['mileage','Mileage',mileageValue],['stock','Stock',stockValue]];
  const quick=fields.map(([key,label,value])=>`<div class="copy-field ${fieldUpdated(r.vin,key)?'flash-green':''}"><label for="quick-${key}">${label}</label><div class="copy-control"><input type="text" id="quick-${key}" class="quick-select" value="${esc(value)}" readonly title="Click to select ${label.toLowerCase()}"><button class="btn ghost" type="button" data-act="copy-${key}" ${!value?'disabled':''} aria-label="Copy ${label}">⧉ Copy</button></div></div>`).join('');
@@ -728,18 +674,20 @@ function renderDetail(){
    <div class="fb-compare-content" id="facebook-compare-content">${renderFacebookRows(facebookCompareCache.get(r.vin))}</div>
   </div></details>`:'';
  const mainAction=d?'':`<button class="btn primary" type="button" data-act="create-draft" ${sourceEntries.length?'':'disabled'}>Create listing draft →</button>`;
+ const editState=captureEditState();
  $('drawer-content').innerHTML=`<div class="posting-photo-area">
   <div class="export-preview-default"><strong>Facebook photo preview</strong><span>Exact exported images · Business card + dedication #2 · ${previewReady?(exportPreview.actualSource==='mitsubishi_used'?'Mitsubishi backup':'Toyota primary'):'Toyota preferred, Mitsubishi backup'}</span></div>
- <div class="gallery-stage">${main?`<img src="${esc(main)}" alt="${esc(modelValue)} ${previewActive?'export':'source'} photo ${gallery.index+1}">`:`<span class="muted">${previewActive?(exportPreview.loading?'Preparing exact export preview…':previewReady?(exportPreview.failed.has(gallery.index)?'Photo unavailable. Select its thumbnail to retry.':'Loading exported photo…'):(exportPreview.error?'Preview unavailable. Fetch missing photos, then refresh the preview.':'No export photos ready yet.')):'No vehicle photos captured yet.'}</span>`}</div>
+ <div class="gallery-stage">${main?`<img src="${esc(main)}" alt="${esc(modelValue)} ${previewActive?'export':'source'} photo ${gallery.index+1}">`:`<span class="muted">${previewActive?(exportPreview.loading?'Preparing exact export preview…':previewReady?(exportPreview.failed.has(gallery.index)?'Photo unavailable. Select its thumbnail to retry.':'Loading exported photo…'):(exportPreview.error?'Photos are still being fetched or unavailable.':'No export photos ready yet.')):'No vehicle photos captured yet.'}</span>`}</div>
   ${previewReady?photoSelectionToolbar():''}
   <div class="photo-grid-heading"><button type="button" class="btn secondary" data-act="toggle-photo-grid" aria-expanded="${photoGridExpanded}" aria-controls="photo-thumbnail-grid">${photoGridExpanded?'▴ Collapse photos':'▾ Show all photos'} (${pictures.length})</button></div>
   <div class="posting-thumb-row ${photoGridExpanded?'photo-grid-row':''}"><div id="photo-thumbnail-grid" class="gallery-thumbs ${photoGridExpanded?'photo-grid-expanded':''}" aria-label="${previewActive?'Exported':'Vehicle'} photos">${thumbnails}</div><span class="photo-count">${pictures.length?`${gallery.index+1} / ${pictures.length}`:exportPreview.loading?'Preparing…':exportPreview.error?'Preview unavailable':'0 photos'}</span></div>
   ${imageAudit}
-  <div class="posting-photo-tools">${active?.url&&!active.cover?`<button class="btn primary" type="button" data-act="set-cover">Set photo ${String(gallery.index+1).padStart(2,'0')} as cover</button>`:''}<button class="btn secondary" type="button" data-act="refresh-vehicle">↻ Refresh vehicle</button><button class="btn secondary" type="button" data-act="download-photos">↓ Fetch missing photos</button><button class="btn secondary" type="button" data-act="download-photo-zip" ${!selectionActive()||!orderedPhotoKeys().length||orderedPhotoKeys().length>photoSelection.limit?'disabled':''}>↓ Download ${selectionActive()?orderedPhotoKeys().length:0} photos (ZIP)</button><button class="btn secondary" type="button" data-act="open-photo-folder">Open folder</button><button class="btn secondary" type="button" data-act="retry-export-preview">↻ Refresh photo preview</button>${dealerLinks}</div><div id="gallery-cache-status" class="muted" aria-live="polite"></div>${dealerComparison}
+  <div class="posting-photo-tools">${active?.url&&!active.cover?`<button class="btn primary" type="button" data-act="set-cover">Set photo ${String(gallery.index+1).padStart(2,'0')} as cover</button>`:''}<button class="btn secondary" type="button" data-act="download-photo-zip" ${!selectionActive()||!orderedPhotoKeys().length||orderedPhotoKeys().length>photoSelection.limit?'disabled':''}>↓ Download ${selectionActive()?orderedPhotoKeys().length:0} photos (ZIP)</button><button class="btn secondary" type="button" data-act="open-photo-folder">Open folder</button>${dealerLinks}</div>${dealerComparison}
  </div>
  <section class="posting-workspace" aria-label="Listing copy tools"><div class="copy-workspace-head"><h3>Quick Copy</h3>${listingDeleteAction}</div><div class="quick-copy-grid">${quick}</div>
  ${draftActions}${descriptionArea}${draftFieldNotice}${dealerFacts}${stockConfirmation}${posting}${fbComparison}
  <div class="posting-footer"><button type="button" class="btn secondary" data-dismiss="detail">Close</button><div class="draft-footer-actions">${draftSourceInput}${mainAction}</div></div></section>`;
+ restoreEditState(editState);
  document.querySelectorAll('#detail-overlay .gallery-stage img,#detail-overlay .gallery-thumbs img').forEach(image=>image.addEventListener('error',()=>{image.hidden=true}));
 }
 // R41: authorized one-time Facebook checks, never a recurring Facebook crawler.
@@ -939,7 +887,6 @@ async function refreshPhotoStatus(){
    // First status snapshot is informational; no export changed on disk merely
    // because the drawer learned its cache state for the first time.
    const previousHadPhotos=Boolean(gallery.cachePreviouslyPresent);
-   if(previousHadPhotos&&exportPreview.enabled){resetExportPreview();queueMicrotask(()=>{if(selectedVin===vin&&gallery.source===source)void toggleExportPreview();});}
    const r=state.vehicles.find(v=>v.vin===vin);
    if(r?.sources?.[source])r.sources[source].photo_usable_indices=data.photos.filter(p=>p.downloaded&&!p.excluded).map(p=>p.index);
    renderGrid();renderDetail();
@@ -966,6 +913,73 @@ async function setCoverPhoto(){
   notify('Cover photo saved. Branded photos take priority in the photo ZIP.');
  }catch(e){notify('Cover selection failed: '+e.message,true)}
 }
+// ---- Photo progress: ONE canonical, source-scoped model (GET /api/photos/progress) ----
+const PHOTO_STAGE_LABEL={queued:'Queued',downloading:'Downloading',sorting:'Sorting',ready:'Ready',partial:'Partial',unavailable:'Unavailable'};
+const PHOTO_FAIL_LABEL={blocked_by_host:'Blocked by dealer host',not_found:'Not found',timeout:'Timed out',tls_error:'Secure connection failed',too_large:'Too large',not_an_image:'Not a valid image',download_failed:'Download failed',not_downloaded:'Not downloaded yet'};
+function photoProgressPanel(){
+ const d=photoProgress.data;
+ if(!d||photoProgress.vin!==selectedVin)return '<div class="photo-audit-panel" role="status"><span>Checking photos…</span></div>';
+ const label=PHOTO_STAGE_LABEL[d.stage]||d.stage,busy=['queued','downloading','sorting'].includes(d.stage);
+ const sorting=d.stage==='sorting'&&d.sorting?.total?` ${d.sorting.classified}/${d.sorting.total}`:'';
+ const text=d.stage==='downloading'&&d.unique?`Downloading ${d.downloaded}/${d.unique}`:label+sorting;
+ const bar=busy&&d.stage==='downloading'&&d.unique?`<progress max="${d.unique}" value="${d.downloaded}" aria-label="${esc(text)}"></progress>`:busy?`<progress aria-label="${esc(text)}"></progress>`:`<progress max="1" value="${d.stage==='ready'?1:d.unique?d.downloaded/d.unique:0}" aria-label="${esc(text)}"></progress>`;
+ const sel=selectionActive()?orderedPhotoKeys().length:0;
+ const reasons=Object.entries(d.failure_reasons||{}).map(([k,n])=>`<li>${esc(PHOTO_FAIL_LABEL[k]||k)}: ${n}</li>`).join('');
+ const failures=d.failed?`<details class="photo-failures"><summary>Failures (${d.failed})</summary><ul>${reasons}</ul><button type="button" class="btn secondary" data-act="download-photos">Retry failed</button></details>`:'';
+ const note=d.discovery_shortfall?`<small>The dealer reports ${d.dealer_reported} photos but only ${d.unique} links were captured.</small>`:d.sorting?.error?'<small>Sorting unavailable</small>':'';
+ return `<div class="photo-audit-panel" role="status" aria-live="polite"><div class="photo-progress-bar"><span>${esc(text)}</span>${bar}</div><span class="photo-funnel">Found ${d.found} → Unique ${d.unique} → Downloaded ${d.downloaded} → Usable ${d.usable} · Selected ${sel}</span>${note}${failures}</div>`;
+}
+function photoFetchKey(vin,source){return vin+'|'+source;}
+async function startPhotoAutoFetch(vin){
+ const source=gallery.source;if(!vin||!source)return;
+ const key=photoFetchKey(vin,source),last=photoOpenGuard.get(key)||0;
+ let data=null;
+ try{
+  if(Date.now()-last>600000){photoOpenGuard.set(key,Date.now());data=await api('/api/photos/open',{vin,source});}
+  else data=await api(`/api/photos/progress?vin=${encodeURIComponent(vin)}&source=${encodeURIComponent(gallery.source)}`);
+ }catch(e){if(selectedVin===vin)photoProgress={vin,source,data:{stage:'unavailable',found:0,unique:0,downloaded:0,usable:0,failed:0,failure_reasons:{},sorting:{}},revision:'',watching:''};if(selectedVin===vin)renderDetail();return;}
+ if(selectedVin!==vin)return;
+ photoProgress={vin,source:data.source,data,revision:data.revision,watching:photoProgress.vin===vin?photoProgress.watching:''};
+ renderDetail();void watchPhotoProgress(vin,data.source);
+}
+function updatePhotoProgressInPlace(){
+ const node=document.querySelector('.photo-audit-panel');
+ if(!node){return;}
+ const html=photoProgressPanel();if(!html)return;
+ const t=document.createElement('div');t.innerHTML=html;const fresh=t.firstElementChild;
+ if(fresh&&fresh.outerHTML!==node.outerHTML)node.replaceWith(fresh);
+}
+async function watchPhotoProgress(vin,source){
+ const token=photoFetchKey(vin,source)+'#'+Date.now();
+ if(photoProgress.watching&&photoProgress.watching.startsWith(photoFetchKey(vin,source)+'#'))return;
+ photoProgress.watching=token;
+ try{
+  while(selectedVin===vin&&photoProgress.watching===token){
+   const d=photoProgress.data;
+   if(!d||!['queued','downloading','sorting'].includes(d.stage))break;
+   await new Promise(r=>setTimeout(r,2000));
+   if(selectedVin!==vin||photoProgress.watching!==token)break;
+   if(document.hidden)continue;
+   const next=await api(`/api/photos/progress?vin=${encodeURIComponent(vin)}&source=${encodeURIComponent(source)}`);
+   if(selectedVin!==vin||photoProgress.watching!==token)break;
+   const stageChanged=next.stage!==d.stage&&!['queued','downloading'].includes(next.stage);   // rebuild once per real stage change, not per photo
+   photoProgress={...photoProgress,data:next,revision:next.revision};
+   if(stageChanged)await rebuildExportPreviewKeepingState();else updatePhotoProgressInPlace();
+  }
+ }catch{}
+ finally{if(photoProgress.watching===token)photoProgress.watching='';}
+}
+// Rebuild the export preview after a REAL revision change. Keeps VIN/source, selection order, scroll and focus.
+async function rebuildExportPreviewKeepingState(){
+ const vin=selectedVin;if(!vin||!gallery.source)return;
+ const strip=document.querySelector('.gallery-thumbs'),left=strip?.scrollLeft||0,top=strip?.scrollTop||0,label=document.activeElement?.getAttribute?.('aria-label'),index=gallery.index;
+ try{await persistPhotoSelection();}catch{return;}
+ await toggleExportPreview();
+ if(selectedVin!==vin)return;
+ gallery.index=Math.min(index,Math.max(0,exportPreview.photos.length-1));renderDetail();
+ const again=document.querySelector('.gallery-thumbs');if(again){again.scrollLeft=left;again.scrollTop=top;}
+ if(label)document.querySelector(`[aria-label="${CSS.escape(label)}"]`)?.focus({preventScroll:true});
+}
 async function requestPhotoDownloads(){
  try{
   const result=await api('/api/photos/download',{vin:selectedVin,source:gallery.source,force:true});
@@ -977,15 +991,15 @@ async function requestPhotoDownloads(){
 }
 const photoExportsInProgress=new Set();
 async function downloadPhotoZip(targetVin,sourceChoice){
- if(photoSelection.autoSort?.running&&photoSelection.vin===(targetVin||selectedVin)){notify("Photos are still being sorted. Wait a moment so the ZIP comes out Exterior → Interior.");return;}
  const vin=targetVin||selectedVin,car=state.vehicles.find(v=>v.vin===vin),source=sourceChoice||(car?.sources.toyota_used?'toyota_used':'mitsubishi_used');
 
  if(photoExportsInProgress.has(vin))return notify('Already preparing this vehicle’s photo ZIP.');
  photoExportsInProgress.add(vin);
  try{
   let response,prepare=true;
+  if(selectionActive()&&photoSelection.vin===vin&&photoSelection.source===source)await persistPhotoSelection();   // a failed save aborts: no ZIP claiming the order was saved
   const selection=selectionActive()&&photoSelection.vin===vin&&photoSelection.source===source?orderedPhotoKeys():undefined;
-  if(selection!==undefined){await persistPhotoSelection();if(!selection.length||selection.length>photoSelection.limit)throw Error('Check photo selection and limit');}
+  if(selection!==undefined){if(!selection.length||selection.length>photoSelection.limit)throw Error('Check photo selection and limit');}
   const deadline=Date.now()+300000;
   while(Date.now()<deadline){
    response=await fetch('/api/photos/export',{method:'POST',headers:{'Content-Type':'application/json','X-SalesmanHub-Token':csrf},
@@ -1250,7 +1264,7 @@ async function onDetailAction(action){
  if(action==='retry-photo-selection'){const p=exportPreview;try{await loadPhotoSelection(p);}catch(e){if(exportPreview===p)photoSelection.error=String(e.message||e);}if(exportPreview===p)renderDetail();return;}
  if(action==='open-photo-folder'){try{await api('/api/photos/open-folder',{vin:selectedVin});}catch(e){notify(e.message,true)}return;}
  if(action==='download-photo-zip')return downloadPhotoZip(selectedVin,exportPreview.actualSource||gallery.source);
- if(action==='gallery-prev'||action==='gallery-next'){const total=exportPreview.photos.length;if(!total)return;const order=photoDisplayOrder(exportPreview.photos),at=Math.max(0,order.indexOf(gallery.index));gallery.index=order[(at+(action==='gallery-prev'?-1:1)+total)%total];renderDetail();return;}
+ if(action==='gallery-prev'||action==='gallery-next'){const total=exportPreview.photos.length;if(!total)return;gallery.index=(gallery.index+(action==='gallery-prev'?-1:1)+total)%total;renderDetail();return;}
  if(action==='open-facebook'){
   if($('draft-title')?.value.trim()!==r.draft?.title||$('draft-description')?.value.trim()!==r.draft?.description){
    $('draft-description')?.scrollIntoView({block:'center'});
@@ -1932,7 +1946,9 @@ function installHandlers(){installDealerScanControls();document.querySelectorAll
       resetExportPreview();void toggleExportPreview();return;
     }
     if(exportPreview.failed.has(idx))exportPreview.failed.delete(idx);
-    gallery.index=idx;renderDetail();
+    gallery.index=idx;
+    const frame=exportPreview.photos[idx];
+    if(!thumb.hasAttribute('data-preview-only')&&frame&&selectionActive())togglePhotoKey(exportFrameKey(frame));else renderDetail();
     if(exportPreview.revision&&!exportPreview.urls.has(idx))void loadExportPreviewFrame(idx);
     return;}
  const photoExport=e.target.closest('[data-photos-vin]');if(photoExport){e.preventDefault();e.stopPropagation();void downloadPhotoZip(photoExport.dataset.photosVin);return;}
