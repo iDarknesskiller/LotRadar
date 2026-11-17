@@ -9,6 +9,11 @@ def run(*args, cwd=None):
     return subprocess.run(list(args), cwd=cwd, capture_output=True, text=True)
 
 
+import re
+# an 'exit' statement (PowerShell is case-insensitive), but not a hashtable key / property such as 'Exit = $code'
+EXIT_STMT = re.compile(r'(?im)(?:^|[;{])\s*exit\b(?!\s*=)')
+
+
 class QAKit(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -134,7 +139,7 @@ class QAKit(unittest.TestCase):
         import re
         od = self.read('tools/LotRadarQA.OneDrive.ps1').decode('ascii')
         code = '\n'.join(l for l in od.splitlines() if not l.lstrip().startswith('#'))
-        self.assertIsNone(re.search(r'(?im)^\s*exit\b|[;{]\s*exit\b', code), 'module must not call exit')
+        self.assertIsNone(EXIT_STMT.search(code), 'module must not call exit')
         self.assertNotIn('Stop-Kit', code)
         self.assertIn('$script:OneDriveExit', code)
         runner = self.read('tools/Run-QAKit.ps1').decode('ascii')
