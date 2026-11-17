@@ -4,7 +4,7 @@
 **From:** ChatGPT — LotRadar Chief Architect  
 **Task:** Windows startup status window, separate from logo PR #4/photo-gallery PR #3  
 **Repository:** https://github.com/iDarknesskiller/LotRadar  
-**Approved `main` (at inspection):** `b9e843111ce1ed39f7d4003dd39c06eb75724325`  
+**Latest approved `main` (reverified 2026-11-17):** `bf61207a21999c8ff256b08c0d17650193e3835f` (PR #3 and PR #4 merged; PR #5 must integrate this baseline)  
 **Branch:** `feat/windows-startup-status-window`  
 **PR:** new draft PR, no merge authorized
 
@@ -121,3 +121,42 @@ At the time of this instruction, PR #5 HEAD `db1c82b6959a7f7f1baf79060bc264d784c
 - Do not confuse a baseline installer test on approved main with post-implementation PR #5 GUI acceptance. Any package whose manifest does not match tested HEAD must be identified as a different build.
 - Risks: Windows 11 PowerShell/Developer Mode differences, symlink privilege restrictions, reparse-point traversal, shortcut restoration, port conflict, first-run downloads, sandbox cleanup, GUI focus/high-DPI, launcher lock lifetime and inadvertent live-data modification. Treat private data and branding as protected.
 - Do not alter unrelated source or merge PR #5 into `main`. Owner authority remains required.
+
+
+## Addendum: Owner has no installer or development environment at home (2026-11-17)
+
+### Request
+The Project Owner says **nothing is installed on the home Windows PC** and wants Claude to deliver everything necessary for Windows 11 and R3 testing. The Owner must **not** be asked to clone the repository, manually build a ZIP, install Python/Node/Git/Chrome, copy PowerShell scripts, enable symlinks, or guess file paths. This supersedes the previous instruction that assumed an installer ZIP and a checked-out repo were already present. Windows 11 is **not yet verified** until the generated test report confirms the OS/build.
+
+### Current behavior and gap
+- PR #5 remains **documentation-only** at baseline commit \`4a15f9a238e6282f1b6ffe15d4df3e75df109f1e\`. It does not yet contain a built custom Windows startup UI.
+- Approved \`main\`: \`bf61207a21999c8ff256b08c0d17650193e3835f\`.
+- \`scripts/build_installer.py build --mode development\` can produce an installer ZIP without private branding, marking it DEV / DEV-NOBRANDING; **this can validate installer security but is not a production branding or startup-window acceptance build**.
+- \`tests/windows/Test-LotRadarInstaller.ps1\` expects a valid \`-PackageZip\`, uses Windows PowerShell 5.1, and protects the real profile with redirected temporary \`LOCALAPPDATA\` and \`APPDATA\`. It also temporarily manipulates the **real Desktop LotRadar.lnk** and restores it at finish.
+- R3 creates a temporary file symlink and tests that installation rejects it. On machines where Windows policy blocks \`mklink\`, R3 reports **SKIP**; **SKIP cannot be called PASS**. Current R3 only checks a nonzero installer result; improve test assertion to require an explicit \`link\` or \`reparse\` refusal reason so a coincidental checksum failure is not mistaken for a security PASS.
+- \`-FullLaunch\` provisions Python/Chromium under temporary test paths; this is not a requirement that the Owner first install them. It needs internet on first run, and any temporary downloads/runtime must be disclosed to the Owner.
+
+### Implementation plan — Claude owns preparation end to end
+1. Verify the active branch, approved main and current tree, and **integrate approved \`main\` before building or changing startup code**. Do not merge PR #5 into main.
+2. Prepare a **private, owner-facing Windows 11 QA test kit** from an exact known commit. Suggested delivery: a ZIP named \`LotRadar-Win11-R3-QA-<shortsha>.zip\` containing:
+   - a tested **development** LotRadar installer ZIP and manifest, with \`build_type=development\`, \`source_commit\` and SHA-256 clearly labeled; no claims that missing private assets constitute a final production release;
+   - a tested copy of \`tests/windows/Test-LotRadarInstaller.ps1\` and any explicitly required test-only helpers;
+   - one easy \`RUN_WINDOWS11_TESTS.cmd\` launcher (or an equivalently simple bundled launcher) that uses built-in \`powershell.exe\`, resolves package paths **relative to its own folder**, runs the harness, preserves exit codes, and clearly reports where logs are saved;
+   - a plain-language \`START_HERE.txt\` explaining actions, temporary Desktop shortcut handling, internet needs, Developer Mode requirement for R3 if applicable, expected result, and how to send **only** sanitized log/JSON evidence.
+   - checksum manifest for the kit and embedded installer ZIP so file integrity and exact source provenance can be checked before running.
+3. **Do not send an installer alone** and then tell the Owner to locate source scripts. The test kit must be self-contained for the **baseline installer/security test**, with **no Git, Python, Node, repo checkout, build tools, or administrator installation required on the Owner PC**. First-phase test must run with built-in Windows PowerShell 5.1. If the test machine lacks required Windows features, explain the blocker clearly rather than silently installing system components.
+4. Keep this kit **outside public Git history**: do not upload private branding, customer data, credentials, logs, absolute home paths, or binary installer archives to the repository. Deliver the kit through a private channel with SHA-256. A link or file only counts as delivered once uploaded and verified. Do not claim a generated artifact exists until it does.
+5. Ensure launcher **preflight safety**: detect OS name/build and privilege level; refuse elevation; reject unexpected package manifest hash/source SHA, missing files, occupied 127.0.0.1:8765, or a desktop shortcut that cannot be safely backed up/restored. Use only test sandbox paths. State upfront that Desktop \`LotRadar.lnk\` may be temporarily replaced (not silently); provide instructions to close LotRadar even if none installed. Do not launch a real Facebook session or touch installed data.
+6. **R3 hardening**: in the **feature branch test harness only**, require evidence that symlink was actually created; installer error explicitly identifies a link/reparse refusal; outside target file and sentinel remain byte-identical; program/data unaffected. If file-symlink creation is blocked by Windows permissions, report \`R3 SKIP\`, not PASS, and offer the Owner a choice to enable Windows Developer Mode (not administrator mode). Do not attempt privilege escalation or weaken installer protection.
+7. First-pass on home PC: run the easy launcher without \`-FullLaunch\`, collect OS/build, PASS/FAIL/SKIP and R3 details. **Only after baseline safety passes** offer a separate, explicitly labeled \`RUN_FULL_LAUNCH_TESTS.cmd\` which may download temporary Python/Chromium, exercise launcher/server lifecycle and then clean up. Do not silently turn on \`-FullLaunch\`.
+8. After Claude actually implements the startup window for PR #5, build a **new** manifest-verified test kit and rerun Windows 11 and R3 plus actual native startup window, quick relaunch, retry/offline behavior, installer lock/contention, keyboard/high DPI/close behavior, and exact one-server lifetime. **Baseline installer evidence cannot certify PR #5's not-yet-written GUI.**
+9. Claude returns \`CLAUDE_WINDOWS11_R3_HANDOFF.md\` listing package and kit SHA-256, manifest build type/source SHA, actual Windows 11 OS/build, privileges/PS 5.1, the exact command and exit code, R3 error/sentinel evidence, full PASS/FAIL/SKIP summary, shortcut restoration confirmation, temporary downloads, screenshot evidence where appropriate, and remaining limits. Send those to Gemini for independent review, then the Chief Architect.
+
+### Acceptance criteria and protected systems
+- The Owner's initial task is **only** download private kit, extract to a normal local folder, review \`START_HERE.txt\`, double-click \`RUN_WINDOWS11_TESTS.cmd\`, and return the resulting sanitized log/JSON. No coding or separate dependency installs.
+- The kit itself builds/verifies on Claude's development environment, and launches test harness correctly on a **clean Windows 11 standard-user** system using only OS-bundled features.
+- \`R3 PASS\` requires successful symlink creation and refusal **specifically because it is a reparse point**, not simply a nonzero exit code; unchanged outside target and zero production-data impact. Otherwise retain the proper FAIL/SKIP result.
+- Startup UI acceptance remains **blocked until actual PR #5 production code exists and Windows 11 GUI tests run on a candidate package that names that exact commit**.
+- Protect user inventory, photos, SQLite, selection JSON, Facebook drafts, 190px logo, existing installer rollback and launch locks. Changes to unrelated application files are prohibited.
+- Risks: absolute paths in scripts, ambiguous kit provenance, package tampering, Windows symlink privileges, Desktop shortcut restore failure, port conflict, transient downloads, temporary workspace cleanup, and false confidence from testing an older baseline.
+- Git: continue \`feat/windows-startup-status-window\`, update the existing draft PR #5; no merge to \`main\` without explicit Project Owner approval.
