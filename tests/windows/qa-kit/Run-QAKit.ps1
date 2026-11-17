@@ -182,7 +182,11 @@ foreach ($scriptFile in $toParse) {
 }
 
 # ---- OneDrive mode: separate, consented flow (it writes its own summary and exits)
-if ($OneDrive) { . (Join-Path $PSScriptRoot 'LotRadarQA.OneDrive.ps1') }
+if ($OneDrive) {
+    $script:OneDriveExit = 1   # stays 1 unless the OneDrive module finishes and reports success
+    . (Join-Path $PSScriptRoot 'LotRadarQA.OneDrive.ps1')
+    exit $script:OneDriveExit  # never fall through into the normal test flow
+}
 
 # ---- 8. optional full launch needs explicit consent
 if ($FullLaunch) {

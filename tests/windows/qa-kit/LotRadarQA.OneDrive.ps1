@@ -42,7 +42,7 @@ namespace LotRadarQA {
 }
 '@
 try { if (-not ('LotRadarQA.PathInfo' -as [type])) { Add-Type -TypeDefinition $pathInfoSource } }
-catch { Stop-Kit ('Could not load the path-checking helper (Add-Type): ' + $_.Exception.Message) 4 }
+catch { Say ('Could not load the path-checking helper (Add-Type): ' + $_.Exception.Message) 'Red'; $script:OneDriveExit = 4; return }
 
 function Get-Kind([string]$Path) {
     $t = [LotRadarQA.PathInfo]::Tag($Path)
@@ -337,5 +337,7 @@ Say ''
 Say ('Results are in this LOCAL folder (not in OneDrive): ' + (Protect-Text $resultsDir)) 'Green'
 Say 'Send back ONLY: SUMMARY.txt and the SANITIZED-... files. Do not send the shortcut-backup folder or the other files.' 'Green'
 try { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $resultsDir + '"') } catch { }
-if ($failures -gt 0) { exit 1 }
-exit 0
+# NOTE: this file is dot-sourced; 'exit' here would only end this file and the caller would carry on.
+# Hand the result back instead; Run-QAKit.ps1 exits with it immediately.
+if ($failures -gt 0) { $script:OneDriveExit = 1 } else { $script:OneDriveExit = 0 }
+return

@@ -128,6 +128,19 @@ class QAKit(unittest.TestCase):
         for banned in ('attrib ', '+U', '-P ', 'Set-ItemProperty', 'Remove-Item -LiteralPath $realData', 'Move-Item'):
             self.assertNotIn(banned, od)
 
+    def test_onedrive_module_never_exits_and_runner_stops_after_it(self):
+        # Regression (Windows 11 run 2026-11-17): 'exit' inside the dot-sourced module only ended the module, so the
+        # runner fell through into a normal run, overwrote the OneDrive SUMMARY.txt and returned that run's exit code.
+        import re
+        od = self.read('tools/LotRadarQA.OneDrive.ps1').decode('ascii')
+        code = '\n'.join(l for l in od.splitlines() if not l.lstrip().startswith('#'))
+        self.assertIsNone(re.search(r'(?im)^\s*exit\b|[;{]\s*exit\b', code), 'module must not call exit')
+        self.assertNotIn('Stop-Kit', code)
+        self.assertIn('$script:OneDriveExit', code)
+        runner = self.read('tools/Run-QAKit.ps1').decode('ascii')
+        i = runner.index(". (Join-Path $PSScriptRoot 'LotRadarQA.OneDrive.ps1')")
+        self.assertIn('exit $script:OneDriveExit', runner[i:i + 200])
+
     def test_harness_extract_to_and_outdir(self):
         text = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
         for needle in ("[string]$ExtractTo = ''", "[string]$OutDir = ''", "Add-Result 'OD0'", "Invoke-Test 'OD1'",
