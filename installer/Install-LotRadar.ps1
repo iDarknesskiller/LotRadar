@@ -19,6 +19,15 @@ function Test-UnsafeLink([string]$Path) {
     return [bool]$item.PSIsContainer
 }
 
+# Zero-touch DESTINATION preflight helper. GetFileAttributes describes the entry itself (a link is not followed),
+# so a dangling junction is still seen. A missing entry is fine; any other error is not caught (fails closed).
+function Test-ReparseEntryAt([string]$Path) {
+    try { $a = [IO.File]::GetAttributes($Path) }
+    catch [IO.FileNotFoundException] { return $false }
+    catch [IO.DirectoryNotFoundException] { return $false }
+    return (($a -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+}
+
 # Exact reparse tag via GetFileInformationByHandleEx(FileAttributeTagInfo). The entry itself is opened
 # (FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES only): a link is never followed and a cloud
 # placeholder is never hydrated. Compiled in memory on first use only (no download, no elevation).
@@ -110,6 +119,14 @@ try {
     $userRoot = Join-Path $env:LOCALAPPDATA 'MarketplaceScanner'
     $runtimeDir = Join-Path $userRoot 'runtime'
     $backupRoot = Join-Path $userRoot 'ProgramBackups'
+    # Zero-touch preflight: nothing (runtime folder, lock files, backups) may be created through a link. Every per-user
+    # destination folder that already exists must be a real folder BEFORE the runtime folder and locks are created.
+    # The full destination check below still runs again while the locks are held (lock order unchanged).
+    foreach ($guarded in @($parentDir, $program, $userRoot, $runtimeDir, $backupRoot)) {
+        if (Test-ReparseEntryAt $guarded) {
+            throw ('Refusing to install: ' + $guarded + ' is a link/reparse point (junction/symlink). Use a normal folder.')
+        }
+    }
     New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
     # Prevent two installers from racing without touching program data.
     try {

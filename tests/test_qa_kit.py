@@ -172,6 +172,18 @@ class QAKit(unittest.TestCase):
         self.assertIn('finally { $env:LOCALAPPDATA = $local }', od2)   # sandbox env always restored
         self.assertIn("return ('BLOCKED:", od2)                         # never a PASS without a real cloud tag
 
+    def test_destination_preflight_harness_cases(self):
+        text = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
+        for tid, var in (("'R7'", 'New-Junction $userRoot $sent'), ("'R8'", 'New-Junction $runtimeDir $sent')):
+            seg = text[text.index('Invoke-Test ' + tid):]
+            seg = seg[:seg.index('Invoke-Test ', 10)]
+            self.assertIn(var, seg)
+            self.assertIn('Assert-SentinelIntact $sent', seg)   # nothing created through the link
+            self.assertIn('Assert-Unchanged $good', seg)
+            self.assertIn('Move-Item -LiteralPath $saved -Destination', seg)  # sandbox restored in finally
+        od2 = text[text.index("Invoke-Test 'OD2'"):text.index("Add-Result 'OD3'")]
+        self.assertIn("(Join-Path $odLocal 'MarketplaceScanner')", od2)
+
     def test_onedrive_pass_requires_cloud_tag_and_destination_refusal(self):
         od = self.read('tools/LotRadarQA.OneDrive.ps1').decode('ascii')
         self.assertIn("$od.Exit -eq 0 -and ($od0 -match 'dir:cloud') -and ($od2 -like 'PASS*')", od)

@@ -86,7 +86,9 @@ folder and run it again.
    program if the swap fails. Shortcuts are created on the Desktop and Start menu.
    The installer refuses (nothing is changed) if the package payload, `Programs\MarketplaceScanner` or
    `ProgramBackups` is a junction, symlink or other reparse-point folder, or if any payload path resolves outside the
-   package folder. If the package sits in a OneDrive or other cloud/redirected folder and is refused, copy the extracted package to a
+   package folder. In the PR #5 candidate this check also covers `Programs`, `%LOCALAPPDATA%\MarketplaceScanner` and
+   its `runtime` folder, and runs before the runtime folder and lock files are created, so nothing is written through
+   a link. (`%LOCALAPPDATA%` itself is not checked.) If the package sits in a OneDrive or other cloud/redirected folder and is refused, copy the extracted package to a
    normal local folder (for example `C:\LotRadarInstall`) and run it again.
    If anything fails after the swap, the previous program folder is restored (the failed copy is kept as
    `ProgramBackups\Failed-install-*`); on a first install with no previous program, the failed copy is moved there

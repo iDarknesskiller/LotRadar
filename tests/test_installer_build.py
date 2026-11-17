@@ -444,6 +444,29 @@ class TestInstallerHardeningStatic(unittest.TestCase):
         # fail closed: a failed tag read throws with an actionable message
         self.assertIn('Could not check a link/reparse point inside the installer package', t)
 
+    def test_zero_touch_destination_preflight(self):
+        # Architect b150a4d step 3: no runtime folder / lock file / backup may be created through a link.
+        t = self.text
+        self.assertIn('function Test-ReparseEntryAt', t)
+        body = t[t.index('function Test-ReparseEntryAt'):t.index('# Exact reparse tag via')]
+        self.assertIn('[IO.File]::GetAttributes($Path)', body)           # describes the entry itself (dangling links too)
+        self.assertIn('catch [IO.FileNotFoundException] { return $false }', body)
+        self.assertIn('catch [IO.DirectoryNotFoundException] { return $false }', body)
+        self.assertNotIn('catch {', body)                                  # any other error fails closed
+        self.assertNotIn('IsCloud', body)                                  # no cloud allowance for destinations
+        pre = t.index('foreach ($guarded in @($parentDir, $program, $userRoot, $runtimeDir, $backupRoot))')
+        first_create = t.index('New-Item -ItemType Directory -Path $runtimeDir -Force')
+        self.assertLess(pre, first_create)
+        self.assertLess(first_create, t.index('lotradar-install.lock'))
+        self.assertIn('if (Test-ReparseEntryAt $guarded)', t[pre:first_create])
+        # nothing is created before the preflight
+        self.assertNotIn('New-Item', t[t.index('$parentDir = Join-Path $env:LOCALAPPDATA'):pre])
+        self.assertNotIn('[IO.File]::Open', t[:pre])
+        # the original under-lock destination check is kept unchanged
+        self.assertIn('foreach ($guarded in @($parentDir, $program, $backupRoot)) {\r\n        if ((Test-Path -LiteralPath $guarded) -and (Test-UnsafeLink $guarded))', t)
+        self.assertNotIn('Test-UnsafeSourceEntry $userRoot', t)
+        self.assertNotIn('Test-UnsafeSourceEntry $runtimeDir', t)
+
     def test_containment_uses_directory_boundary(self):
         self.assertIn("StartsWith($payloadFull + '\\', [StringComparison]::OrdinalIgnoreCase)", self.text)
 

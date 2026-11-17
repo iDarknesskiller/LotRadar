@@ -697,6 +697,37 @@ try {
         Assert-Unchanged $good 'payload directory symlink'
         return ('payload folder=' + $parent + '; refused')
     }
+    # Zero-touch destination preflight: before b150a4d-step-3 the installer created runtime\ and both lock files
+    # THROUGH such a link before any check (and never checked these two folders at all).
+    Invoke-Test 'R7' 'Per-user MarketplaceScanner folder is a junction: refused before runtime/locks/backups are created; target untouched' {
+        $sent = New-Sentinel 'r7'
+        $saved = Join-Path $root 'r7-saved-userroot'
+        Move-Item -LiteralPath $userRoot -Destination $saved
+        try {
+            New-Junction $userRoot $sent
+            $r = Invoke-Installer $pkgDir
+        } finally { Remove-Junction $userRoot; Move-Item -LiteralPath $saved -Destination $userRoot }
+        Assert-True ($r.Code -ne 0) ('installer accepted a junction as the per-user folder: ' + $r.Output)
+        Assert-True ($r.Output -match '(?s)Local\\MarketplaceScanner\s+is\s+a\s+link/reparse\s+point') ('not refused by the preflight: ' + $r.Output)
+        Assert-SentinelIntact $sent 'r7'   # no runtime folder, no lock files, no ProgramBackups in the junction target
+        Assert-Unchanged $good 'per-user folder junction'
+        return 'refused; junction target still holds only its sentinel (no runtime, locks or backups created through it)'
+    }
+    Invoke-Test 'R8' 'runtime folder is a junction: refused before any lock file is created; target untouched' {
+        $sent = New-Sentinel 'r8'
+        $saved = Join-Path $root 'r8-saved-runtime'
+        $hadRuntime = Test-Path -LiteralPath $runtimeDir
+        if ($hadRuntime) { Move-Item -LiteralPath $runtimeDir -Destination $saved }
+        try {
+            New-Junction $runtimeDir $sent
+            $r = Invoke-Installer $pkgDir
+        } finally { Remove-Junction $runtimeDir; if ($hadRuntime) { Move-Item -LiteralPath $saved -Destination $runtimeDir } }
+        Assert-True ($r.Code -ne 0) ('installer accepted a junction as the runtime folder: ' + $r.Output)
+        Assert-True ($r.Output -match '(?s)runtime\s+is\s+a\s+link/reparse\s+point') ('not refused by the preflight: ' + $r.Output)
+        Assert-SentinelIntact $sent 'r8'   # no lotradar-install.lock / marketplace-launch.lock in the junction target
+        Assert-Unchanged $good 'runtime junction'
+        return 'refused; no lock file created through the junction'
+    }
     if ($ExtractTo) {
         Invoke-Test 'OD2' 'Cloud-tagged DESTINATION (Programs under OneDrive) is still refused; nothing installed there' {
             $odLocal = Join-Path $ExtractTo 'dest-localappdata'
@@ -710,8 +741,10 @@ try {
             Assert-True ($r.Output -match '(?s)Programs\s+is a link/reparse point\s+\(junction/symlink\)') ('not refused by the destination guard: ' + $r.Output)
             Assert-True (-not (Test-Path -LiteralPath (Join-Path $odPrograms 'MarketplaceScanner'))) 'a program folder was created in the cloud destination'
             Assert-True (@(Get-ChildItem -LiteralPath $odPrograms -Force | Where-Object { $_.Name -like '.MarketplaceScanner-stage-*' }).Count -eq 0) 'a staging folder was created in the cloud destination'
+            # zero-touch: the preflight refuses before the per-user runtime folder and lock files are created
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $odLocal 'MarketplaceScanner'))) 'runtime/lock files were created in the cloud destination before the refusal'
             Assert-Unchanged $good 'cloud destination'
-            return ('destination Programs tag=' + (Get-ReparseTagHex $odPrograms) + '; refused by destination guard; nothing created')
+            return ('destination Programs tag=' + (Get-ReparseTagHex $odPrograms) + '; refused by the preflight; nothing created (no program, staging, runtime or lock files)')
         }
         $r1 = @($script:Results | Where-Object { $_.Id -eq 'R1' }) | Select-Object -First 1
         $r3 = @($script:Results | Where-Object { $_.Id -eq 'R3' }) | Select-Object -First 1
