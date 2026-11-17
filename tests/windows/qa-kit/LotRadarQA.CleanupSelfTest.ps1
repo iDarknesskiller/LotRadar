@@ -305,8 +305,10 @@ try {
     }
     Invoke-CL 'CL14' 'Unfamiliar same-name Desktop shortcut (another target): untouched, not saved' {
         $f = New-Fixture 'CL14'
-        $other = Join-Path $f.Out 'other-app.cmd'
-        [IO.File]::WriteAllText($other, '@echo other', $enc)
+        # A target OUTSIDE every test folder (the fixture container itself is named "LotRadar Test Sandbox <id>",
+        # so a target inside it is, correctly, treated as an unrecorded test sandbox: Windows run 2026-11-17).
+        # Only the shortcut points at it; the program itself is never run or touched.
+        $other = Join-Path $env:SystemRoot 'System32\notepad.exe'
         New-Lnk $f.Desk $other
         $deskSha = Get-Sha $f.Desk
         $r = Invoke-Repair $f @('D')
