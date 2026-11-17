@@ -26,7 +26,9 @@ class TestStartupWindow(unittest.TestCase):
         # it starts only the existing launcher, on its console path, with the nonce
         self.assertIn("$env:LOTRADAR_STARTUP_GUI = '0'", c)
         self.assertIn('$env:LOTRADAR_STARTUP_NONCE = $script:Nonce', c)
-        self.assertEqual(len(re.findall(r'Start-Process -FilePath (\$conhost|\'cmd\.exe\')', c)), 2)
+        self.assertEqual(len(re.findall(r'Start-Process ', c)), 1)
+        self.assertIn("Start-Process -FilePath $comSpec -ArgumentList ('/d /c \"\"' + $launcher + '\"\"')", c)
+        self.assertNotIn('conhost.exe', c)   # Windows 11 run of 05a17dd: direct conhost launch never ran the launcher
 
     def test_ready_needs_event_and_health(self):
         c = self.code

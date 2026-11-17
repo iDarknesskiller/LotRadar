@@ -56,6 +56,8 @@ namespace LotRadarStartup {
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("kernel32.dll")] public static extern bool AttachConsole(uint pid);
+    [DllImport("kernel32.dll")] public static extern bool FreeConsole();
   }
 }
 '@
@@ -281,14 +283,11 @@ function Start-Attempt {
     $env:LOTRADAR_STARTUP_GUI = '0'
     $env:LOTRADAR_STARTUP_NONCE = $script:Nonce
     Remove-Item Env:\LOTRADAR_NO_PAUSE -ErrorAction SilentlyContinue   # keep the failure output on screen for "Show console"
-    $cmdLine = 'cmd.exe /d /c ""' + $launcher + '""'
-    $conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
-    if (Test-Path -LiteralPath $conhost -PathType Leaf) {
-        # classic console window: predictable minimize/restore (not handed to another terminal app)
-        $script:Console = Start-Process -FilePath $conhost -ArgumentList $cmdLine -WorkingDirectory $programDir -WindowStyle Minimized -PassThru
-    } else {
-        $script:Console = Start-Process -FilePath 'cmd.exe' -ArgumentList ('/d /c ""' + $launcher + '""') -WorkingDirectory $programDir -WindowStyle Minimized -PassThru
-    }
+    # Plain cmd.exe in its own new console (Windows decides the console host, as for a normal double-click).
+    # Windows 11 run of 05a17dd: launching conhost.exe directly never ran the launcher (no events at all).
+    $comSpec = $env:ComSpec
+    if (-not $comSpec -or -not (Test-Path -LiteralPath $comSpec -PathType Leaf)) { $comSpec = Join-Path $env:SystemRoot 'System32\cmd.exe' }
+    $script:Console = Start-Process -FilePath $comSpec -ArgumentList ('/d /c ""' + $launcher + '""') -WorkingDirectory $programDir -WindowStyle Minimized -PassThru
     $null = $script:Console.Handle   # PS 5.1: keep the handle so HasExited/ExitCode stay readable
     Update-Details
 }
@@ -430,10 +429,14 @@ function Close-FailedConsole {
 }
 function Show-ConsoleWindow {
     if (-not $native -or -not $script:Console -or (Test-ProcessExited $script:Console)) { return }
+    # The console window belongs to the console host, not to cmd.exe: briefly attach to cmd's console to get it.
     try {
-        $script:Console.Refresh()
-        $h = $script:Console.MainWindowHandle
-        if ($h -ne [IntPtr]::Zero) { [void][LotRadarStartup.Native]::ShowWindow($h, 9); [void][LotRadarStartup.Native]::SetForegroundWindow($h) }
+        [void][LotRadarStartup.Native]::FreeConsole()
+        if ([LotRadarStartup.Native]::AttachConsole([uint32]$script:Console.Id)) {
+            $h = [LotRadarStartup.Native]::GetConsoleWindow()
+            [void][LotRadarStartup.Native]::FreeConsole()
+            if ($h -ne [IntPtr]::Zero) { [void][LotRadarStartup.Native]::ShowWindow($h, 9); [void][LotRadarStartup.Native]::SetForegroundWindow($h) }
+        }
     } catch { }
 }
 
@@ -458,7 +461,11 @@ $timer.Add_Tick({
                 if ($script:Mode -eq 'running' -and -not $script:OpenComplete) { Set-Failed '' 'The startup script stopped before LotRadar was ready. Show console for the full output.' }
             } elseif ($script:BootPid -eq 0 -and (Test-ProcessExited $script:Console)) {
                 Read-NewEvents
-                if ($script:Mode -eq 'running' -and $script:BootPid -eq 0) { Set-Failed 'install' 'The startup window of this attempt closed before LotRadar reported any progress.' }
+                if ($script:Mode -eq 'running' -and $script:BootPid -eq 0) {
+                    $code = '?'
+                    try { $code = [string]$script:Console.ExitCode } catch { }
+                    Set-Failed 'install' ('The startup window of this attempt closed before LotRadar reported any progress (exit code ' + $code + ').')
+                }
             } elseif (($now - $script:LastEventAt).TotalMinutes -ge 10) {
                 $status.Text = 'Still working (no new step for ' + (Format-Elapsed ($now - $script:LastEventAt)) + '). Downloads can be slow; Show console to watch it.'
             }
@@ -532,7 +539,9 @@ try {
     if ($ResultFile) {
         try {
             $evList = @($script:Events | ForEach-Object { $_.Stage + ':' + $_.State })
-            [IO.File]::WriteAllText($ResultFile, (@{ exit = $script:ExitCode; mode = $script:Mode; reason = $script:FailReason; events = $evList; health = $script:HealthOk; tick_error = [string]$script:LastTickError } | ConvertTo-Json -Compress), $utf8)
+            $consoleExit = $null
+            try { if ($script:Console -and $script:Console.HasExited) { $consoleExit = $script:Console.ExitCode } } catch { }
+            [IO.File]::WriteAllText($ResultFile, (@{ exit = $script:ExitCode; mode = $script:Mode; reason = $script:FailReason; events = $evList; health = $script:HealthOk; tick_error = [string]$script:LastTickError; console_exit = $consoleExit; boot_pid = $script:BootPid } | ConvertTo-Json -Compress), $utf8)
         } catch { }
     }
 }

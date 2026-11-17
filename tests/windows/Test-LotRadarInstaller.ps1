@@ -1024,15 +1024,17 @@ try {
         [IO.File]::WriteAllText($gStub, ($emit + 'E ''open'' ''started'' ''forged'' $env:LOTRADAR_STARTUP_NONCE; E ''open'' ''complete'' ''forged'' $env:LOTRADAR_STARTUP_NONCE; exit 0'), [Text.Encoding]::ASCII)
         try { $w = Invoke-StartupWindow $gGui 90 } finally { Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null } }
         Assert-True ($w.Exit -eq 91 -and $w.Result.mode -eq 'failed') ('forged ready accepted: ' + ($w.Result | ConvertTo-Json -Compress))
+        Assert-True (@($w.Result.events) -contains 'open:complete') ('the stub never reported (test did not exercise the forged event): ' + ($w.Result | ConvertTo-Json -Compress))
+        Assert-True ($w.Result.reason -like '*did not answer*') ('failed for another reason: ' + $w.Result.reason)
         Assert-True ($w.Result.health -ne $true) 'health reported OK with no server'
         return ('exit 91; ' + $w.Result.reason)
     }
-    Invoke-Test 'G5' 'Window: events with another nonce are ignored (no progress, then a clear failure)' {
-        [IO.File]::WriteAllText($gStub, ($emit + 'E ''open'' ''complete'' ''wrong nonce'' (''f'' * 32); exit 0'), [Text.Encoding]::ASCII)
+    Invoke-Test 'G5' 'Window: an event with another nonce is ignored (only the valid event counts), then a clear failure' {
+        [IO.File]::WriteAllText($gStub, ($emit + 'E ''install'' ''started'' ''stub'' $env:LOTRADAR_STARTUP_NONCE; E ''open'' ''complete'' ''wrong nonce'' (''f'' * 32); exit 0'), [Text.Encoding]::ASCII)
         try { $w = Invoke-StartupWindow $gGui 90 } finally { Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null } }
         Assert-True ($w.Exit -eq 91 -and $w.Result.mode -eq 'failed') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
-        Assert-True (@($w.Result.events).Count -eq 0) ('foreign events were accepted: ' + (@($w.Result.events) -join ', '))
-        return ('exit 91; 0 events accepted; ' + $w.Result.reason)
+        Assert-True ((@($w.Result.events) -join ',') -eq 'install:started') ('expected only the valid event install:started, got: ' + (@($w.Result.events) -join ', '))
+        return ('exit 91; only the valid-nonce event accepted; foreign open:complete ignored; ' + $w.Result.reason)
     }
 
     # ---- optional: real bootstrap in the sandbox

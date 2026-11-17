@@ -8,7 +8,7 @@ WHAT THIS IS
 This kit checks that the LotRadar installer works safely on this PC and that it refuses a
 booby-trapped package (the "R3 symlink" security test). It is a TEST ONLY. It does NOT install
 LotRadar for real, does NOT read or change any real LotRadar data, and does NOT post anything.
-It is not the new startup window. That will come in a later kit.
+It also tests the new LotRadar startup window (small windows appear and close by themselves).
 
 YOU DO NOT NEED TO INSTALL ANYTHING
 Everything it needs is already part of Windows (Windows PowerShell). No Python, Git, Node or
