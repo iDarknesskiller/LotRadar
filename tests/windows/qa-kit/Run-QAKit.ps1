@@ -10,12 +10,19 @@
   Exit codes: 0 all tests passed (SKIPs allowed) | 1 a test failed | 2 kit not extracted / wrong place
   3 running as administrator | 4 kit files missing or altered | 5 port 8765 busy | 6 Desktop shortcut
   could not be backed up | 7 harness parse error | 8 wrong PowerShell | 9 cancelled | 10 shortcut not restored
+
+  -OneDrive (RUN_ONEDRIVE_TESTS.cmd only): after the same preflight, runs tools\LotRadarQA.OneDrive.ps1
+  (local control run, read-only LOCAL_PHOTO_STORAGE check, consented OneDrive extraction run). Results go to a
+  LOCAL folder under %LOCALAPPDATA%\LotRadar QA Results, never into OneDrive.
 #>
 [CmdletBinding()]
-param([switch]$FullLaunch)
+param([switch]$FullLaunch, [switch]$OneDrive)
 $ErrorActionPreference = 'Stop'
 $kit = Split-Path -Parent $PSScriptRoot
 $resultsDir = Join-Path $kit 'RESULTS'
+if ($OneDrive) { $resultsDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ('LotRadar QA Results\OneDrive-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
+$psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$script:Redact = @()
 
 function Say([string]$Text, [string]$Color = 'Gray') { Write-Host $Text -ForegroundColor $Color }
 function Stop-Kit([string]$Text, [int]$Code) {
@@ -29,6 +36,10 @@ function Protect-Text([string]$Text) {
     # Remove the Windows user name, profile path and computer name from shared evidence.
     if ($null -eq $Text) { return '' }
     $out = $Text
+    foreach ($p in @($script:Redact)) {
+        $find = [string]$p[0]
+        if ($find.Length -ge 3) { $out = [regex]::Replace($out, [regex]::Escape($find), [string]$p[1], [Text.RegularExpressions.RegexOptions]::IgnoreCase) }
+    }
     $short = ''
     try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:USERPROFILE).ShortPath } catch { $short = '' }
     $pairs = @(
@@ -46,7 +57,27 @@ function Protect-Text([string]$Text) {
     return $out
 }
 
+function Test-ShortcutRestored {
+    # Independent of the harness: compare the Desktop shortcut with the kit's own verified backup.
+    if ($hadShortcut) {
+        if ((Test-Path -LiteralPath $desktopLnk) -and ((Get-Sha $desktopLnk) -eq $shortcutSha)) { return 'restored, byte-identical to the backup' }
+        Copy-Item -LiteralPath $shortcutBackup -Destination $desktopLnk -Force
+        if ((Get-Sha $desktopLnk) -eq $shortcutSha) { return 'harness did not restore it; the kit restored it from its backup' }
+        return 'NOT RESTORED - copy shortcut-backup\LotRadar.lnk from the results folder to your Desktop by hand'
+    }
+    if (Test-Path -LiteralPath $desktopLnk) {
+        $target = (New-Object -ComObject WScript.Shell).CreateShortcut($desktopLnk).TargetPath
+        if ($target -like '*LotRadar Test Sandbox*') {
+            Remove-Item -LiteralPath $desktopLnk -Force
+            return 'leftover TEST shortcut found and removed by the kit'
+        }
+        return 'a LotRadar.lnk now exists that does not point to the test sandbox; left untouched'
+    }
+    return 'no shortcut before; none left behind'
+}
+
 Say '=== LotRadar Windows QA test kit ===' 'Cyan'
+if ($FullLaunch -and $OneDrive) { Stop-Kit 'Full launch and OneDrive tests cannot be combined. Run them separately.' 9 }
 
 # ---- 1. kit must be extracted to a normal folder (not opened inside the ZIP viewer)
 if ($kit -like '*\AppData\Local\Temp\*' -or $kit -like '*\Temp1_*') {
@@ -137,9 +168,16 @@ if ($hadShortcut) {
 }
 
 # ---- 7. the bundled harness must parse cleanly in this PowerShell
-$tokens = $null; $errors = $null
-[void][System.Management.Automation.Language.Parser]::ParseFile($harness, [ref]$tokens, [ref]$errors)
-if (@($errors).Count -gt 0) { Stop-Kit ('The test script has parse errors: ' + ((@($errors) | ForEach-Object { 'line ' + $_.Extent.StartLineNumber + ': ' + $_.Message }) -join '; ')) 7 }
+$toParse = @($harness)
+if ($OneDrive) { $toParse += (Join-Path $PSScriptRoot 'LotRadarQA.OneDrive.ps1') }
+foreach ($scriptFile in $toParse) {
+    $tokens = $null; $errors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($scriptFile, [ref]$tokens, [ref]$errors)
+    if (@($errors).Count -gt 0) { Stop-Kit ('Test script ' + (Split-Path -Leaf $scriptFile) + ' has parse errors: ' + ((@($errors) | ForEach-Object { 'line ' + $_.Extent.StartLineNumber + ': ' + $_.Message }) -join '; ')) 7 }
+}
+
+# ---- OneDrive mode: separate, consented flow (it writes its own summary and exits)
+if ($OneDrive) { . (Join-Path $PSScriptRoot 'LotRadarQA.OneDrive.ps1') }
 
 # ---- 8. optional full launch needs explicit consent
 if ($FullLaunch) {
@@ -168,29 +206,11 @@ Say 'Running the tests now. Please do not close this window. This usually takes 
 $started = Get-Date
 $harnessArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $harness, '-PackageZip', $pkgZip)
 if ($FullLaunch) { $harnessArgs += '-FullLaunch' }
-$psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 & $psExe @harnessArgs
 $harnessExit = $LASTEXITCODE
 
 # ---- 10. shortcut check (independent of the harness)
-$shortcutStatus = 'no shortcut before; none left behind'
-if ($hadShortcut) {
-    if ((Test-Path -LiteralPath $desktopLnk) -and ((Get-Sha $desktopLnk) -eq $shortcutSha)) {
-        $shortcutStatus = 'restored, byte-identical to the backup'
-    } else {
-        Copy-Item -LiteralPath $shortcutBackup -Destination $desktopLnk -Force
-        if ((Get-Sha $desktopLnk) -eq $shortcutSha) { $shortcutStatus = 'harness did not restore it; the kit restored it from RESULTS\shortcut-backup' }
-        else { $shortcutStatus = 'NOT RESTORED - copy RESULTS\shortcut-backup\LotRadar.lnk to your Desktop by hand' }
-    }
-} elseif (Test-Path -LiteralPath $desktopLnk) {
-    $target = (New-Object -ComObject WScript.Shell).CreateShortcut($desktopLnk).TargetPath
-    if ($target -like '*LotRadar Test Sandbox*') {
-        Remove-Item -LiteralPath $desktopLnk -Force
-        $shortcutStatus = 'leftover TEST shortcut found and removed by the kit'
-    } else {
-        $shortcutStatus = 'a LotRadar.lnk now exists that does not point to the test sandbox; left untouched'
-    }
-}
+$shortcutStatus = Test-ShortcutRestored
 
 # ---- 11. sanitized copies of the evidence
 $log = Get-ChildItem -LiteralPath (Split-Path -Parent $pkgZip) -Filter 'LotRadar-WindowsTest-*.log' | Where-Object { $_.LastWriteTime -ge $started } | Sort-Object LastWriteTime | Select-Object -Last 1

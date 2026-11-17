@@ -61,6 +61,23 @@ downloads Python packages and a browser (several hundred MB, 10-30 minutes). It 
 YES first. If Python is not on this PC, LotRadar's own startup script installs Python 3.13 for
 your Windows user, and Python stays installed afterwards (you can remove it in Settings > Apps).
 
+OPTIONAL ONEDRIVE TEST (only if asked): RUN_ONEDRIVE_TESTS.cmd
+LotRadar vehicle photos and Facebook photo exports stay local; only the disposable
+installer-compatibility test fixture is placed in OneDrive.
+What it does:
+  1. Checks (read only, nothing opened or moved) where your real LotRadar keeps vehicle photos,
+     Facebook photo exports, the photo selection file and the database, and reports whether any
+     of them are inside OneDrive ("LOCAL_PHOTO_STORAGE").
+  2. Runs the normal test once with the package unpacked on this PC (local control).
+  3. Only if you type YES: creates ONE temporary folder "LotRadar QA TEST ONLY ..." in your
+     OneDrive with the synthetic test installer only (no real data, no photos), runs the test with
+     the package unpacked there, then deletes that folder. OneDrive may upload those test files
+     while it runs and keep the deleted folder in its online recycle bin for a while.
+It never changes OneDrive settings and never moves your Desktop or Documents. Your Desktop
+LotRadar shortcut is handled exactly like in the main test. Results go to a folder ON THIS PC
+(%LOCALAPPDATA%\LotRadar QA Results\...), which opens automatically at the end. Send back only
+SUMMARY.txt and the SANITIZED-... files from that folder.
+
 IF IT STOPS EARLY
 The window says "STOPPED:" and why (for example LotRadar still running, or the kit opened
 inside the ZIP). Nothing is changed in that case. Fix the reason and run it again.

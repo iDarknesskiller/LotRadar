@@ -42,8 +42,9 @@ class QAKit(unittest.TestCase):
 
     def test_layout_and_checksums(self):
         names = sorted(n[len(self.prefix):] for n in self.z.namelist())
-        for need in ('START_HERE.txt', 'RUN_WINDOWS11_TESTS.cmd', 'RUN_FULL_LAUNCH_TESTS.cmd', 'tools/Run-QAKit.ps1',
-                     'tools/Test-LotRadarInstaller.ps1', 'KIT_INFO.json', 'KIT_SHA256SUMS.txt'):
+        for need in ('START_HERE.txt', 'RUN_WINDOWS11_TESTS.cmd', 'RUN_FULL_LAUNCH_TESTS.cmd', 'RUN_ONEDRIVE_TESTS.cmd',
+                     'tools/Run-QAKit.ps1', 'tools/LotRadarQA.OneDrive.ps1', 'tools/Test-LotRadarInstaller.ps1',
+                     'KIT_INFO.json', 'KIT_SHA256SUMS.txt'):
             self.assertIn(need, names)
         sums = {}
         for line in self.read('KIT_SHA256SUMS.txt').decode('ascii').splitlines():
@@ -74,14 +75,14 @@ class QAKit(unittest.TestCase):
             self.assertNotIn(n.lower().rsplit('/', 1)[-1], PRIVATE, n)
 
     def test_windows_text_files_ascii_crlf(self):
-        for rel in ('START_HERE.txt', 'RUN_WINDOWS11_TESTS.cmd', 'RUN_FULL_LAUNCH_TESTS.cmd', 'tools/Run-QAKit.ps1',
-                    'tools/Test-LotRadarInstaller.ps1'):
+        for rel in ('START_HERE.txt', 'RUN_WINDOWS11_TESTS.cmd', 'RUN_FULL_LAUNCH_TESTS.cmd', 'RUN_ONEDRIVE_TESTS.cmd',
+                    'tools/Run-QAKit.ps1', 'tools/LotRadarQA.OneDrive.ps1', 'tools/Test-LotRadarInstaller.ps1'):
             data = self.read(rel)
             data.decode('ascii')
             self.assertEqual(data.count(b'\n'), data.count(b'\r\n'), rel + ' has bare LF line endings')
 
     def test_launchers_use_relative_paths_and_builtin_powershell(self):
-        for rel in ('RUN_WINDOWS11_TESTS.cmd', 'RUN_FULL_LAUNCH_TESTS.cmd'):
+        for rel in ('RUN_WINDOWS11_TESTS.cmd', 'RUN_FULL_LAUNCH_TESTS.cmd', 'RUN_ONEDRIVE_TESTS.cmd'):
             text = self.read(rel).decode('ascii')
             self.assertIn('%~dp0tools\\Run-QAKit.ps1', text)
             self.assertIn('%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', text)
@@ -89,6 +90,9 @@ class QAKit(unittest.TestCase):
             self.assertNotIn('C:\\Users', text)
         self.assertIn('-FullLaunch', self.read('RUN_FULL_LAUNCH_TESTS.cmd').decode('ascii'))
         self.assertNotIn('-FullLaunch', self.read('RUN_WINDOWS11_TESTS.cmd').decode('ascii'))
+        self.assertNotIn('-OneDrive', self.read('RUN_WINDOWS11_TESTS.cmd').decode('ascii'))
+        self.assertNotIn('-OneDrive', self.read('RUN_FULL_LAUNCH_TESTS.cmd').decode('ascii'))
+        self.assertIn('-OneDrive', self.read('RUN_ONEDRIVE_TESTS.cmd').decode('ascii'))
 
     def test_runner_guards_present(self):
         text = self.read('tools/Run-QAKit.ps1').decode('ascii')
@@ -105,6 +109,31 @@ class QAKit(unittest.TestCase):
         self.assertIn('BLOCKED:', r3)
         # The fixture target carries the original (manifest-valid) bytes, so only the link check can refuse it.
         self.assertIn('outside copy does not match the manifest hash', r3)
+
+
+    def test_onedrive_mode_is_opt_in_local_results_and_disclosed(self):
+        sentence = ('LotRadar vehicle photos and Facebook photo exports stay local; only the disposable '
+                    'installer-compatibility test fixture is placed in OneDrive.')
+        flat = lambda b: ' '.join(b.decode('ascii').split())
+        for rel in ('START_HERE.txt', 'RUN_ONEDRIVE_TESTS.cmd', 'tools/LotRadarQA.OneDrive.ps1'):
+            self.assertIn(sentence, flat(self.read(rel)), rel)
+        runner = self.read('tools/Run-QAKit.ps1').decode('ascii')
+        self.assertIn("if ($OneDrive) { $resultsDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData'))", runner)
+        od = self.read('tools/LotRadarQA.OneDrive.ps1').decode('ascii')
+        for needle in ("Read-Host 'Type YES to allow the OneDrive test'", 'LOCAL_PHOTO_STORAGE', 'HKCU:\\Software\\Microsoft\\OneDrive\\Accounts',
+                       'GetFinalPathNameByHandleW', "'LotRadar QA TEST ONLY *'", 'LOTRADAR_QA_TEST_FOLDER.txt', 'rmdir /s /q',
+                       'PC1 ', 'PC2 ', 'PC3 ', 'Invoke-Native'):
+            self.assertIn(needle, od)
+        # never changes OneDrive state or real files
+        for banned in ('attrib ', '+U', '-P ', 'Set-ItemProperty', 'Remove-Item -LiteralPath $realData', 'Move-Item'):
+            self.assertNotIn(banned, od)
+
+    def test_harness_extract_to_and_outdir(self):
+        text = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
+        for needle in ("[string]$ExtractTo = ''", "[string]$OutDir = ''", "Add-Result 'OD0'", "Invoke-Test 'OD1'",
+                       "$dst = Join-Path $pkgRoot ('pkg ' + $Name)", 'ftCreationLow'):
+            self.assertIn(needle, text)
+        self.assertNotIn('public long ft', text)
 
 
 if __name__ == '__main__':

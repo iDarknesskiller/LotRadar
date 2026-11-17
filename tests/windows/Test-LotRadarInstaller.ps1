@@ -21,19 +21,27 @@
     -FullLaunch   also runs the REAL bootstrap in the sandbox (downloads Python packages and Playwright
                   Chromium into the sandbox, may take many minutes, opens the app window, then stops it).
     -KeepSandbox  do not delete the sandbox folder afterwards.
+    -ExtractTo    (OneDrive QA) extract the package and all package test copies under this EXISTING folder
+                  instead of the local sandbox. Installed program/data/runtime stay in the local sandbox.
+    -OutDir       write the log and JSON to this EXISTING folder instead of next to the ZIP.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$PackageZip,
     [switch]$FullLaunch,
-    [switch]$KeepSandbox
+    [switch]$KeepSandbox,
+    [string]$ExtractTo = '',
+    [string]$OutDir = ''
 )
 $ErrorActionPreference = 'Stop'
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 $zipPath = (Resolve-Path -LiteralPath $PackageZip).Path
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$logPath = Join-Path (Split-Path -Parent $zipPath) ('LotRadar-WindowsTest-' + $stamp + '.log')
-$jsonPath = Join-Path (Split-Path -Parent $zipPath) ('LotRadar-WindowsTest-' + $stamp + '.json')
+$outFolder = Split-Path -Parent $zipPath
+if ($OutDir) { $outFolder = (Resolve-Path -LiteralPath $OutDir).Path }
+if ($ExtractTo) { $ExtractTo = (Resolve-Path -LiteralPath $ExtractTo).Path }
+$logPath = Join-Path $outFolder ('LotRadar-WindowsTest-' + $stamp + '.log')
+$jsonPath = Join-Path $outFolder ('LotRadar-WindowsTest-' + $stamp + '.json')
 Start-Transcript -Path $logPath | Out-Null
 
 $script:Results = New-Object System.Collections.ArrayList
@@ -76,6 +84,41 @@ function Invoke-Test([string]$Id, [string]$Name, [scriptblock]$Body) {
 }
 function Skip-Test([string]$Id, [string]$Name, [string]$Why) { Add-Result $Id $Name 'SKIP' $Why }
 function Assert-True($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
+
+# Reparse-tag reader (FindFirstFileW: dwReserved0 holds the tag when the item is a reparse point). Read-only, no hydration.
+# Compiled on first use only (built-in .NET Framework compiler), so the default test flow never depends on it.
+$script:ReparseTagSource = @'
+using System; using System.Runtime.InteropServices;
+namespace LotRadarQA {
+  public static class ReparseTag {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct WIN32_FIND_DATAW { public uint dwFileAttributes; public uint ftCreationLow, ftCreationHigh, ftAccessLow, ftAccessHigh, ftWriteLow, ftWriteHigh;
+      public uint nFileSizeHigh; public uint nFileSizeLow; public uint dwReserved0; public uint dwReserved1;
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string cFileName; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)] public string cAlternateFileName; }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr FindFirstFileW(string name, out WIN32_FIND_DATAW data);
+    [DllImport("kernel32.dll")] static extern bool FindClose(IntPtr h);
+    public static uint Get(string path) {
+      WIN32_FIND_DATAW d; IntPtr h = FindFirstFileW(path.TrimEnd('\\'), out d);
+      if (h == new IntPtr(-1)) return 0xFFFFFFFF;
+      FindClose(h);
+      return ((d.dwFileAttributes & 0x400) != 0) ? d.dwReserved0 : 0;
+    }
+  }
+}
+'@
+# none | cloud (OneDrive/Files On-Demand placeholder) | symlink | junction | other:0x... | unreadable
+function Get-ReparseKind([string]$Path) {
+    try {
+        if (-not ('LotRadarQA.ReparseTag' -as [type])) { Add-Type -TypeDefinition $script:ReparseTagSource }
+        $t = [LotRadarQA.ReparseTag]::Get($Path)
+    } catch { return 'unknown' }
+    if ($t -eq [uint32]0) { return 'none' }
+    if ($t -eq [uint32]4294967295) { return 'unreadable' }
+    if ($t -eq [uint32]2684354572) { return 'symlink' }
+    if ($t -eq [uint32]2684354563) { return 'junction' }
+    if (($t -band [uint32]4294905855) -eq [uint32]2415919130) { return 'cloud' }
+    return ('other:0x' + $t.ToString('X8'))
+}
 
 function Get-Sha([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Get-Inventory([string]$Dir) {
@@ -131,7 +174,7 @@ function Test-PortBusy {
     } catch { return $false } finally { $client.Dispose() }
 }
 function New-PkgCopy([string]$Name) {
-    $dst = Join-Path $root ('pkg ' + $Name)
+    $dst = Join-Path $pkgRoot ('pkg ' + $Name)
     Copy-Item -LiteralPath $pkgDir -Destination $dst -Recurse
     return $dst
 }
@@ -234,8 +277,30 @@ try {
     if ($portWasBusy) { Add-Result 'T00c' 'Port 8765 free' 'FAIL' 'Something already listens on 127.0.0.1:8765 (real LotRadar?). Close it and re-run; contention and launch tests are skipped.' }
 
     # ---- extract package (path with spaces)
-    $pkgDir = Join-Path $root 'Test Package'
+    $pkgRoot = $root
+    if ($ExtractTo) { $pkgRoot = $ExtractTo }
+    $pkgDir = Join-Path $pkgRoot 'Test Package'
     Expand-Archive -LiteralPath $zipPath -DestinationPath $pkgDir -Force
+    if ($ExtractTo) {
+        # OneDrive QA: give the sync client time to process the new folder, then record what it did. INFO only.
+        $waited = 0
+        while ($waited -lt 90 -and (Get-ReparseKind (Join-Path $pkgDir 'MarketplaceScanner')) -eq 'none') { Start-Sleep -Seconds 3; $waited += 3 }
+        $kinds = @{}
+        foreach ($it in @(Get-Item -LiteralPath $pkgDir -Force) + @(Get-ChildItem -LiteralPath $pkgDir -Recurse -Force)) {
+            $k = ($(if ($it.PSIsContainer) { 'dir' } else { 'file' })) + ':' + (Get-ReparseKind $it.FullName)
+            if ($kinds.ContainsKey($k)) { $kinds[$k]++ } else { $kinds[$k] = 1 }
+        }
+        $kindText = (($kinds.Keys | Sort-Object | ForEach-Object { $_ + '=' + $kinds[$_] }) -join ' ')
+        Add-Result 'OD0' 'OneDrive extraction state' 'INFO' ('waited ' + $waited + 's; payload folder reparse=' + (Get-ReparseKind (Join-Path $pkgDir 'MarketplaceScanner')) + '; items by kind: ' + $kindText)
+        Invoke-Test 'OD1' 'Package extracted under -ExtractTo while install target, data and runtime stay in the local sandbox' {
+            Assert-True ($pkgDir.StartsWith($ExtractTo + '\', [StringComparison]::OrdinalIgnoreCase)) 'package was not extracted under -ExtractTo'
+            foreach ($p in @($program, $dataDir, $runtimeDir, $backupRoot)) {
+                Assert-True (-not $p.StartsWith($ExtractTo + '\', [StringComparison]::OrdinalIgnoreCase)) ('a runtime location is inside -ExtractTo: ' + $p)
+                Assert-True ($p.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) ('a runtime location is outside the local sandbox: ' + $p)
+            }
+            return 'package in -ExtractTo; program/data/runtime/backups in local sandbox'
+        }
+    }
     $manifest = Get-Manifest $pkgDir
     Add-Result 'T00d' 'Package identity' 'INFO' ('version=' + $manifest.package_version + ' build_type=' + $manifest.build_type + ' commit=' + $manifest.source_commit + ' payload=' + @($manifest.payload_files).Count)
 
