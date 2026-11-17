@@ -10,17 +10,19 @@
   Exit codes: 0 all tests passed (SKIPs allowed) | 1 a test failed | 2 kit not extracted / wrong place
   3 running as administrator | 4 kit files missing or altered | 5 port 8765 busy | 6 Desktop shortcut
   could not be backed up | 7 harness parse error | 8 wrong PowerShell | 9 cancelled | 10 shortcut not restored
+  11 a leftover of an earlier interrupted run needs your attention (nothing was run)
 
   -OneDrive (RUN_ONEDRIVE_TESTS.cmd only): after the same preflight, runs tools\LotRadarQA.OneDrive.ps1
   (local control run, read-only LOCAL_PHOTO_STORAGE check, consented OneDrive extraction run). Results go to a
   LOCAL folder under %LOCALAPPDATA%\LotRadar QA Results, never into OneDrive.
 #>
 [CmdletBinding()]
-param([switch]$FullLaunch, [switch]$OneDrive, [switch]$Yes)
+param([switch]$FullLaunch, [switch]$OneDrive, [switch]$CleanupSelfTest, [switch]$Yes)
 $ErrorActionPreference = 'Stop'
 $kit = Split-Path -Parent $PSScriptRoot
 $resultsDir = Join-Path $kit 'RESULTS'
 if ($OneDrive) { $resultsDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ('LotRadar QA Results\OneDrive-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
+if ($CleanupSelfTest) { $resultsDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ('LotRadar QA Results\Cleanup-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
 $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $script:Redact = @()
 
@@ -94,7 +96,7 @@ function Test-ShortcutRestored {
 }
 
 Say '=== LotRadar Windows QA test kit ===' 'Cyan'
-if ($FullLaunch -and $OneDrive) { Stop-Kit 'Full launch and OneDrive tests cannot be combined. Run them separately.' 9 }
+if (@(@($FullLaunch, $OneDrive, $CleanupSelfTest) | Where-Object { $_ }).Count -gt 1) { Stop-Kit 'Only one optional test mode at a time. Run them separately.' 9 }
 
 # ---- 1. kit must be extracted to a normal folder (not opened inside the ZIP viewer)
 if ($kit -like '*\AppData\Local\Temp\*' -or $kit -like '*\Temp1_*') {
@@ -170,48 +172,43 @@ New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null
 $desktop = [Environment]::GetFolderPath('Desktop')
 $desktopLnk = Join-Path $desktop 'LotRadar.lnk'
 
-# ---- 6a. Repair leftovers of an earlier, INTERRUPTED kit run (a closed window skips its own cleanup).
-# Only kit-created things are touched: a Desktop LotRadar.lnk that points into a "LotRadar Test Sandbox",
-# "%LOCALAPPDATA%\Temp\LotRadar Test Sandbox *" folders and marker-tagged "LotRadar QA TEST ONLY *" OneDrive folders.
-$qaHome = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LotRadar QA Results'
-$originalLnk = Join-Path $qaHome 'shortcut-original\LotRadar.lnk'
-$script:LeftoverReport = @()
-$otherRun = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*Test-LotRadarInstaller.ps1*' }).Count -gt 0
+# ---- 6a. Leftovers of an earlier, INTERRUPTED kit run (a closed window skips that run's own cleanup).
+# tools\LotRadarQA.Cleanup.ps1: a folder is offered for deletion only if it is PROVEN kit-created (token marker +
+# local ledger + exact canonical location + no links inside), one folder at a time, and only after you type D.
+# Anything else is reported and left untouched. A test shortcut is replaced only by a verified standard shortcut.
+$localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+$qaHome = Join-Path $localAppData 'LotRadar QA Results'
+$otherRun = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne $PID -and ($_.CommandLine -like '*Test-LotRadarInstaller.ps1*' -or $_.CommandLine -like '*Run-QAKit.ps1*') }).Count -gt 0
 if ($otherRun) { Stop-Kit 'Another LotRadar test run is still running (or its window is still open). Let it finish or close it, then run the kit again.' 5 }
-if (Test-Path -LiteralPath $desktopLnk) {
-    $curTarget = (New-Object -ComObject WScript.Shell).CreateShortcut($desktopLnk).TargetPath
-    if ($curTarget -like '*LotRadar Test Sandbox*') {
-        if (Test-Path -LiteralPath $originalLnk) {
-            Copy-Item -LiteralPath $originalLnk -Destination $desktopLnk -Force
-            if ((Get-Sha $desktopLnk) -ne (Get-Sha $originalLnk)) { Stop-Kit 'A leftover test shortcut was found on the Desktop but the saved original could not be restored.' 6 }
-            $script:LeftoverReport += 'leftover TEST Desktop shortcut found; your saved original was restored (verified)'
-        } else {
-            Remove-Item -LiteralPath $desktopLnk -Force
-            $script:LeftoverReport += 'leftover TEST Desktop shortcut found and removed (no saved original existed; reinstall LotRadar or recreate the shortcut)'
-        }
-    }
+$odParents = @()
+foreach ($v in @($env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial)) {
+    if ($v -and (Test-Path -LiteralPath $v) -and -not (@($odParents) | Where-Object { $_ -eq $v })) { $odParents += $v }
 }
-if (Test-Path -LiteralPath $desktopLnk) {
-    # keep a persistent copy of the REAL shortcut for any future repair
-    $curTarget = (New-Object -ComObject WScript.Shell).CreateShortcut($desktopLnk).TargetPath
-    if ($curTarget -notlike '*LotRadar Test Sandbox*') {
-        New-Item -ItemType Directory -Path (Split-Path -Parent $originalLnk) -Force | Out-Null
-        Copy-Item -LiteralPath $desktopLnk -Destination $originalLnk -Force
-    }
+foreach ($mod in @('LotRadarQA.Cleanup.ps1', 'LotRadarQA.CleanupSelfTest.ps1')) {
+    $tokens = $null; $errors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $mod), [ref]$tokens, [ref]$errors)
+    if (@($errors).Count -gt 0) { Stop-Kit ('Kit script ' + $mod + ' has parse errors: ' + ((@($errors) | ForEach-Object { 'line ' + $_.Extent.StartLineNumber + ': ' + $_.Message }) -join '; ')) 7 }
 }
-$leftDirs = @(Get-ChildItem -LiteralPath (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp') -Directory -Filter 'LotRadar Test Sandbox *' -ErrorAction SilentlyContinue)
-if ($env:OneDrive -and (Test-Path -LiteralPath $env:OneDrive)) {
-    $leftDirs += @(Get-ChildItem -LiteralPath $env:OneDrive -Directory -Filter 'LotRadar QA TEST ONLY *' -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'LOTRADAR_QA_TEST_FOLDER.txt') })
+if ($CleanupSelfTest) {
+    # Synthetic fixtures only; the real leftover repair below is NOT run in this mode.
+    . (Join-Path $PSScriptRoot 'LotRadarQA.Cleanup.ps1')
+    $script:CleanupExit = 1
+    . (Join-Path $PSScriptRoot 'LotRadarQA.CleanupSelfTest.ps1')
+    exit $script:CleanupExit   # never fall through into the normal test flow
 }
-foreach ($d in $leftDirs) {
-    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    & cmd.exe /d /c ('rmdir /s /q "' + $d.FullName + '"') 2>&1 | Out-Null
-    $ErrorActionPreference = $old
-    $state = 'removed'
-    if (Test-Path -LiteralPath $d.FullName) { $state = 'could NOT be removed (safe to delete by hand)' }
-    $script:LeftoverReport += ('leftover test folder ' + $d.Name + ': ' + $state)
+try {
+    . (Join-Path $PSScriptRoot 'LotRadarQA.Cleanup.ps1')
+    $repair = Invoke-QALeftoverRepair -TempParent (Join-Path $localAppData 'Temp') -OneDriveParents $odParents -LedgerDir (Join-Path $qaHome 'owned') `
+        -DesktopLnk $desktopLnk -OriginalStore (Join-Path $qaHome 'shortcut-original\LotRadar.lnk') `
+        -StandardTarget (Join-Path $localAppData 'Programs\MarketplaceScanner\Launch Marketplace Scanner.cmd') `
+        -EvidenceDir (Join-Path $resultsDir 'leftover-repair') -Ask { param($q) Read-QAAnswer $q }
+} catch { Stop-Kit ('Could not check for leftovers of an earlier test run: ' + $_.Exception.Message) 11 }
+$script:LeftoverReport = @($repair.Lines)
+if ($repair.Stop) {
+    foreach ($l in $script:LeftoverReport) { Say ('Earlier interrupted run: ' + $l) 'Yellow' }
+    Stop-Kit $repair.Stop 11
 }
-if ($script:LeftoverReport.Count -eq 0) { $script:LeftoverReport += 'none' }
+if ($script:LeftoverReport.Count -eq 0) { $script:LeftoverReport = @('none') }
 foreach ($l in $script:LeftoverReport) { Say ('Earlier interrupted run: ' + $l) 'Yellow' }
 $shortcutBackup = Join-Path $resultsDir 'shortcut-backup\LotRadar.lnk'
 $hadShortcut = Test-Path -LiteralPath $desktopLnk

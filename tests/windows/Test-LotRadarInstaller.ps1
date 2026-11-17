@@ -65,6 +65,10 @@ $desktop = [Environment]::GetFolderPath('Desktop')
 $desktopLnk = Join-Path $desktop 'LotRadar.lnk'
 $desktopBackup = Join-Path $root 'desktop-backup\LotRadar.lnk'
 $desktopHadLnk = $false
+# Ownership record: if this run is interrupted (window closed), a later kit run can PROVE this sandbox is a
+# test folder (random token in a marker file inside it + the same token in a local, unsynced ledger entry).
+$qaLedgerDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LotRadar QA Results\owned'
+$qaLedgerFile = ''
 
 # ---------------------------------------------------------------- helpers
 function Add-Result([string]$Id, [string]$Name, [string]$Status, [string]$Detail) {
@@ -272,6 +276,16 @@ try {
     Write-Host '=== LotRadar Windows installer acceptance tests ===' -ForegroundColor Cyan
     Write-Host ('Package : ' + $zipPath)
     Write-Host ('Sandbox : ' + $root)
+    if (Test-Path -LiteralPath $root) { throw ('Sandbox folder already exists, refusing: ' + $root) }
+    New-Item -ItemType Directory -Path $root | Out-Null
+    $tokBytes = New-Object byte[] 16
+    $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+    try { $rng.GetBytes($tokBytes) } finally { $rng.Dispose() }
+    $qaToken = (($tokBytes | ForEach-Object { $_.ToString('x2') }) -join '')
+    [IO.File]::WriteAllText((Join-Path $root 'LOTRADAR_QA_OWNER.txt'), ('token=' + $qaToken + "`r`nkind=sandbox`r`nDisposable LotRadar test sandbox. Synthetic files only.`r`n"), $utf8NoBom)
+    New-Item -ItemType Directory -Path $qaLedgerDir -Force | Out-Null
+    $qaLedgerFile = Join-Path $qaLedgerDir ($qaToken + '.owned')
+    [IO.File]::WriteAllText($qaLedgerFile, ('token=' + $qaToken + "`r`nkind=sandbox`r`npath=" + $root + "`r`ncreated=" + (Get-Date).ToString('o') + "`r`n"), $utf8NoBom)
     New-Item -ItemType Directory -Path $local, $roam -Force | Out-Null
     if (Test-Path -LiteralPath $desktopLnk) {
         $desktopHadLnk = $true
@@ -1030,6 +1044,8 @@ try {
             }
         }
     }
+    # The ledger entry goes only once the sandbox is really gone; otherwise a later kit run can still recognise it.
+    if ($qaLedgerFile -and -not (Test-Path -LiteralPath $root) -and (Test-Path -LiteralPath $qaLedgerFile)) { Remove-Item -LiteralPath $qaLedgerFile -Force -ErrorAction SilentlyContinue }
     Write-Host ''
     Write-Host '=== SUMMARY ===' -ForegroundColor Cyan
     $script:Results | Format-Table Id, Status, Name -AutoSize | Out-String -Width 200 | Write-Host

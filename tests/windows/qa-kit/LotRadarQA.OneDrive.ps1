@@ -252,7 +252,9 @@ if ($verifiedRoots.Count -eq 0) {
             $rootFinal = $root.Final
             if (-not $rootFinal) { $rootFinal = $root.Path }
             $odTestDir = Join-Path $rootFinal ('LotRadar QA TEST ONLY ' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
-            New-Item -ItemType Directory -Path $odTestDir | Out-Null
+            $odParent = $rootFinal
+            # ownership record (token marker + local ledger) so an interrupted run can be recognised and removed safely
+            [void](New-QAOwnedFolder $odTestDir 'onedrive' (Join-Path $qaHome 'owned') 'Disposable LotRadar QA OneDrive test folder. Synthetic files only.')
             [IO.File]::WriteAllText((Join-Path $odTestDir 'LOTRADAR_QA_TEST_FOLDER.txt'), 'Disposable LotRadar QA test folder. Synthetic files only. Safe to delete.', (New-Object System.Text.UTF8Encoding $false))
             $odClass = Get-PathClass $odTestDir $roots
             Note ('OneDrive test folder: ' + $odClass.Class + ' (' + $odClass.Why + ')')
@@ -283,7 +285,10 @@ if ($verifiedRoots.Count -eq 0) {
                     } else { Note ('PC3 local junction into OneDrive: SKIP (mklink /J failed: ' + $mk.Output.Trim() + ')') }
                 } finally {
                     if ((Test-Path -LiteralPath $junction) -and ((Get-Kind $junction) -eq 'junction')) { [IO.Directory]::Delete($junction) }
-                    if (Test-Path -LiteralPath $pcLocal) { [void](Invoke-Native ('rmdir /s /q "' + $pcLocal + '"')) }
+                    # exactly the two folders created above, non-recursively (the junction was removed first)
+                    foreach ($pd in @((Join-Path $pcLocal 'data\vehicle_photos'), (Join-Path $pcLocal 'data'), $pcLocal)) {
+                        if ((Test-Path -LiteralPath $pd) -and ((Get-Kind $pd) -eq 'none')) { try { [IO.Directory]::Delete($pd, $false) } catch { Note ('NOTE: test folder not removed (safe to delete by hand): ' + (Split-Path -Leaf $pcLocal)) } }
+                    }
                 }
                 # D2. installer compatibility with the package extracted INSIDE OneDrive (installed copy stays in the local sandbox)
                 $odZip = Join-Path $odTestDir $info.package_file
@@ -325,11 +330,15 @@ if ($verifiedRoots.Count -eq 0) {
                 $shortcut2 = Test-ShortcutRestored
                 Note ('Shortcut after OneDrive run: ' + $shortcut2)
             }
-            # cleanup: exactly the folder we created (rmdir /s /q never follows junctions)
-            if ($odTestDir -and (Test-Path -LiteralPath (Join-Path $odTestDir 'LOTRADAR_QA_TEST_FOLDER.txt')) -and ((Split-Path -Leaf $odTestDir) -like 'LotRadar QA TEST ONLY *')) {
-                [void](Invoke-Native ('rmdir /s /q "' + $odTestDir + '"'))
-                Start-Sleep -Seconds 2
-                Note ('OneDrive test folder cleanup: ' + $(if (Test-Path -LiteralPath $odTestDir) { 'NOT fully removed (safe to delete by hand: "LotRadar QA TEST ONLY ..." in OneDrive)' } else { 'deleted' }))
+            # cleanup: exactly the folder created in THIS run (consented above), only if its ownership still checks out
+            # and nothing inside is a link; file-by-file, never recursive. Otherwise it is left for manual review.
+            if ($odTestDir -and (Test-Path -LiteralPath $odTestDir)) {
+                $safeShas = @()
+                if (Test-Path -LiteralPath $desktopLnk -PathType Leaf) { $safeShas += (Get-Sha $desktopLnk) }
+                $own = Test-QAOwnedFolder $odTestDir 'onedrive' $odParent @(Read-QALedger (Join-Path $qaHome 'owned')) $safeShas
+                if ($own.Owned) { $res = Remove-QAOwnedFolder $own $odParent } else { $res = ('left in place: ' + $own.Reason) }
+                if ($res -ne 'deleted') { $res = $res + ' (delete "' + (Split-Path -Leaf $odTestDir) + '" in OneDrive by hand after checking it)' }
+                Note ('OneDrive test folder cleanup: ' + $res)
             }
         }
     }

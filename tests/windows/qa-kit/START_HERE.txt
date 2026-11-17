@@ -80,8 +80,23 @@ SUMMARY.txt and the SANITIZED-... files from that folder.
 
 IF YOU CLOSED A TEST WINDOW BEFORE IT FINISHED
 Closing the window skips the test's own cleanup, so a temporary test shortcut or test folder can be
-left behind. The next time you run any of the kit's .cmd files, it repairs that first: it puts your
-saved original LotRadar shortcut back and deletes only its own leftover test folders, and says so.
+left behind. The next time you run any of the kit's .cmd files, it checks for that first:
+- A leftover TEST shortcut on your Desktop is replaced by your real LotRadar shortcut, but only from a
+  saved copy that is checked to be the real one. If no such copy exists, it asks you (type D to delete
+  the test shortcut, or press Enter to stop) and changes nothing unless you type D.
+- A leftover test folder is offered for deletion ONLY if the kit can prove it made it (a secret code in
+  the folder that matches its own record on this PC, the exact expected place, and no shortcuts/links
+  inside). It shows the folder name, number of files and size, then asks: type D and press Enter to
+  delete it, or just press Enter to keep it. Nothing is deleted without your D.
+- Any folder it cannot prove is its own is listed and left alone. Check it and delete it yourself
+  (in File Explorer) only if you are sure it is a LotRadar test folder.
+
+OPTIONAL CLEANUP SAFETY TEST (only if asked): RUN_CLEANUP_SAFETY_TESTS.cmd
+Checks the rules above on SYNTHETIC test folders and a pretend Desktop, never your real ones. If you
+have OneDrive it also creates one temporary "LotRadar QA TEST ONLY <random>" folder there with a few
+text files and deletes it. Developer Mode ON lets it run every case (one case needs a special link).
+It takes about a minute. Send back SUMMARY.txt and SANITIZED-cleanup-selftest.json from the results
+folder it opens (on this PC, under LotRadar QA Results).
 
 IF IT STOPS EARLY
 The window says "STOPPED:" and why (for example LotRadar still running, or the kit opened

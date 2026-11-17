@@ -48,6 +48,7 @@ class QAKit(unittest.TestCase):
     def test_layout_and_checksums(self):
         names = sorted(n[len(self.prefix):] for n in self.z.namelist())
         for need in ('START_HERE.txt', 'RUN_WINDOWS11_TESTS.cmd', 'RUN_FULL_LAUNCH_TESTS.cmd', 'RUN_ONEDRIVE_TESTS.cmd',
+                     'RUN_CLEANUP_SAFETY_TESTS.cmd', 'tools/LotRadarQA.Cleanup.ps1', 'tools/LotRadarQA.CleanupSelfTest.ps1',
                      'tools/Run-QAKit.ps1', 'tools/LotRadarQA.OneDrive.ps1', 'tools/Test-LotRadarInstaller.ps1',
                      'KIT_INFO.json', 'KIT_SHA256SUMS.txt'):
             self.assertIn(need, names)
@@ -81,13 +82,14 @@ class QAKit(unittest.TestCase):
 
     def test_windows_text_files_ascii_crlf(self):
         for rel in ('START_HERE.txt', 'RUN_WINDOWS11_TESTS.cmd', 'RUN_FULL_LAUNCH_TESTS.cmd', 'RUN_ONEDRIVE_TESTS.cmd',
+                    'RUN_CLEANUP_SAFETY_TESTS.cmd', 'tools/LotRadarQA.Cleanup.ps1', 'tools/LotRadarQA.CleanupSelfTest.ps1',
                     'tools/Run-QAKit.ps1', 'tools/LotRadarQA.OneDrive.ps1', 'tools/Test-LotRadarInstaller.ps1'):
             data = self.read(rel)
             data.decode('ascii')
             self.assertEqual(data.count(b'\n'), data.count(b'\r\n'), rel + ' has bare LF line endings')
 
     def test_launchers_use_relative_paths_and_builtin_powershell(self):
-        for rel in ('RUN_WINDOWS11_TESTS.cmd', 'RUN_FULL_LAUNCH_TESTS.cmd', 'RUN_ONEDRIVE_TESTS.cmd'):
+        for rel in ('RUN_WINDOWS11_TESTS.cmd', 'RUN_FULL_LAUNCH_TESTS.cmd', 'RUN_ONEDRIVE_TESTS.cmd', 'RUN_CLEANUP_SAFETY_TESTS.cmd'):
             text = self.read(rel).decode('ascii')
             self.assertIn('%~dp0tools\\Run-QAKit.ps1', text)
             self.assertIn('%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', text)
@@ -131,7 +133,7 @@ class QAKit(unittest.TestCase):
         self.assertIn("if ($OneDrive) { $resultsDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData'))", runner)
         od = self.read('tools/LotRadarQA.OneDrive.ps1').decode('ascii')
         for needle in ("if (-not (Confirm-Start 'OneDrive test'))", 'LOCAL_PHOTO_STORAGE', 'HKCU:\\Software\\Microsoft\\OneDrive\\Accounts',
-                       'GetFinalPathNameByHandleW', "'LotRadar QA TEST ONLY *'", 'LOTRADAR_QA_TEST_FOLDER.txt', 'rmdir /s /q',
+                       'GetFinalPathNameByHandleW', "('LotRadar QA TEST ONLY '", 'LOTRADAR_QA_TEST_FOLDER.txt',
                        'PC1 ', 'PC2 ', 'PC3 ', 'Invoke-Native'):
             self.assertIn(needle, od)
         # never changes OneDrive state or real files
@@ -178,22 +180,65 @@ class QAKit(unittest.TestCase):
             self.assertIn('Get-Row $od.Rows ' + row, od)
 
 
-    def test_interrupted_run_leftovers_are_repaired(self):
+    def test_leftover_cleanup_is_ownership_proven_consented_and_never_recursive(self):
+        # Architect b150a4d step 2: no unattended recursive delete; delete only proven kit-created folders.
         runner = self.read('tools/Run-QAKit.ps1').decode('ascii')
         rep = runner[runner.index('# ---- 6a.'):runner.index("$shortcutBackup = Join-Path $resultsDir")]
-        # only kit-created things are touched
-        self.assertIn("$curTarget -like '*LotRadar Test Sandbox*'", rep)
-        self.assertIn("-Filter 'LotRadar Test Sandbox *'", rep)
-        self.assertIn("-Filter 'LotRadar QA TEST ONLY *'", rep)
-        self.assertIn("LOTRADAR_QA_TEST_FOLDER.txt", rep)
-        self.assertIn('rmdir /s /q', rep)                                 # never follows junctions
-        self.assertNotIn('Remove-Item -LiteralPath $d.FullName', rep)   # folders only via rmdir
-        self.assertNotIn('-Recurse -Force', rep)
-        self.assertIn('Another LotRadar test run is still running', rep)  # never cleans under a live run
-        self.assertIn("shortcut-original", rep)
-        self.assertIn('(Get-Sha $desktopLnk) -ne (Get-Sha $originalLnk)', rep)
+        self.assertIn('Invoke-QALeftoverRepair', rep)
+        self.assertIn('Another LotRadar test run is still running', rep)   # never cleans under a live run
+        self.assertIn('-Ask { param($q) Read-QAAnswer $q }', rep)
+        self.assertIn('Stop-Kit $repair.Stop 11', rep)
         self.assertIn("'Leftover repair : '", runner)
-        self.assertIn("Note ('Leftover repair : '", self.read('tools/LotRadarQA.OneDrive.ps1').decode('ascii'))
+        cl = self.read('tools/LotRadarQA.Cleanup.ps1').decode('ascii')
+        od = self.read('tools/LotRadarQA.OneDrive.ps1').decode('ascii')
+        code = lambda t: '\n'.join(l for l in t.splitlines() if not l.lstrip().startswith('#'))
+        for name, text in (('runner', runner), ('cleanup', cl), ('onedrive', od)):
+            self.assertNotIn('rmdir', code(text).lower(), name)
+            self.assertNotIn('-Recurse', code(text), name)
+            self.assertIsNone(re.search(r'Directory\]::Delete\([^)]*\$true', code(text)), name + ': recursive Directory.Delete')
+        # ownership proof: name pattern, canonical containment, link refusal, token marker + ledger match
+        for needle in ("'^LotRadar Test Sandbox [0-9a-f]{8}$'", "'^LotRadar QA TEST ONLY [0-9a-f]{8}$'",
+                       '0x02000000 | 0x00200000', 'FinalFollow($Parent)', "'its real path is not directly inside the expected folder'",
+                       "'(?m)^token=([0-9a-f]{32})\\r?$'", "'its token is not in this PC''s kit ledger'",
+                       "'ledger records a different path for this token'", "('contains a link: '",
+                       "'it holds the only copy of a Desktop shortcut backup'", 'RNGCryptoServiceProvider',
+                       "if ($ans.Trim() -eq 'D')", 'if ([Console]::IsInputRedirected) { return \'\' }',
+                       'Test-QAChainSafe', '[IO.Directory]::Delete($Path, $false)'):
+            self.assertIn(needle, cl)
+        # shortcut: restored only from a backup verified to target the standard launcher; otherwise ask or stop
+        self.assertIn('(Test-QASamePath (Get-QAShortcutTarget $c[0]) $StandardTarget)', cl)
+        self.assertIn('this kit has no record of', cl)
+        # the harness records ownership of its sandbox and forgets it only once the sandbox is gone
+        h = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
+        self.assertIn("'LOTRADAR_QA_OWNER.txt'", h)
+        self.assertIn("'LotRadar QA Results\\owned'", h)
+        self.assertIn('-not (Test-Path -LiteralPath $root) -and (Test-Path -LiteralPath $qaLedgerFile)', h)
+        # the OneDrive module creates its folder with an ownership record and removes it with the same safe deleter
+        self.assertIn("New-QAOwnedFolder $odTestDir 'onedrive'", od)
+        self.assertIn('Remove-QAOwnedFolder $own $odParent', od)
+
+    def test_cleanup_selftest_mode(self):
+        launcher = self.read('RUN_CLEANUP_SAFETY_TESTS.cmd').decode('ascii')
+        self.assertIn('-CleanupSelfTest -Yes', launcher)
+        self.assertIn('%~dp0tools\\Run-QAKit.ps1', launcher)
+        runner = self.read('tools/Run-QAKit.ps1').decode('ascii')
+        i = runner.index(". (Join-Path $PSScriptRoot 'LotRadarQA.CleanupSelfTest.ps1')")
+        self.assertIn('exit $script:CleanupExit', runner[i:i + 200])
+        self.assertLess(i, runner.index('$repair = Invoke-QALeftoverRepair'))   # self-test never runs the real repair
+        st = self.read('tools/LotRadarQA.CleanupSelfTest.ps1').decode('ascii')
+        for mod in (st, self.read('tools/LotRadarQA.Cleanup.ps1').decode('ascii')):
+            code = '\n'.join(l for l in mod.splitlines() if not l.lstrip().startswith('#'))
+            self.assertIsNone(EXIT_STMT.search(code), 'module must not call exit')
+            self.assertNotIn('Stop-Kit', code)
+        ids = sorted(set(re.findall(r"'(CL\d\d)'", st)))
+        self.assertEqual(ids, ['CL%02d' % n for n in range(1, 24)])
+        # fixtures never receive the real Desktop shortcut, real store or real ledger
+        rep = st[st.index('function Invoke-Repair'):st.index('function Get-LedgerFileFor')]
+        self.assertIn('-DesktopLnk $F.Desk', rep)
+        self.assertIn('-OriginalStore $F.Store', rep)
+        self.assertIn('-LedgerDir $F.Ledger', rep)
+        self.assertNotIn('$desktopLnk', rep)
+        self.assertIn("Confirm-Start 'cleanup self-test (including the OneDrive cases)'", st)
 
 
 if __name__ == '__main__':
