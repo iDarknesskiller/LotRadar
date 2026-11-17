@@ -24,12 +24,14 @@ class QAKit(unittest.TestCase):
             r = run(sys.executable, os.path.join(cls.clone, 'scripts', 'build_qa_kit.py'), '--out-dir', out)
             if r.returncode:
                 raise AssertionError('kit build failed: ' + r.stdout + r.stderr)
-            cls.zips.append(open(os.path.join(out, 'LotRadar-Win11-R3-QA-%s.zip' % cls.head[:7]), 'rb').read())
+            with open(os.path.join(out, 'LotRadar-Win11-R3-QA-%s.zip' % cls.head[:7]), 'rb') as fh:
+                cls.zips.append(fh.read())
         cls.z = zipfile.ZipFile(io.BytesIO(cls.zips[0]))
         cls.prefix = 'LotRadar-Win11-R3-QA-%s/' % cls.head[:7]
 
     @classmethod
     def tearDownClass(cls):
+        cls.z.close()
         cls.tmp.cleanup()
 
     def read(self, name):
