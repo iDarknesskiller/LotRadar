@@ -187,7 +187,8 @@ class QAKit(unittest.TestCase):
         self.assertIn("-Filter 'LotRadar QA TEST ONLY *'", rep)
         self.assertIn("LOTRADAR_QA_TEST_FOLDER.txt", rep)
         self.assertIn('rmdir /s /q', rep)                                 # never follows junctions
-        self.assertNotIn('Remove-Item -LiteralPath $d', rep)
+        self.assertNotIn('Remove-Item -LiteralPath $d.FullName', rep)   # folders only via rmdir
+        self.assertNotIn('-Recurse -Force', rep)
         self.assertIn('Another LotRadar test run is still running', rep)  # never cleans under a live run
         self.assertIn("shortcut-original", rep)
         self.assertIn('(Get-Sha $desktopLnk) -ne (Get-Sha $originalLnk)', rep)
