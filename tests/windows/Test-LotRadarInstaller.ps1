@@ -165,7 +165,7 @@ function Assert-Unchanged($Before, [string]$What) {
     Assert-True ($now.Program -eq $Before.Program) ($What + ': installed program folder CHANGED')
     Assert-True ($now.Data -eq $Before.Data) ($What + ': data folder CHANGED')
     Assert-True ($now.Backups -eq $Before.Backups) ($What + ': a program backup was created/removed')
-    Assert-True ((Get-StageDirs).Count -eq 0) ($What + ': leftover staging folder')
+    Assert-True (@(Get-StageDirs).Count -eq 0) ($What + ': leftover staging folder')
 }
 function Invoke-Installer([string]$PkgDir) {
     $ErrorActionPreference = 'Continue'
@@ -394,7 +394,7 @@ try {
         Assert-True ($lnk.TargetPath -ieq $wantTarget) ('shortcut target wrong: ' + $lnk.TargetPath + ' (expected ' + $wantTarget + ')')
         Assert-True ($lnk.WorkingDirectory -ieq $program) ('shortcut working dir wrong: ' + $lnk.WorkingDirectory + ' (expected ' + $program + ')')
         Assert-True (-not (Test-Path -LiteralPath $backupRoot)) 'fresh install created a backup folder'
-        Assert-True ((Get-StageDirs).Count -eq 0) 'leftover staging folder'
+        Assert-True (@(Get-StageDirs).Count -eq 0) 'leftover staging folder'
         return 'installed, shortcuts OK, all hashes match'
     }
 
@@ -421,7 +421,7 @@ try {
         Assert-True ($backups.Count -eq 1) ('expected 1 backup, found ' + $backups.Count)
         Assert-True (((Get-Inventory $backups[0].FullName) -join "`n") -eq $stateInstalled.Program) 'backup does not equal the previous program'
         Assert-True (((Get-Inventory $program) -join "`n") -eq $stateInstalled.Program) 'new program differs from expected (same package)'
-        Assert-True ((Get-StageDirs).Count -eq 0) 'leftover staging folder'
+        Assert-True (@(Get-StageDirs).Count -eq 0) 'leftover staging folder'
         return 'data+runtime identical, 1 backup equals previous program'
     }
     $good = Get-State
@@ -840,7 +840,7 @@ try {
         Assert-True ((($now.Backups) - ($before.Backups)) -eq 1) ('expected exactly 1 new backup folder (Failed-install-*), delta=' + ($now.Backups - $before.Backups))
         $failed = @(Get-ChildItem -LiteralPath $backupRoot -Directory | Where-Object { $_.Name -like 'Failed-install-*' })
         Assert-True ($failed.Count -ge 1) 'Failed-install-* folder missing'
-        Assert-True ((Get-StageDirs).Count -eq 0) 'leftover staging folder'
+        Assert-True (@(Get-StageDirs).Count -eq 0) 'leftover staging folder'
         $rt = (Get-Inventory $runtimeDir | Where-Object { $_ -notlike '*.lock*' }) -join "`n"
         Assert-True ($rt -eq $runtimeSnap) 'runtime folder changed'
         $script:good = Get-State
@@ -1004,7 +1004,7 @@ try {
         Assert-True ($r.Code -eq 5) ('exit ' + $r.Code + "`n" + $r.Output)
         Assert-True ($r.Output -match 'STUB-CONSOLE-RAN') 'console start did not run in the launcher window'
         Assert-True ($r.Output -match 'error code 5') ('message: ' + $r.Output)
-        Assert-True ((Get-ProcessesMentioning 'Show-LotRadarStartup.ps1').Count -eq 0) 'a startup window process is running'
+        Assert-True (@(Get-ProcessesMentioning 'Show-LotRadarStartup.ps1').Count -eq 0) 'a startup window process is running'
         return 'exit 5 propagated; console path; no window'
     }
     Invoke-Test 'G3' 'Window: a reported failure is shown, exit 91, the failed console is closed, status file removed' {
@@ -1014,7 +1014,7 @@ try {
         Assert-True ($w.Exit -eq 91) ('window exit ' + $w.Exit + '; result ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True ($w.Result.mode -eq 'failed' -and $w.Result.reason -eq 'STUB FAILURE 7') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
         Start-Sleep -Seconds 2
-        Assert-True ((Get-ProcessesMentioning $gDir).Count -eq 0) 'the failed attempt''s console is still running'
+        Assert-True (@(Get-ProcessesMentioning $gDir).Count -eq 0) 'the failed attempt''s console is still running'
         $after = @(Get-ChildItem -LiteralPath $runtimeDir -Filter 'startup-status-*.jsonl' -ErrorAction SilentlyContinue).Count
         Assert-True ($after -le $before) 'status file of the attempt was left behind'
         return ('exit 91 (launcher returns 1); reason shown: ' + $w.Result.reason + '; console closed; ' + $w.Seconds + ' s')
@@ -1188,7 +1188,7 @@ try {
             Start-Sleep -Seconds 2
             $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/health' -TimeoutSec 5
             Assert-True ($health.ok -eq $true -and $health.local_only -eq $true) 'server not healthy after the window closed'
-            Assert-True ((Get-ServerRoots).Count -eq 1) ('expected 1 server process tree, found ' + (Get-ServerRoots).Count)
+            Assert-True (@(Get-ServerRoots).Count -eq 1) ('expected 1 server process tree, found ' + @(Get-ServerRoots).Count)
             $held = $false
             try { $l = [IO.File]::Open((Join-Path $runtimeDir 'marketplace-launch.lock'), 'OpenOrCreate', 'ReadWrite', 'None'); $l.Dispose() } catch { $held = $true }
             Assert-True $held 'launch lock is NOT held although the server runs (lock released early)'
@@ -1200,7 +1200,7 @@ try {
             Assert-True ($w.Exit -eq 0 -and $w.Result.mode -eq 'done') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
             Assert-True (@($ev | Where-Object { $_ -eq 'open:complete' }).Count -eq 1) ('open count wrong: ' + ($ev -join ', '))
             Assert-True ($ev -notcontains 'python:started' -and $ev -notcontains 'server:started') ('setup ran again: ' + ($ev -join ', '))
-            Assert-True ((Get-ServerRoots).Count -eq 1) ('expected 1 server process tree, found ' + (Get-ServerRoots).Count)
+            Assert-True (@(Get-ServerRoots).Count -eq 1) ('expected 1 server process tree, found ' + @(Get-ServerRoots).Count)
             return ('exit 0; events: ' + ($ev -join ' > ') + '; still 1 server tree')
         }
         Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*server.py*' -and $_.CommandLine -like ('*' + $local + '*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }

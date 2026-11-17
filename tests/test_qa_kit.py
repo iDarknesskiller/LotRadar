@@ -186,6 +186,12 @@ class QAKit(unittest.TestCase):
         inner = zipfile.ZipFile(io.BytesIO(self.read('package/' + info['package_file'])))
         self.assertIn('MarketplaceScanner/startup/Show-LotRadarStartup.ps1', inner.namelist())
 
+    def test_no_bare_count_on_function_results(self):
+        # Windows run of a3fe6bb: (Get-ServerRoots).Count was EMPTY when exactly one process matched (PowerShell 5.1
+        # unrolls a 1-item result to a single CimInstance, which has no intrinsic .Count). Always wrap in @().
+        text = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
+        self.assertIsNone(re.search(r'(?<!@)\(Get-[A-Za-z]+(?: [^()]*)?\)\.Count', text))
+
     def test_full_launch_checks_clean_stop(self):
         text = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
         f5 = text[text.index("Invoke-Test 'F5'"):]
