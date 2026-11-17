@@ -225,21 +225,27 @@ if ($verifiedRoots.Count -eq 0) {
         Say ''
         $i = 0
         foreach ($r in $verifiedRoots) { $i++; Say ('  ' + $i + ') ' + $r.Label) }
-        $pick = Read-Host 'More than one OneDrive is signed in. Type the number to use for the test'
-        $num = 0
-        if ([int]::TryParse($pick, [ref]$num) -and $num -ge 1 -and $num -le $verifiedRoots.Count) { $root = $verifiedRoots[$num - 1] } else { $root = $null }
+        if ($Yes) {
+            # no prompt: prefer the personal OneDrive, otherwise the first one listed
+            $personal = @($verifiedRoots | Where-Object { $_.Label -like 'OneDrive-Personal-*' })
+            if ($personal.Count -gt 0) { $root = $personal[0] }
+            Say ('Using ' + $root.Label + ' (more than one OneDrive is signed in).') 'Yellow'
+        } else {
+            $pick = Read-Host 'More than one OneDrive is signed in. Type the number to use for the test'
+            $num = 0
+            if ([int]::TryParse($pick, [ref]$num) -and $num -ge 1 -and $num -le $verifiedRoots.Count) { $root = $verifiedRoots[$num - 1] } else { $root = $null }
+        }
     }
     if (-not $root) {
         $odStatus = 'BLOCKED: no OneDrive selected'
     } else {
         Say ''
-        Say ('Step 2 of 2 needs your permission. It creates ONE temporary folder in ' + $root.Label + ':') 'Yellow'
+        Say ('Step 2 of 2 creates ONE temporary folder in ' + $root.Label + ':') 'Yellow'
         Say '   "LotRadar QA TEST ONLY <random>"  containing only the synthetic test installer (no real data, no photos).' 'Yellow'
         Say 'OneDrive may upload these test files while the test runs. The folder is deleted at the end' 'Yellow'
         Say '(OneDrive may keep it in its online recycle bin for a while). Your OneDrive settings are not changed.' 'Yellow'
         Say 'LotRadar vehicle photos and Facebook photo exports stay local; only the disposable installer-compatibility test fixture is placed in OneDrive.' 'Green'
-        $answer = Read-Host 'Type YES to allow the OneDrive test'
-        if ($answer -ne 'YES') {
+        if (-not (Confirm-Start 'OneDrive test')) {
             $odStatus = 'NOT TESTED: Owner declined the OneDrive write'
         } else {
             $rootFinal = $root.Final

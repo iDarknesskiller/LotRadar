@@ -97,12 +97,17 @@ class QAKit(unittest.TestCase):
         self.assertNotIn('-FullLaunch', self.read('RUN_WINDOWS11_TESTS.cmd').decode('ascii'))
         self.assertNotIn('-OneDrive', self.read('RUN_WINDOWS11_TESTS.cmd').decode('ascii'))
         self.assertNotIn('-OneDrive', self.read('RUN_FULL_LAUNCH_TESTS.cmd').decode('ascii'))
-        self.assertIn('-OneDrive', self.read('RUN_ONEDRIVE_TESTS.cmd').decode('ascii'))
+        self.assertIn('-OneDrive -Yes', self.read('RUN_ONEDRIVE_TESTS.cmd').decode('ascii'))
+        self.assertIn('-FullLaunch -Yes', self.read('RUN_FULL_LAUNCH_TESTS.cmd').decode('ascii'))
+        self.assertNotIn('-Yes', self.read('RUN_WINDOWS11_TESTS.cmd').decode('ascii'))
+        runner = self.read('tools/Run-QAKit.ps1').decode('ascii')
+        self.assertIn('close this window now', runner)                  # disclosure + cancel window remain
+        self.assertIn("(Read-Host ('Type YES to start the ' + $What)) -eq 'YES'", runner)  # without -Yes a typed YES is still required
 
     def test_runner_guards_present(self):
         text = self.read('tools/Run-QAKit.ps1').decode('ascii')
         for needle in ('IsInRole', 'KIT_SHA256SUMS.txt', 'source_commit', '8765', 'shortcut-backup',
-                       'Type YES', 'Protect-Text', 'ParseFile'):
+                       'function Confirm-Start', 'Protect-Text', 'ParseFile'):
             self.assertIn(needle, text)
 
     def test_r3_requires_link_refusal(self):
@@ -125,7 +130,7 @@ class QAKit(unittest.TestCase):
         runner = self.read('tools/Run-QAKit.ps1').decode('ascii')
         self.assertIn("if ($OneDrive) { $resultsDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData'))", runner)
         od = self.read('tools/LotRadarQA.OneDrive.ps1').decode('ascii')
-        for needle in ("Read-Host 'Type YES to allow the OneDrive test'", 'LOCAL_PHOTO_STORAGE', 'HKCU:\\Software\\Microsoft\\OneDrive\\Accounts',
+        for needle in ("if (-not (Confirm-Start 'OneDrive test'))", 'LOCAL_PHOTO_STORAGE', 'HKCU:\\Software\\Microsoft\\OneDrive\\Accounts',
                        'GetFinalPathNameByHandleW', "'LotRadar QA TEST ONLY *'", 'LOTRADAR_QA_TEST_FOLDER.txt', 'rmdir /s /q',
                        'PC1 ', 'PC2 ', 'PC3 ', 'Invoke-Native'):
             self.assertIn(needle, od)

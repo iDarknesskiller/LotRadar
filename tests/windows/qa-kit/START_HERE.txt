@@ -57,8 +57,8 @@ failure and NOT a pass. If you want R3 tested fully (optional):
 
 OPTIONAL SECOND TEST (only if asked): RUN_FULL_LAUNCH_TESTS.cmd
 This also starts LotRadar for real inside the temporary test folder. It needs internet and
-downloads Python packages and a browser (several hundred MB, 10-30 minutes). It asks you to type
-YES first. If Python is not on this PC, LotRadar's own startup script installs Python 3.13 for
+downloads Python packages and a browser (several hundred MB, 10-30 minutes). Double-clicking it is
+your OK: it explains what it will do and starts after 10 seconds (close the window to cancel). If Python is not on this PC, LotRadar's own startup script installs Python 3.13 for
 your Windows user, and Python stays installed afterwards (you can remove it in Settings > Apps).
 
 OPTIONAL ONEDRIVE TEST (only if asked): RUN_ONEDRIVE_TESTS.cmd
@@ -69,7 +69,7 @@ What it does:
      Facebook photo exports, the photo selection file and the database, and reports whether any
      of them are inside OneDrive ("LOCAL_PHOTO_STORAGE").
   2. Runs the normal test once with the package unpacked on this PC (local control).
-  3. Only if you type YES: creates ONE temporary folder "LotRadar QA TEST ONLY ..." in your
+  3. After a 10-second countdown (close the window to cancel): creates ONE temporary folder "LotRadar QA TEST ONLY ..." in your
      OneDrive with the synthetic test installer only (no real data, no photos), runs the test with
      the package unpacked there, then deletes that folder. OneDrive may upload those test files
      while it runs and keep the deleted folder in its online recycle bin for a while.

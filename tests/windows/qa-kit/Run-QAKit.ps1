@@ -16,7 +16,7 @@
   LOCAL folder under %LOCALAPPDATA%\LotRadar QA Results, never into OneDrive.
 #>
 [CmdletBinding()]
-param([switch]$FullLaunch, [switch]$OneDrive)
+param([switch]$FullLaunch, [switch]$OneDrive, [switch]$Yes)
 $ErrorActionPreference = 'Stop'
 $kit = Split-Path -Parent $PSScriptRoot
 $resultsDir = Join-Path $kit 'RESULTS'
@@ -60,6 +60,18 @@ function Protect-Text([string]$Text) {
         }
     }
     return $out
+}
+
+# Consent. The Owner chose double-click consent: the separately labeled launchers pass -Yes, so after the disclosure
+# the run starts by itself after a 10-second countdown (closing the window cancels). Without -Yes a typed YES is required.
+function Confirm-Start([string]$What) {
+    if ($Yes) {
+        Say ('Starting the ' + $What + ' in 10 seconds. To cancel, close this window now.') 'Yellow'
+        for ($i = 10; $i -ge 1; $i--) { Write-Host ('  ' + $i + '...') -NoNewline; Start-Sleep -Seconds 1 }
+        Write-Host ''
+        return $true
+    }
+    return ((Read-Host ('Type YES to start the ' + $What)) -eq 'YES')
 }
 
 function Test-ShortcutRestored {
@@ -205,8 +217,7 @@ if ($FullLaunch) {
         Say 'for your Windows user with Windows Package Manager (WinGet). Python STAYS INSTALLED after the test' 'Red'
         Say '(the same thing a real LotRadar install does). It can be removed later in Settings > Apps.' 'Red'
     }
-    $answer = Read-Host 'Type YES to continue'
-    if ($answer -ne 'YES') { Say 'Cancelled. Nothing was run.'; exit 9 }
+    if (-not (Confirm-Start 'full launch test')) { Say 'Cancelled. Nothing was run.'; exit 9 }
 }
 
 # ---- 9. run the harness (it writes its log + JSON next to the package ZIP)
