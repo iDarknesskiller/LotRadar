@@ -479,6 +479,53 @@ def create_handler(store, port, token):
                 errors.append(str(exc))
         raise ValueError('no_export_ready_photos; download_car_photos_from_Toyota_or_Mitsubishi_first')
 
+    def photo_source_with_links(vin,requested):
+        """Preferred used dealer source that actually has saved photo links (Toyota first)."""
+        if requested not in USED_SOURCES:raise ValueError('invalid_photo_identity')
+        current_photo_record(vin,requested)    # validates VIN and used source
+        vehicle=next(v for v in store.state()['vehicles'] if v['vin']==vin)
+        for src in ('toyota_used','mitsubishi_used'):
+            if src in vehicle['sources'] and (vehicle['sources'][src].get('images') or []):return src
+        raise ValueError('no_image_urls_for_vehicle')
+
+    def photo_failure_reason(error):
+        text=str(error or '').lower()
+        if not text:return 'not_downloaded'
+        for needle,label in (('403','blocked_by_host'),('404','not_found'),('timeout','timeout'),('timed out','timeout'),('ssl','tls_error'),('too large','too_large'),('size','too_large'),('type','not_an_image'),('image','not_an_image')):
+            if needle in text:return label
+        return 'download_failed'
+
+    def scoped_photo_progress(vin,source):
+        """One canonical, source-scoped funnel: Found >= Unique >= Downloaded >= Usable."""
+        if source not in USED_SOURCES:raise ValueError('invalid_photo_identity')
+        record=current_photo_record(vin,source)
+        raw=[u for u in (record.get('images') or []) if isinstance(u,str)]
+        snap=safe_photo_status(vin,source,raw)
+        photos=snap.get('photos') or []
+        downloaded=int(snap.get('downloaded',0));unique=int(snap.get('total',0))
+        usable=min(downloaded,int(snap.get('usable',0)))
+        failures={}
+        for item in photos:
+            if item.get('downloaded'):continue
+            if item.get('status')=='failed' or item.get('error'):
+                reason=photo_failure_reason(item.get('error'));failures[reason]=failures.get(reason,0)+1
+        failed=sum(failures.values())
+        sort=classify_status(vin,source)
+        pending=bool(snap.get('pending'))
+        if not raw:stage='unavailable'
+        elif pending:stage='downloading' if downloaded<unique else 'queued'
+        elif sort.get('running'):stage='sorting'
+        elif unique and downloaded>=unique:stage='ready'
+        elif downloaded:stage='partial'
+        else:stage='unavailable' if failed else 'queued'
+        revision=hashlib.sha256(json.dumps([[p.get('url'),p.get('downloaded'),p.get('excluded'),p.get('status')] for p in photos]+[sort.get('classified',0),bool(sort.get('running'))],sort_keys=True).encode()).hexdigest()[:16]
+        return {'ok':True,'vin':vin,'source':source,'stage':stage,'pending':pending,
+                'found':len(raw),'unique':unique,'downloaded':downloaded,'usable':usable,'failed':failed,
+                'failure_reasons':failures,'dealer_reported':record.get('photo_gallery_expected'),
+                'discovery_shortfall':bool(record.get('photo_gallery_expected') and unique<record['photo_gallery_expected']),
+                'sorting':{'running':bool(sort.get('running')),'classified':sort.get('classified',0),'total':sort.get('total',0),'error':sort.get('error','')},
+                'revision':revision}
+
     # 1.9.13: sort photos into exterior/interior as soon as a vehicle's photo download finishes.
     # Set here, after export_for_preferred_dealer exists, so a job finishing at startup can't hit a NameError.
     photo_cache.on_finished=lambda vin,source:auto_sorter.request(vin,source)
@@ -817,6 +864,11 @@ def create_handler(store, port, token):
                 cfg=photo_cache.preferences()
                 return self._json(200,{'ok':True,'contact_number':cfg['contact_number'],
                                        'auto_replace':cfg['auto_replace']})
+            if path == '/api/photos/progress':
+                if self.headers.get('X-SalesmanHub-Token') != token:return self._json(403,{'error':'session_token_required'})
+                q=parse_qs(urlsplit(self.path).query)
+                try:return self._json(200,scoped_photo_progress(q.get('vin',[''])[0].upper(),q.get('source',[''])[0]))
+                except ValueError as exc:return self._json(400,{'error':str(exc)})
             if path == '/api/photo-status':
                 if self.headers.get('X-SalesmanHub-Token') != token:
                     return self._json(403,{'error':'session_token_required'})
@@ -1408,6 +1460,14 @@ def create_handler(store, port, token):
                     raw=buf.getvalue()
                     self._headers(200,'application/zip',len(raw))
                     return self.wfile.write(raw)
+                if path == '/api/photos/open':
+                    # Opening the picker is explicit intent: queue ONE (VIN, source) job, cache reused,
+                    # never force (the failed-host cooldown still applies), no duplicate downloads.
+                    vin=str(data.get('vin') or '').upper()
+                    source=photo_source_with_links(vin,data.get('source'))
+                    rec=current_photo_record(vin,source)
+                    photo_cache.enqueue(vin,source,rec['images'],force=False,explicit=True)
+                    return self._json(200,scoped_photo_progress(vin,source))
                 if path == '/api/photos/download':
                     photo_cache.prioritize(str(data.get('vin') or '').upper())
                     vin=str(data.get('vin') or '').upper();source=data.get('source')

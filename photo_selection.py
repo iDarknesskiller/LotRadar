@@ -51,15 +51,19 @@ class PhotoSelections:
             keys=saved.get('keys',[]) if isinstance(saved,dict) else available[:2]
             try:validate_keys(keys)
             except ValueError:keys=[]
-            return {'keys':[k for k in available if k in keys], 'missing_keys':[k for k in keys if k not in available], 'limit':limit,'saved':saved is not None,'source':source,'groups':{k:v for k,v in saved.get('groups',{}).items() if k in available} if isinstance(saved,dict) else {}}
+            return {'keys':[k for k in keys if k in available], 'missing_keys':[k for k in keys if k not in available], 'limit':limit,'saved':saved is not None,'source':source,'groups':{k:v for k,v in saved.get('groups',{}).items() if k in available} if isinstance(saved,dict) else {}}
     def save(self,vin,source,keys,frames,limit=None,groups=None):
         self._id(vin,source);validate_keys(keys)
         available=[frame_key(f) for f in frames]
         if any(k not in available for k in keys):raise ValueError('selection_changed_refresh_preview')
         if limit is not None and (type(limit) is not int or not 1<=limit<=60):raise ValueError('invalid_photo_limit')
         if groups is not None and (not isinstance(groups,dict) or any(v not in ('exterior','interior','unknown') for k,v in groups.items())):raise ValueError('invalid_photo_groups')
+        if limit is None:
+            cur=self.data.get('_limit',20);limit_eff=cur if type(cur) is int and 1<=cur<=60 else 20
+        else:limit_eff=limit
+        if len(keys)>limit_eff:raise ValueError(f'too_many_photos_selected; {len(keys)} selected, limit {limit_eff}')
         with self.lock:
-            data=json.loads(json.dumps(self.data));data.setdefault(vin,{})[source]={'source':source,'keys':[k for k in available if k in keys],'updated':datetime.now(timezone.utc).isoformat()}
+            data=json.loads(json.dumps(self.data));data.setdefault(vin,{})[source]={'source':source,'keys':list(keys),'updated':datetime.now(timezone.utc).isoformat()}
             prior_groups=(self.data.get(vin,{}).get(source,{}) or {}).get('groups',{})
             data[vin][source]['groups']={k:v for k,v in (groups if groups is not None else prior_groups).items() if k in available}
             if limit is not None:data['_limit']=limit

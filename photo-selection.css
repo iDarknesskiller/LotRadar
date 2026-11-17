@@ -27,3 +27,12 @@
 .photo-group-heading{flex:0 0 100%;grid-column:1/-1;width:100%;margin:10px 0 2px;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#c9d8e9;border-bottom:1px solid rgba(201,216,233,.25);padding-bottom:3px}
 .gallery-thumbs:not(.photo-grid-expanded) .photo-group-heading{flex:0 0 auto;width:auto;align-self:center;writing-mode:vertical-rl;transform:rotate(180deg);margin:0 2px;border:0;padding:0}
 .photo-autosort-toggle{display:inline-flex;gap:5px;align-items:center;font-size:12px;margin-left:auto}
+
+/* Photo picker: click-order badge, single progress bar, failures disclosure */
+.gallery-thumb{position:relative}
+.photo-order-badge{position:absolute;top:4px;right:4px;min-width:22px;padding:1px 5px;border-radius:11px;background:#1d6fdc;color:#fff;font-size:12px;line-height:18px;text-align:center}
+.photo-progress-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.photo-progress-bar progress{flex:1 1 160px;min-width:120px;height:12px}
+.photo-funnel{display:block;margin-top:4px;font-size:13px}
+.photo-failures{margin-top:6px;font-size:13px}
+.photo-failures ul{margin:4px 0 6px 18px;padding:0}
