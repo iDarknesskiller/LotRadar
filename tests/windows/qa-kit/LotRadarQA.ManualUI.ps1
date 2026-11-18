@@ -147,6 +147,8 @@ if ($UiPreview) {
     if ($e4Status -eq 'PASS' -and $null -ne $auto -and [string]$auto.clipped -and [string]$auto.clipped -ne 'not checked') { $e4Status = 'FAIL'; $e4Detail += ' (person answered yes, but the automatic check found text cut off)' }
     if ($e4Status -eq 'PASS' -and $pct -lt 150) { $e4Status = 'INCOMPLETE'; $e4Detail += ' (looks fine here; E4 needs a run at 150%)' }
     Add-M 'E4' 'Display scaling: no clipped text or controls' $e4Status $e4Detail
+    $e0 = Read-YesNo 'E0 look: a small dark window with only the round LotRadar mark in the middle (an "LR" circle in this preview), "Initializing LotRadar", a BLUE moving bar with no percentage and the four steps SYSTEM CHECK / LOADING MODULES / STARTING SERVER / LAUNCHING LOTRADAR?'
+    Add-M 'E0' 'Appearance matches the approved minimal design (logo, status, blue bar, four steps)' $(switch ($e0) { 'Y' { 'PASS' } 'N' { 'FAIL' } default { 'SKIP' } }) ('answered by the person at ' + $pct + '%; the private logo itself is shown only by a production package')
     Write-ManualSummary 'LotRadar manual UI acceptance - Stage A (preview only; proves appearance/keyboard, NOT a real launch)' @(('Display scaling : ' + $pct + '% (' + $dpi + ' dpi)'))
     return
 }

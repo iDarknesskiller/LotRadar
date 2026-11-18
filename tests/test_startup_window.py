@@ -43,8 +43,17 @@ class TestStartupWindow(unittest.TestCase):
 
     def test_honest_progress(self):
         c = self.code
-        self.assertIn('ProgressBarStyle]::Marquee', c)
-        self.assertNotIn('.Value = $bar.Value +', c)
+        # code-painted blue indeterminate bar: only run / done / failed, never a fraction
+        self.assertNotIn('New-Object Windows.Forms.ProgressBar', c)
+        self.assertIn("$script:BarMode = 'run'", c)
+        modes = set(re.findall(r"Set-BarMode '([a-z]+)'", c))
+        self.assertEqual(modes, {'run', 'done', 'failed'})
+        self.assertNotRegex(c, r'\.Value\s*=')
+        self.assertIn('[Windows.Forms.AccessibleRole]::ProgressBar', c)
+        paint = c[c.index('$bar.Add_Paint({'):c.index('function Set-BarMode')]
+        self.assertIn('$script:BarPhase % ($w + $seg)', paint)        # moving segment = working, not an amount
+        self.assertIn("Set-BarMode 'done'", c[c.index('function Set-Done'):c.index('function Update-Health')])
+        self.assertIn("Set-BarMode 'failed'", c[c.index('function Set-Failed'):c.index('function Set-Done')])
         shown = ' '.join(re.findall(r"'[^']*'", c))        # texts the window can display
         self.assertNotRegex(shown, r"(?i)\d\s*%|percent|\beta\b|remaining")   # no invented percentages or time estimates
 
@@ -111,8 +120,12 @@ class TestStartupWindow(unittest.TestCase):
         raw = [l for l in c.splitlines() if ('New-Object Drawing.Point(' in l or 'New-Object Drawing.Size(' in l) and 'MeasureText' not in l]
         self.assertEqual(len(raw), 2, raw)
         self.assertTrue(all(l.startswith('function ScalePoint(') or l.startswith('function ScaleSize(') for l in raw), raw)
-        for k in ('$form.ClientSize = (ScaleSize 480 330)', '$form.ClientSize = (ScaleSize 480 460)', '$b.Top = (ScalePx 420)', '$b.Top = (ScalePx 290)', '$details.Height = (ScalePx 120)'):
+        for k in ('$LayoutW = 560; $LayoutH = 384; $ButtonsY = 340; $DetailsH = 100', '$form.ClientSize = (ScaleSize $LayoutW $LayoutH)',
+                  '$form.ClientSize = (ScaleSize $LayoutW ($LayoutH + $dh + 10))', '$b.Top = (ScalePx ($ButtonsY + $dh + 10))',
+                  '$b.Top = (ScalePx $ButtonsY)', '$details.Height = (ScalePx $dh)'):
             self.assertIn(k, c)
+        # details on a short screen: the box shrinks (never below 40) so the buttons stay on screen
+        self.assertIn('$dh = [math]::Max(40, [math]::Min($DetailsH, $room))', c)
         self.assertNotRegex(c, r'\.(Top|Height|Width|Left) = \d')
         # the window measures its own texts while it still exists and reports them in the ResultFile
         fc = c[c.index('$form.Add_FormClosing({'):]
@@ -138,6 +151,74 @@ class TestStartupWindow(unittest.TestCase):
                 names = re.findall(r'^\s*function\s+([A-Za-z0-9_-]+)', h.read(), re.M)
             clash = [n for n in names if n.lower() in builtin]
             self.assertEqual(clash, [], path)
+
+
+class TestStartupVisualContract(unittest.TestCase):
+    """Owner's final visual decision (docs/startup/VISUAL_DESIGN_APPROVAL.md, UI-01..UI-10)."""
+    @classmethod
+    def setUpClass(cls):
+        with open(PATH, encoding='ascii') as h:
+            cls.text = h.read()
+        cls.code = '\n'.join(l for l in cls.text.splitlines() if not l.lstrip().startswith('#'))
+
+    def test_four_steps_exact_labels_and_mapping(self):
+        c = self.code
+        self.assertIn("@{ Id = 'system'; Label = 'SYSTEM CHECK'; Parts = @('install') }", c)
+        self.assertIn("@{ Id = 'modules'; Label = 'LOADING MODULES'; Parts = @('python', 'browser') }", c)
+        self.assertIn("@{ Id = 'server'; Label = 'STARTING SERVER'; Parts = @('server') }", c)
+        self.assertIn("@{ Id = 'launch'; Label = 'LAUNCHING LOTRADAR'; Parts = @('open') }", c)
+        self.assertEqual(len(re.findall(r"@\{ Id = '[a-z]+'; Label = '[A-Z ]+'; Parts = ", c)), 4)
+        # the five real stages are still the only accepted events
+        for s in ('install', 'python', 'browser', 'server', 'open'):
+            self.assertIn("@{ Id = '%s'; Label = " % s, c)
+
+    def test_step_state_is_honest(self):
+        c = self.code
+        g = c[c.index('function Get-StepState'):c.index('function Update-StepView')]
+        # failed wins, then active; a step with one part done and one still waiting is NOT done
+        self.assertLess(g.index("return 'failed'"), g.index("return 'active'"))
+        self.assertIn("if ($parts -contains 'waiting') { return 'active' }", g)
+        # LAUNCHING LOTRADAR is done only once Set-Done ran (open:complete AND healthy /api/health)
+        self.assertIn("if ($Step.Id -eq 'launch' -and $script:Mode -ne 'done') { return 'active' }", g)
+        self.assertLess(g.index("$Step.Id -eq 'launch'"), g.index("return 'done'"))
+        self.assertIn('if ($script:HealthOk) { Set-Done }', c)
+        # retry resets every real stage to waiting
+        for fn in ('function Start-Attempt', 'function Start-PreviewAttempt'):
+            body = c[c.index(fn):]
+            body = body[:body.index('\n}')]
+            self.assertIn("foreach ($st in $Stages) { Set-Row $st.Id 'waiting' }", body)
+            self.assertIn("Set-BarMode 'run'", body)
+            self.assertIn("$title.Text = 'Initializing LotRadar'", body)
+        # the result file reports the four visible steps for the Windows tests
+        self.assertIn('steps = [string]$script:StepsAtClose; logo = [bool]$script:HasLogo', c)
+
+    def test_only_existing_logo_no_splash_art(self):
+        c = self.code
+        self.assertIn("$logoPath = Join-Path $programDir 'branding\\lotradar_logo.png'", c)
+        for banned in ('startup_splash', 'BackgroundImage', '.jpg', 'dedication', 'business_card'):
+            self.assertNotIn(banned, c)
+        self.assertEqual(len(re.findall(r"\.png'", c)), 1)          # one image only: the existing private logo
+        self.assertEqual(c.count('Image]::FromStream'), 1)
+        # fallback without the private logo: a small code-drawn mark, not a giant wordmark
+        self.assertIn("$brand.Text = 'LR'", c)
+        self.assertNotRegex(c, r"Drawing\.Font\('Segoe UI', (3\d|[4-9]\d)")   # no font of 30 pt or more
+        self.assertIn("$title.Text = 'Initializing LotRadar'", c)
+
+    def test_dark_theme_with_high_contrast_fallback(self):
+        c = self.code
+        self.assertIn('$script:HighContrast = [Windows.Forms.SystemInformation]::HighContrast', c)
+        self.assertIn('$form.BackColor = $Pal.Back', c)
+        self.assertIn('Bar = [Drawing.SystemColors]::Highlight', c)         # high contrast: system colours
+        self.assertIn('DwmSetWindowAttribute($form.Handle, 20', c)          # dark title bar, best effort
+        self.assertIn('if ($native -and -not $script:HighContrast)', c)
+
+    def test_controls_and_accelerators_kept(self):
+        c = self.code
+        for b in ("New-Button '&Show details'", "New-Button 'Show &console'", "New-Button '&Retry'", "New-Button 'C&lose'"):
+            self.assertIn(b, c)
+        self.assertIn('$form.CancelButton = $btnClose', c)
+        self.assertIn('$anim.Stop()', c[c.index('$form.Add_FormClosing({'):])
+
 
 if __name__ == '__main__':
     unittest.main()

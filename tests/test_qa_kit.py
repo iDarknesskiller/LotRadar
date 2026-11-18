@@ -309,6 +309,7 @@ class QAKit(unittest.TestCase):
         self.assertIn("'-Preview'", a)
         self.assertIn("'-ResultFile'", a)
         self.assertIn("Add-M 'E4a'", a)                             # automatic cut-off check reported
+        self.assertIn("Add-M 'E0' 'Appearance matches the approved minimal design", a)
         self.assertIn('the automatic check found text cut off', a)  # a person's yes cannot override it
         for banned in ('Install-LotRadar', 'Expand-KitPackage', 'TcpListener', 'taskkill', 'Confirm-Start'):
             self.assertNotIn(banned, a)

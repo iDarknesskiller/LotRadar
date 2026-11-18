@@ -58,12 +58,21 @@ Health must show `ok=true, local_only=true, service="Marketplace Scanner"`; one 
 4. A DEV-NOBRANDING package must report `branding_assets_missing`.
 
 ## E. Startup window (PR #5 candidate; Windows 11 and Windows 10)
-Automated: G1-G5 every run, G6-G8 with `-FullLaunch` (window over the real bootstrap). Still manual:
-1. Explorer double-click of the Desktop shortcut: one LotRadar startup window, steps change from Waiting to In progress
-   to Done, LotRadar opens once, the startup window closes by itself, "LotRadar Server" stays in the taskbar.
+Automated: G1-G5, G9, G10 every run, G6-G8 with `-FullLaunch` (window over the real bootstrap); every G case also checks
+the four visible steps the window reports. Still manual:
+0. Appearance (docs/startup/VISUAL_DESIGN_APPROVAL.md): a small dark window; the original watch-shaped LotRadar logo
+   (with its own red and green `LOT RADAR` lettering) in the centre with a soft blue glow; "Initializing LotRadar"; a
+   blue moving bar with no percentage; four steps `SYSTEM CHECK`, `LOADING MODULES`, `STARTING SERVER`,
+   `LAUNCHING LOTRADAR`. No other picture, character, moon, banner or large separate title. A development package
+   without the private logo shows a plain "LR" circle instead.
+1. Explorer double-click of the Desktop shortcut: one LotRadar startup window, the four steps change from Waiting to
+   In progress to Done (LOADING MODULES stays In progress until both Python and the browser runtime are ready; the line
+   under "Initializing LotRadar" names which one), LotRadar opens once, the startup window closes by itself,
+   "LotRadar Server" stays in the taskbar.
 2. Double-click again while LotRadar runs: LotRadar opens again; still one "LotRadar Server" window.
 3. Keyboard only: Tab moves between the buttons, Alt+S / Alt+C / Alt+R / Alt+L work, Esc closes.
-4. Display scaling 150% (Settings > Display): text and buttons are not cut off.
+4. Display scaling 100%, 125%, 150% and 200% (Settings > Display; sign out and back in after each change): text,
+   steps and buttons are not cut off, also with "Show details" open.
 5. Close the startup window while it shows "In progress": the "LotRadar Server" window comes up and LotRadar still
    opens; nothing is stopped.
 6. Failure: with LotRadar running from a DIFFERENT folder or another program on port 8765, the window shows the port

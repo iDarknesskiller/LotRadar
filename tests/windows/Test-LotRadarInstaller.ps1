@@ -1105,7 +1105,8 @@ try {
         $after = @(Get-ChildItem -LiteralPath $runtimeDir -Filter 'startup-status-*.jsonl' -ErrorAction SilentlyContinue).Count
         Assert-True ($after -le $before) 'status file of the attempt was left behind'
         Assert-True ($w.Result.clipped -eq '') ('text or buttons cut off at display scale ' + $w.Result.scale + ': ' + $w.Result.clipped)
-        return ('exit 91 (launcher returns 1); reason shown: ' + $w.Result.reason + '; console closed; nothing cut off at scale ' + $w.Result.scale + '; ' + $w.Seconds + ' s')
+        Assert-True ($w.Result.steps -eq 'system:failed,modules:pending,server:pending,launch:pending') ('visible steps wrong: ' + $w.Result.steps)
+        return ('exit 91 (launcher returns 1); reason shown: ' + $w.Result.reason + '; steps ' + $w.Result.steps + '; console closed; nothing cut off at scale ' + $w.Result.scale + '; ' + $w.Seconds + ' s')
     }
     Invoke-Test 'G4' 'Window: a forged "opened" event without a healthy server is NOT reported as success' {
         Assert-True (-not (Test-PortBusy)) 'test setup: something listens on 8765'
@@ -1115,13 +1116,15 @@ try {
         Assert-True (@($w.Result.events) -contains 'open:complete') ('the stub never reported (test did not exercise the forged event): ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True ($w.Result.reason -like '*did not answer*') ('failed for another reason: ' + $w.Result.reason)
         Assert-True ($w.Result.health -ne $true) 'health reported OK with no server'
-        return ('exit 91; ' + $w.Result.reason)
+        Assert-True ($w.Result.steps -like '*launch:failed') ('LAUNCHING LOTRADAR not shown as failed: ' + $w.Result.steps)
+        return ('exit 91; steps ' + $w.Result.steps + '; ' + $w.Result.reason)
     }
     Invoke-Test 'G5' 'Window: an event with another nonce is ignored (only the valid event counts), then a clear failure' {
         [IO.File]::WriteAllText($gStub, ($emit + 'E ''install'' ''started'' ''stub'' $env:LOTRADAR_STARTUP_NONCE; E ''open'' ''complete'' ''wrong nonce'' (''f'' * 32); exit 0'), [Text.Encoding]::ASCII)
         try { $w = Invoke-StartupWindow $gGui 90 } finally { Stop-GuiTestProcesses }
         Assert-True ($w.Exit -eq 91 -and $w.Result.mode -eq 'failed') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True ((@($w.Result.events) -join ',') -eq 'install:started') ('expected only the valid event install:started, got: ' + (@($w.Result.events) -join ', '))
+        Assert-True ($w.Result.steps -eq 'system:failed,modules:pending,server:pending,launch:pending') ('the foreign "opened" event changed the visible steps: ' + $w.Result.steps)
         return ('exit 91; only the valid-nonce event accepted; foreign open:complete ignored; ' + $w.Result.reason)
     }
 
@@ -1143,6 +1146,7 @@ try {
         Assert-True ($w.Exit -eq 0 -and $w.Result.mode -eq 'running') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True (@($w.Result.events) -contains 'install:started') ('the stub never reported: ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True ($alive -ge 1) 'closing the window STOPPED the startup (its console/script is gone)'
+        Assert-True ($w.Result.steps -eq 'system:active,modules:pending,server:pending,launch:pending') ('visible steps while starting: ' + $w.Result.steps)
         return ('exit 0; startup still running after close (' + $alive + ' process(es)); console shown=' + $w.Result.console_shown + ' (' + $w.Result.console_diag + '); ' + $w.Note)
     }
     Invoke-Test 'G10' 'Window failure by keyboard: Alt+C shows the console, Esc closes (exit 91), nothing left running' {
@@ -1316,6 +1320,7 @@ try {
             Assert-True ($w.Exit -eq 0 -and $w.Result.mode -eq 'done' -and $w.Result.health -eq $true) ('result: ' + ($w.Result | ConvertTo-Json -Compress))
             Assert-True (@($ev | Where-Object { $_ -eq 'open:complete' }).Count -eq 1) ('LotRadar window opened ' + @($ev | Where-Object { $_ -eq 'open:complete' }).Count + ' times: ' + ($ev -join ', '))
             foreach ($need in @('install:started', 'python:started', 'browser:started', 'server:started')) { Assert-True ($ev -contains $need) ('stage not reported: ' + $need + ' (' + ($ev -join ', ') + ')') }
+            Assert-True ($w.Result.steps -eq 'system:done,modules:done,server:done,launch:done') ('visible steps not all done after a healthy start: ' + $w.Result.steps)
             Start-Sleep -Seconds 2
             $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/health' -TimeoutSec 5
             Assert-True ($health.ok -eq $true -and $health.local_only -eq $true) 'server not healthy after the window closed'
@@ -1331,6 +1336,7 @@ try {
             Assert-True ($w.Exit -eq 0 -and $w.Result.mode -eq 'done') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
             Assert-True (@($ev | Where-Object { $_ -eq 'open:complete' }).Count -eq 1) ('open count wrong: ' + ($ev -join ', '))
             Assert-True ($ev -notcontains 'python:started' -and $ev -notcontains 'server:started') ('setup ran again: ' + ($ev -join ', '))
+            Assert-True ($w.Result.steps -eq 'system:skipped,modules:skipped,server:skipped,launch:done') ('visible steps wrong for an already running LotRadar: ' + $w.Result.steps)
             Assert-True (@(Get-ServerRoots).Count -eq 1) ('expected 1 server process tree, found ' + @(Get-ServerRoots).Count)
             return ('exit 0; events: ' + ($ev -join ' > ') + '; still 1 server tree')
         }
