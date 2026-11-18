@@ -119,3 +119,8 @@ Continue documentation branch `docs/codex-senior-developer-role` in **existing D
 **Risks:** Copilot false positives, issue spam, old-SHA claims, concurrent edits to same feature, accidental public disclosure, and treating issue creation as implementation permission. Mitigate with evidence, dedup, investigation-only statuses, sandbox/privacy rules and Owner approval.
 
 **Git:** Continue draft PR #9 `docs/codex-senior-developer-role`. Do not merge to `main`, release, or change another branch.
+
+
+## Setup clarification — Copilot Free and repository visibility
+
+GitHub was checked during Copilot setup: `iDarknesskiller/LotRadar` is **public**, and GitHub's Copilot cloud automations require a paid Copilot plan plus a **private/internal** repository. The Owner's prior description of an automated Copilot task is an unverified statement about a possibly different workflow, not confirmation that native Copilot cloud automation is active. Do not configure, activate or promise it on Copilot Free. A read-only manual Copilot Chat scout prompt is available in `docs/ai/COPILOT_FREE_SCOUT_PROMPT.txt`; its repository instructions are in `.github/copilot-instructions.md`. GitHub's CodeQL/Dependabot security scanning may be activated separately as a free public-repository alternative, only with Owner choice and appropriate settings access. No production files, schedules or actions workflows were changed as part of this clarification. Preserve Owner-only work assignment and merge authority.
