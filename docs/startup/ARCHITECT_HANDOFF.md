@@ -357,3 +357,15 @@ Since this report, Claude added `G9`/ `G10` tests and screenshots at `88ddf78`. 
 Permitted if necessary: `startup/Show-LotRadarStartup.ps1` for a tightly scoped visual/testability fix; `tests/windows/qa-kit/*`, `tests/windows/Test-LotRadarInstaller.ps1`, `tests/test_qa_kit.py`, `tests/test_startup_window.py`, `scripts/build_qa_kit.py`, `docs/MANUAL_ACCEPTANCE.md`, `docs/INSTALL.md`, and this handoff. Any change to bootstrap/launcher ownership semantics needs separate Architect review.
 Do not touch `core.py`, `server.py`, photos or selections, database, Chrome Reader, Facebook drafts, real OneDrive folders, private branding, approved `main` or PR #7 uninstaller.
 **Acceptance:** Genuine E1–E6 manual checks performed and independently reviewed, no clipped controls at 150% DPI, zero unauthorized installs or real-data mutation, exact candidate source SHA, and safe normal/repeated/failure/close lifecycle with one server. PR #5 remains **draft**.
+
+
+
+## Owner-approved cinematic blue/purple radar startup reference (2026-11-17)
+
+**Newest and overriding design decision:** The Project Owner selected the exact final cinematic 1670×941 reference, SHA-256 `4024522afe01a8d35953e28d2e6ec4611267ecb1eccc9c72655279576d2fe763`, over all earlier generated variants and the existing compact gray WinForms view. **The full implementation/QA contract is [`docs/startup/VISUAL_DESIGN_APPROVAL.md`](VISUAL_DESIGN_APPROVAL.md), to Claude — Lead Programmer.** Read that whole file before changes.
+
+Retain the **blue/indigo/violet cinematic background, moon, armored figure, exact silver/green stopwatch radar featuring red `LOT RADAR` on its outer ring and green `LOT RADAR` on the screen**. No giant independent `LOTRADAR` title; keep **`INITIALIZING LOTRADAR`**, blue progress indicator and four real status steps in the lower area. The reference image embeds a **fake 72%** and pre-drawn checkmarks, so **separate and rebuild this strip as truthful live controls** rather than shipping them baked into a static picture. Unmeasurable phases use indeterminate blue animation, not guessed percentage. Preserve actual bootstrap-stage updates, authentication/health, one-server lock, Show console, Retry, Exit and DPI/keyboard accessibility.
+
+**Private asset delivery is an explicit blocker:** The user uploaded this image privately through ChatGPT; it is not in public GitHub and cannot be retrieved from this PR. Obtain the **exact PNG** from a private Owner-approved transfer before final pixel-perfect rendering. **Do not commit original private branding or splash bytes to the public repository.** If not received, mark visual acceptance **BLOCKED**, not PASS. Keep current tested startup implementation working until the private production splash and tests are available.
+
+Stay on draft PR #5; PR #8 compiled packaging must later include the separately approved resource. No merge or release without Owner approval.
