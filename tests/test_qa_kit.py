@@ -264,6 +264,37 @@ class QAKit(unittest.TestCase):
         self.assertIn("New-QAOwnedFolder $odTestDir 'onedrive'", od)
         self.assertIn('Remove-QAOwnedFolder $own $odParent', od)
 
+    def test_harness_records_cleanup_outcome(self):
+        """PR #5 fix A: a sandbox left behind must be a CLN1 FAIL row (exit 1), never only a console NOTE."""
+        h = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
+        f = h[h.index('function Complete-SandboxCleanup'):]
+        f = f[:f.index('\r\n}\r\n') + 3]
+        self.assertEqual(f.count("Add-Result 'CLN1'"), 4)                  # PASS / INFO operator / INFO shortcut / FAIL
+        for status in ("'PASS' 'no sandbox folder left'", "'INFO' 'kept on purpose: -KeepSandbox",
+                       "'INFO' 'kept on purpose: it holds the only backup of your Desktop shortcut", "'FAIL' ('sandbox NOT removed"):
+            self.assertIn(status, f)
+        self.assertIn("Replace($root, '<sandbox>')", f)                      # first error masked
+        self.assertIn("Replace($env:USERPROFILE, '%USERPROFILE%')", f)
+        self.assertIn('NOTE: sandbox not fully removed', f)                   # console note kept for operators
+        self.assertIn('-not (Test-Path -LiteralPath $root) -and (Test-Path -LiteralPath $qaLedgerFile)', f)  # ledger kept while folder exists
+        # recorded in the final block AFTER the processes are stopped and BEFORE totals, exit code and JSON
+        fin = h[h.rindex('} finally {'):]
+        call = fin.index('Complete-SandboxCleanup -root $root -OperatorKeep $operatorKeepSandbox -ProtectKeep $shortcutProtectKeep')
+        self.assertLess(fin.index('try { Stop-SandboxProcesses }'), call)
+        self.assertLess(call, fin.index('$fail = @($script:Results'))
+        self.assertLess(call, fin.index('WriteAllText($jsonPath'))
+        self.assertIn('if ($fail -gt 0) { exit 1 }', h)
+        # the operator switch is never overwritten; the shortcut-protection keep has its own flag
+        self.assertIn('$operatorKeepSandbox = [bool]$KeepSandbox', h)
+        self.assertIn('$shortcutProtectKeep = $true', h)
+        self.assertNotIn('$KeepSandbox = $true', h)
+        self.assertNotIn('Stop-Process', f)
+        self.assertNotIn('taskkill', f)
+        # the runner already turns a nonzero harness exit and FAIL rows into its own FAIL summary and exit 1
+        runner = self.read('tools/Run-QAKit.ps1').decode('ascii')
+        self.assertIn("' FAIL=' + @($rows | Where-Object { $_.Status -eq 'FAIL' }).Count", runner)
+        self.assertIn('if ($harnessExit -ne 0) { exit 1 }', runner)
+
     def test_cleanup_selftest_mode(self):
         launcher = self.read('RUN_CLEANUP_SAFETY_TESTS.cmd').decode('ascii')
         self.assertIn('-CleanupSelfTest -Yes', launcher)

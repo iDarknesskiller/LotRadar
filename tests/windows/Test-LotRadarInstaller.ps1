@@ -34,6 +34,10 @@ param(
     [string]$OutDir = ''
 )
 $ErrorActionPreference = 'Stop'
+# CLN1: what the OPERATOR asked for (-KeepSandbox) is kept apart from the internal decision to keep the sandbox
+# because it holds the only backup of the Desktop shortcut (set in the final cleanup when SC1 fails).
+$operatorKeepSandbox = [bool]$KeepSandbox
+$shortcutProtectKeep = $false
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 $zipPath = (Resolve-Path -LiteralPath $PackageZip).Path
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -87,6 +91,45 @@ function Invoke-Test([string]$Id, [string]$Name, [scriptblock]$Body) {
     }
 }
 function Skip-Test([string]$Id, [string]$Name, [string]$Why) { Add-Result $Id $Name 'SKIP' $Why }
+# Final sandbox cleanup. It always RECORDS exactly one CLN1 row, so a sandbox left behind (for example a test
+# browser window still holding a file) can never hide behind an all-PASS summary:
+#   PASS  no sandbox folder is left
+#   INFO  kept on purpose (operator -KeepSandbox, or it holds the only Desktop shortcut backup); INFO is not a PASS
+#   FAIL  removal failed; the first error is reported with the sandbox path and profile path masked
+# The ownership ledger entry is removed only once the folder is really gone, so a later kit run can still prove it
+# is a test folder. Parameter names match the script variables on purpose (function scope; same meaning).
+function Complete-SandboxCleanup([string]$root, [bool]$OperatorKeep, [bool]$ProtectKeep, [string]$qaLedgerFile, [int]$Attempts = 3, [int]$DelaySeconds = 4) {
+    $firstError = ''
+    if (-not ($OperatorKeep -or $ProtectKeep)) {
+        for ($try = 1; $try -le $Attempts; $try++) {
+            try {
+                if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop }
+                break
+            } catch {
+                if (-not $firstError) {
+                    $firstError = [string]$_.Exception.Message
+                    if ($root) { $firstError = $firstError.Replace($root, '<sandbox>') }
+                    if ($env:USERPROFILE) { $firstError = $firstError.Replace($env:USERPROFILE, '%USERPROFILE%') }
+                }
+                if ($try -eq $Attempts) { Write-Host ('NOTE: sandbox not fully removed (safe to delete by hand): ' + $root) -ForegroundColor Yellow } else { Start-Sleep -Seconds $DelaySeconds }
+            }
+        }
+    }
+    # The ledger entry goes only once the sandbox is really gone; otherwise a later kit run can still recognise it.
+    if ($qaLedgerFile -and -not (Test-Path -LiteralPath $root) -and (Test-Path -LiteralPath $qaLedgerFile)) { Remove-Item -LiteralPath $qaLedgerFile -Force -ErrorAction SilentlyContinue }
+    $name = 'Sandbox removed after the run'
+    if (-not (Test-Path -LiteralPath $root)) {
+        Add-Result 'CLN1' $name 'PASS' 'no sandbox folder left'
+    } elseif ($OperatorKeep) {
+        Add-Result 'CLN1' $name 'INFO' 'kept on purpose: -KeepSandbox was requested (not a test result)'
+    } elseif ($ProtectKeep) {
+        Add-Result 'CLN1' $name 'INFO' 'kept on purpose: it holds the only backup of your Desktop shortcut (see SC1)'
+    } else {
+        $why = $firstError
+        if (-not $why) { $why = 'the folder is still there' }
+        Add-Result 'CLN1' $name 'FAIL' ('sandbox NOT removed after ' + $Attempts + ' attempts; it stays recorded so the kit can offer to remove it later. First error: ' + $why)
+    }
+}
 function Assert-True($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 
 # Reparse-tag reader (FindFirstFileW: dwReserved0 holds the tag when the item is a reparse point). Read-only, no hydration.
@@ -1355,21 +1398,18 @@ try {
         Write-Host ('WARNING: could not restore Desktop shortcut: ' + $_.Exception.Message) -ForegroundColor Red
         if ($desktopHadLnk) {
             # Never delete the only backup copy: keep the sandbox so the original shortcut can be copied back by hand.
-            $KeepSandbox = $true
+            $shortcutProtectKeep = $true
             Write-Host ('Your original shortcut backup is kept here: ' + $desktopBackup) -ForegroundColor Red
             Add-Result 'SC1' 'Desktop shortcut restored' 'FAIL' 'restore failed; backup kept in the sandbox folder'
         }
     }
     try { Stop-SandboxProcesses } catch { Write-Host ('NOTE: could not stop sandbox processes: ' + $_.Exception.Message) -ForegroundColor Yellow }
-    if (-not $KeepSandbox) {
-        for ($try = 1; $try -le 3; $try++) {
-            try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop; break } catch {
-                if ($try -eq 3) { Write-Host ('NOTE: sandbox not fully removed (safe to delete by hand): ' + $root) -ForegroundColor Yellow } else { Start-Sleep -Seconds 4 }
-            }
-        }
+    # CLN1 is recorded here, BEFORE the totals, the exit code and the JSON below, so a leftover sandbox counts.
+    try {
+        Complete-SandboxCleanup -root $root -OperatorKeep $operatorKeepSandbox -ProtectKeep $shortcutProtectKeep -qaLedgerFile $qaLedgerFile
+    } catch {
+        Add-Result 'CLN1' 'Sandbox removed after the run' 'FAIL' ('cleanup check itself failed: ' + $_.Exception.Message)
     }
-    # The ledger entry goes only once the sandbox is really gone; otherwise a later kit run can still recognise it.
-    if ($qaLedgerFile -and -not (Test-Path -LiteralPath $root) -and (Test-Path -LiteralPath $qaLedgerFile)) { Remove-Item -LiteralPath $qaLedgerFile -Force -ErrorAction SilentlyContinue }
     Write-Host ''
     Write-Host '=== SUMMARY ===' -ForegroundColor Cyan
     $script:Results | Format-Table Id, Status, Name -AutoSize | Out-String -Width 200 | Write-Host
