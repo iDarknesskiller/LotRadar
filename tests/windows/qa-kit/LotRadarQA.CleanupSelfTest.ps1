@@ -1,7 +1,9 @@
 # LotRadar QA kit: Windows self-test of the leftover-cleanup safety rules (TEST-ONLY).
 # Dot-sourced by Run-QAKit.ps1 -CleanupSelfTest after its preflight. Uses from Run-QAKit.ps1: Say, Protect-Text,
-# Get-Sha, Confirm-Start, $info, $os, $isWin11, $isAdmin, $resultsDir, $desktopLnk, $qaHome, $localAppData,
-# $odParents, $psExe, and the functions of LotRadarQA.Cleanup.ps1.
+# Get-Sha, $info, $os, $isWin11, $isAdmin, $resultsDir, $desktopLnk, $qaHome, $localAppData,
+# $odParents, $psExe, and the functions of LotRadarQA.Cleanup.ps1 (including Read-QAAnswer).
+# The OneDrive cases are a SEPARATE question (default: skip). The general -Yes of the launcher only starts the
+# local self-test; it never includes the OneDrive cases.
 #
 # Every case runs on SYNTHETIC fixtures: a fake Temp folder, fake Desktop, fake shortcut store and fake ledger, all
 # inside one disposable folder "%LOCALAPPDATA%\Temp\LotRadar Test Sandbox <id>" (plus, after consent, one
@@ -28,6 +30,13 @@ function Invoke-CL([string]$Id, [string]$Name, [scriptblock]$Body) {
     } catch { Add-CL $Id $Name 'FAIL' $_.Exception.Message }
 }
 function Assert-CL([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
+# OneDrive cases are opt-in: ONLY an answer of Y or y (spaces around it allowed) includes them. Enter, N, anything
+# else, end of input, redirected input or no console at all (the question then fails or returns nothing) = skip.
+function Get-QAOneDriveChoice([scriptblock]$Ask) {
+    $answer = ''
+    try { $answer = [string](& $Ask) } catch { $answer = '' }
+    return [bool]($answer -cmatch '^\s*[Yy]\s*$')
+}
 function New-Hex8 { return (New-QAOwnerToken).Substring(0, 8) }
 function Invoke-Cmd([string]$CommandLine) {
     $ErrorActionPreference = 'Continue'
@@ -134,11 +143,13 @@ $realLedgerBefore = @(Read-QALedger $realLedger | ForEach-Object { $_.Token } | 
 $useOneDrive = $false
 if (@($odParents).Count -gt 0) {
     Say ''
+    Say 'SEPARATE QUESTION - the local cleanup checks run either way; this is ONLY about two extra OneDrive cases.' 'Yellow'
     Say 'The OneDrive cases (CL21, CL22) create ONE temporary folder "LotRadar QA TEST ONLY <random>" in your OneDrive' 'Yellow'
-    Say 'with a few synthetic text files, then delete it. OneDrive may keep it in its online recycle bin for a while.' 'Yellow'
-    Say 'Your OneDrive settings and files are not changed.' 'Yellow'
-    $useOneDrive = [bool](Confirm-Start 'cleanup self-test (including the OneDrive cases)')
-    if (-not $useOneDrive) { Say 'OneDrive cases will be skipped; the local cases still run.' 'Yellow' }
+    Say 'with a few synthetic text files, then delete it. OneDrive may upload it while it exists and keep it in its' 'Yellow'
+    Say 'online recycle bin for a while. Your OneDrive settings and your own files are not changed.' 'Yellow'
+    $useOneDrive = Get-QAOneDriveChoice { Read-QAAnswer 'Include the OneDrive cases? Type Y and press Enter to include them, or just press Enter to skip them (default: skip)' }
+    if ($useOneDrive) { Say 'OneDrive cases will run (you typed Y).' 'Yellow' }
+    else { Say 'OneDrive cases will be skipped; the local cases still run.' 'Yellow' }
 }
 
 $script:ClCtr = Join-Path $localAppData ('Temp\LotRadar Test Sandbox ' + (New-Hex8))

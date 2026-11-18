@@ -316,7 +316,25 @@ class QAKit(unittest.TestCase):
         self.assertIn('-OriginalStore $F.Store', rep)
         self.assertIn('-LedgerDir $F.Ledger', rep)
         self.assertNotIn('$desktopLnk', rep)
-        self.assertIn("Confirm-Start 'cleanup self-test (including the OneDrive cases)'", st)
+        # PR #5 fix B: OneDrive cases are a SEPARATE, default-No question that the launcher's -Yes cannot answer
+        code = '\n'.join(l for l in st.splitlines() if not l.lstrip().startswith('#'))
+        self.assertNotIn('Confirm-Start', code)
+        self.assertIn('function Get-QAOneDriveChoice([scriptblock]$Ask)', st)
+        self.assertIn("-cmatch '^\\s*[Yy]\\s*$'", st)                          # only Y / y includes them
+        self.assertIn('catch { $answer = \'\' }', st)                           # no console / error -> skip
+        self.assertIn("$useOneDrive = Get-QAOneDriveChoice { Read-QAAnswer 'Include the OneDrive cases?", st)
+        self.assertIn('just press Enter to skip them (default: skip)', st)
+        gate = code.index('if (-not $useOneDrive) {')
+        self.assertEqual(code.count("New-QAOwnedFolder $odCtr 'onedrive'"), 1)
+        self.assertLess(gate, code.index("New-QAOwnedFolder $odCtr 'onedrive'"))   # the only cloud write is behind the choice
+        self.assertIn('online recycle bin', st)                                     # disclosed before the question
+        self.assertLess(st.index('online recycle bin'), st.index('$useOneDrive = Get-QAOneDriveChoice'))
+        flat = lambda b: ' '.join(b.decode('ascii').split())
+        self.assertIn('Only Y includes them.', flat(self.read('RUN_CLEANUP_SAFETY_TESTS.cmd')))
+        self.assertIn('your OK for the LOCAL checks only', flat(self.read('RUN_CLEANUP_SAFETY_TESTS.cmd')))
+        self.assertIn('Just press Enter to skip them - that is the default; only Y includes them.', flat(self.read('START_HERE.txt')))
+        # unchanged: the OneDrive installer test keeps its own double-click consent
+        self.assertIn('-OneDrive -Yes', self.read('RUN_ONEDRIVE_TESTS.cmd').decode('ascii'))
 
     def test_manual_ui_modes(self):
         """Architect 51fcd34: Stage A preview (nothing started) and Stage B guided real start in an owned sandbox."""

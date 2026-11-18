@@ -131,7 +131,64 @@ try {
         $rows = @(Get-CLN1Rows); Assert-AB ($rows.Count -eq $before + 1 -and $rows[-1].Status -eq 'PASS') 'not one PASS row'
         return $rows[-1].Detail
     }
-    # Fix B cases are appended below this line by the Fix B change.
+    # =========================================================== Fix B: separate, default-No OneDrive choice
+    $choiceText = Get-FunctionText $SelfTestPath 'Get-QAOneDriveChoice'
+    . ([ScriptBlock]::Create($choiceText))
+
+    Invoke-AB 'AB-B1' 'Decline answers skip the OneDrive cases: Enter, spaces, N, n, no, YES, yes, x, nothing' {
+        foreach ($a in @('', '   ', 'N', 'n', 'no', 'YES', 'yes', 'x', 'D', $null)) {
+            $ans = $a
+            Assert-AB (-not (Get-QAOneDriveChoice { $ans })) ('answer "' + [string]$ans + '" included the OneDrive cases')
+        }
+        return '10 decline answers -> skip'
+    }
+    Invoke-AB 'AB-B2' 'Only Y or y (spaces allowed) includes the OneDrive cases' {
+        foreach ($a in @('Y', 'y', ' y ', 'Y ')) {
+            $ans = $a
+            Assert-AB (Get-QAOneDriveChoice { $ans }) ('answer "' + $ans + '" did not include the OneDrive cases')
+        }
+        return 'Y, y, " y ", "Y " -> include'
+    }
+    Invoke-AB 'AB-B3' 'No console / question fails: skip (never include by accident)' {
+        Assert-AB (-not (Get-QAOneDriveChoice { throw 'no console available' })) 'a failing question included the OneDrive cases'
+        return 'question error -> skip'
+    }
+    # Child Windows PowerShell with REDIRECTED standard input that contains "Y": the real Read-QAAnswer must return
+    # nothing, so even a piped Y is skipped. Variant 2 simulates the runner's -Yes (and a Confirm-Start that always
+    # says yes) to prove the general -Yes has no influence on the OneDrive decision.
+    $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    function Invoke-ChoiceChild([string]$Prelude) {
+        $body = $Prelude + "`r`n. '" + $CleanupModulePath.Replace("'", "''") + "'`r`n" + $choiceText + "`r`n" +
+            "if (Get-QAOneDriveChoice { Read-QAAnswer 'Include the OneDrive cases?' }) { 'CHOICE=INCLUDED' } else { 'CHOICE=SKIPPED' }"
+        $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
+        $inFile = Join-Path $fixRoot ('stdin-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
+        $outFile = $inFile + '.out'
+        [IO.File]::WriteAllText($inFile, "Y`r`n", (New-Object System.Text.ASCIIEncoding))
+        $p = Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc) `
+            -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -NoNewWindow -Wait -PassThru
+        return [pscustomobject]@{ Code = $p.ExitCode; Out = [IO.File]::ReadAllText($outFile) }
+    }
+    Invoke-AB 'AB-B4' 'Real Read-QAAnswer, input redirected with "Y": OneDrive cases skipped' {
+        $r = Invoke-ChoiceChild ''
+        Assert-AB ($r.Out -match 'CHOICE=SKIPPED') ('child said: ' + $r.Out.Trim())
+        return ('exit ' + $r.Code + '; ' + ($r.Out.Trim() -split "`r?`n" | Select-Object -Last 1))
+    }
+    Invoke-AB 'AB-B5' 'Runner -Yes simulated (Yes=true, Confirm-Start always yes): OneDrive decision still skips' {
+        $r = Invoke-ChoiceChild '$Yes = $true; function Confirm-Start([string]$What) { return $true }'
+        Assert-AB ($r.Out -match 'CHOICE=SKIPPED') ('child said: ' + $r.Out.Trim())
+        return ('exit ' + $r.Code + '; ' + ($r.Out.Trim() -split "`r?`n" | Select-Object -Last 1))
+    }
+    Invoke-AB 'AB-B6' 'Self-test source: the only OneDrive folder creation is behind the separate choice; no Confirm-Start' {
+        $st = [IO.File]::ReadAllText($SelfTestPath)
+        $code = (($st -split "`r?`n") | Where-Object { -not $_.TrimStart().StartsWith('#') }) -join "`n"
+        Assert-AB ($code.Contains('$useOneDrive = Get-QAOneDriveChoice { Read-QAAnswer ')) 'decision does not use the separate question'
+        Assert-AB (-not $code.Contains('Confirm-Start')) 'Confirm-Start (which honours -Yes) is still used'
+        Assert-AB (([regex]::Matches($code, [regex]::Escape("New-QAOwnedFolder `$odCtr 'onedrive'"))).Count -eq 1) 'OneDrive folder created in more than one place'
+        $gate = $code.IndexOf('if (-not $useOneDrive) {')
+        Assert-AB ($gate -gt 0 -and $gate -lt $code.IndexOf("New-QAOwnedFolder `$odCtr 'onedrive'")) 'OneDrive folder creation is not behind the choice'
+        Assert-AB ($code.Contains("Add-CL 'CL21' 'OneDrive owned leftover (cloud placeholders), answer D: deleted' 'SKIP'")) 'CL21 SKIP path missing'
+        return 'single gated creation path; no Confirm-Start'
+    }
 } finally {
     # remove only the fixture folder this script created (it never contains links)
     if ($fixRoot -and (Test-Path -LiteralPath $fixRoot) -and ((Split-Path -Leaf $fixRoot) -like 'LotRadar AB SelfTest *')) {
