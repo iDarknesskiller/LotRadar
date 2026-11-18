@@ -1,49 +1,53 @@
-# LotRadar — Repository Guidance for Coding Agents
+# LotRadar — Agent Collaboration Rules
 
-These rules apply to code-generation and code-review agents working on LotRadar. They are proposed in a draft governance PR until approved by the Project Owner.
+**Status:** Proposed in draft PR #9; do not treat this as approved `main` policy until the Project Owner merges it. The Owner's explicit latest instruction for individual PRs applies immediately when recorded on that PR.
 
-## Authority and development roles
+## Authority and roles
 
-1. **Project Owner:** Defines requirements; exclusively authorizes merges to `main`, releases, and changes to privacy/security policy.
-2. **ChatGPT — Chief Architect:** Inspects the latest approved GitHub `main`, determines root cause and affected files, publishes task-specific `ARCHITECT_HANDOFF.md` instructions, coordinates assignments.
-3. **Claude — Lead Programmer:** Primary implementation owner; reviews implementation continuity and coordinates engineering handoffs.
-4. **Codex — Senior Developer:** Peer-level engineering implementer. May take over explicitly delegated work when Claude usage is exhausted/unavailable, implement independent assigned issues on separate branches, or review Claude's code. See [Senior Developer role](docs/ai/CODEX_SENIOR_DEVELOPER.md).
-5. **Gemini — Independent QA:** Independently audits implementation and actual test evidence, flags unsafe changes and regressions.
+| Role | Owner | Responsibility |
+| --- | --- | --- |
+| Project Owner | Human Owner | Set priorities, accept scope/waivers, authorize merges and releases |
+| Chief Architect | ChatGPT | Inspect latest approved main, diagnose affected systems, issue precise architecture handoff, coordinate work and risks |
+| Lead Programmer and Test Designer | Claude | Implement the change; design and approve the test plan; review Codex's full independent report; decide if the candidate is ready to be submitted to Gemini |
+| Independent Test Engineer | Codex (default) | Test the frozen candidate independently; challenge Claude's tests, add missing tests in isolated test-only changes, run tests and send a complete report **back to Claude first** |
+| Final Independent QA Auditor | Gemini | Independently review candidate source and complete evidence after Claude's readiness gate; identify defects and provide a QA verdict. Gemini does not merge |
+| Stand-in Senior Developer | Codex (explicit reassignment only) | If Claude is unavailable, may implement an assigned change on a scoped branch; **must not represent its own tests as independent certification of the code it authored** |
 
-Codex is **not** merely an advisor: when assigned an implementation task, it can write code and tests and prepare commits/PRs within the assigned branch. Claude remains Lead Programmer; Codex works autonomously only within the named scope. The Architect coordinates handoff, not simultaneous editing of the same file/branch by unsynchronized agents.
+**Canonical workflow:** [`docs/ai/QA_WORKFLOW.md`](docs/ai/QA_WORKFLOW.md).  
+**Codex role:** [`docs/ai/CODEX_INDEPENDENT_TESTER.md`](docs/ai/CODEX_INDEPENDENT_TESTER.md).  
+**Architect role change:** [`docs/ai/ARCHITECT_HANDOFF.md`](docs/ai/ARCHITECT_HANDOFF.md).
 
-## Source and task startup
+## Required sequence for every substantive code PR
 
-- Canonical repository: `iDarknesskiller/LotRadar`.
-- At task start, fetch and record exact approved `main` SHA, target PR/branch HEAD, relevant files, current behavior, expected behavior and any architecture handoff. Don't assume remembered SHAs remain current.
-- Implement against the assigned feature branch/PR, **never directly on `main`**. For unrelated work create a separate feature branch and draft PR; no merge, force-push, branch deletion, release or live installation without the Project Owner's explicit approval.
-- Prior assistant comments, generated screenshots and architectural drafts may be superseded. The **latest explicit Owner correction** plus canonical updated architecture handoff wins. Identify contradictions before coding.
-- Before touching existing PR work, confirm that no other agent is simultaneously modifying that branch; ask the Architect/Owner to coordinate if there is a collision.
-- Never claim a file has been provided, an automated bot triggered, a test has passed, or a PR has been reviewed unless there is verifiable evidence.
+1. ChatGPT records approved `main` SHA, relevant branch HEAD, actual behavior, desired behavior, affected and protected files, acceptance and risks in an architecture handoff.
+2. Claude implements on a feature branch and authors **`CLAUDE_TEST_PLAN.md`**, with IDs, objective setup, expected results, negative cases, data-integrity assertions and environment requirements, before requesting independent testing.
+3. Claude freezes and identifies **one exact candidate SHA** and package/manifest identity. Codex is given an explicit testing assignment and runs against that frozen candidate, not a moving branch alias.
+4. Codex examines the tests critically, executes what is possible, independently adds missing test cases when useful, and returns **`CODEX_TEST_REPORT.md` plus individually sanitized raw evidence to Claude**. Unrun tests are **NOT RUN**, not passed. Tests added by Codex are clearly identified.
+5. Claude triages **every failure, skip and risk**. Claude may fix issues, propose extra tests or record Owner-required scope decisions; changed code means a new candidate SHA and rerun of affected tests. Claude records a **`CLAUDE_QA_READINESS.md`** decision: READY FOR GEMINI or HOLD, with reasons. Neither a clean Codex report nor Claude's decision is final QA.
+6. Gemini receives the **unaltered complete** Claude plan, Codex report, raw sanitized evidence, Claude triage, changed source and exact candidate SHA. Gemini independently audits; failures cycle back to Claude and Codex. Do not filter or hide failed tests when submitting.
+7. The Project Owner alone approves any merge to `main`, release, deployment or risk waiver. Merging and issuing a release are distinct decisions.
 
-## Protected LotRadar functionality
+If Claude is at a usage limit, Codex can **continue independent testing against an already frozen plan/candidate**. The gate to Gemini remains HOLD until Claude returns or the Owner formally delegates the gate to another named lead. No agent may forge Claude's acceptance.
 
-- Inventory is primarily **used Toyota and Mitsubishi**; protect saved vehicles, VIN/stock identity, SQLite, local photos, selected photo order and Facebook drafts.
-- Respect private `%LOCALAPPDATA%\MarketplaceScanner\data` and runtime/installation directories. Do not reset/wipe/migrate real user files or run destructive recovery against unknown installations.
-- Keep local server on `127.0.0.1:8765`, preserve lock ownership, prevent duplicate servers/browser tabs and verify health before claiming ready.
-- Preserve the Chrome Reader integration, Facebook listing preparation, vehicle photo processing and existing guarded installer rollback semantics.
-- Protect OneDrive/cloud reparse-point guards, junction/symlink safety, and local-data location. Don't accidentally place photos in a cloud-sync folder.
-- Never commit business card, dedication photo, production logo/icon, user/customer data, tokens, credentials, local logs, generated installers or test captures containing sensitive material.
-- Avoid invented vehicle specifications, equipment and availability claims.
+## Version and provenance
 
-## Engineering and test evidence
+Every plan/report must identify: repo, PR, approved `main` SHA, feature candidate SHA, test harness SHA (if different), package manifest `source_commit`, OS/build/PowerShell version, executed command, exit code and PASS/FAIL/SKIP/NOT RUN/BLOCKED. A report at an old SHA cannot certify a new one. If a test-only patch lands on the feature branch, identify both tested code tree and harness tree; revalidate any dependency affected by that patch. Do not claim Windows GUI passes from Linux-only tests.
 
-- Match modified files to an explicit request; document files that should **not** change.
-- Prefer minimal, reviewable fixes with regression tests. Tests must be **executed** for a PASS claim, with commands, environment, output and exact candidate commit recorded.
-- Windows PowerShell 5.1/Windows 11 integration cannot be proven by Linux-only unit tests; flag unsupported environments as **BLOCKED/NOT RUN** rather than passing them by inference.
-- Include functional and regression tests for failures, retries, focus/DPI, install/update/rollback and data integrity whenever affected.
-- Handoff to next agent must list branch, HEAD SHA, owner of current task, exact files changed, tests passed/failed/not run, blockers, risks and next steps.
-- Request Gemini independent review at exact candidate SHA before seeking Owner approval.
+## Test independence and branch ownership
 
-## Review mode versus implementation mode
+- Codex as independent tester **must not modify production code under test**. Codex may add or strengthen tests on a separate `test/<task>` branch / draft PR or isolated workspace, with traceable test commits and a clear chain from candidate to test-harness SHA. Claude reviews incorporation of those tests.
+- If Codex becomes stand-in implementer, its own testing becomes developer self-test; a distinct tester/independent Gemini audit is required for that work.
+- One active writer per implementation branch. Confirm ownership before changing it; no concurrent unsynchronized writes, resets or force-pushes.
+- A GitHub comment alone does not trigger Codex/Gemini execution unless the actual connector or automation has been configured and started.
 
-- **Review:** Read and inspect; provide actionable issues with file/line evidence and severity, and do not mutate code unless separately assigned.
-- **Implementation:** Modify only scoped files and tests on approved feature branch, show diffs and evidence, and leave as draft pending review.
-- **Takeover:** First read previous Claude handoff, validate current HEAD, preserve uncommitted/unfinished work, announce takeover in PR, and avoid two writers touching the same branch.
+## LotRadar protections (all roles)
 
-This guidance does **not** grant any agent the ability to start work automatically or bypass repository permissions. GitHub connection, Codex tasks and review triggers require their respective explicit setup/authorization.
+- Protect used Toyota/Mitsubishi vehicle records, VIN/stock and SQLite integrity, vehicle photo originals and selection order, Facebook drafts, inventory caches, Chrome Reader pairing and local-only operation.
+- Protect `%LOCALAPPDATA%\MarketplaceScanner\data` and `runtime`; server health/locks at `127.0.0.1:8765`; installer rollback; OneDrive cloud-tagging and reparse/symlink guards; Desktop shortcut ownership and restoration.
+- No unapproved real-system installs, persistent dependency downloads, destructive cleanup, photo moves, OneDrive setting changes, credential exposure, Facebook posting or killing unrelated browser processes.
+- Private logos, business card and dedication assets, tokens, customer information, user-specific folders, unsanitized logs and screenshot content must remain outside public Git.
+- Preserve test reproducibility, safety preflight, synthetic fixtures, nonadmin Windows PowerShell 5.1 checks and rollback evidence for affected systems.
+
+## Stop rules and escalation
+
+P0/P1 findings, unproven data/shortcut preservation, manifest/source mismatch, hazardous cleanup or missing critical evidence mean **HOLD**. Claude may recommend a scope waiver for noncritical coverage, but only the Owner can grant it, and Gemini must see the disposition. Do not translate a SKIP/BLOCKED into PASS. No agent may merge or release without explicit Owner approval.
