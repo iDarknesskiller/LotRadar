@@ -276,6 +276,17 @@ class QAKit(unittest.TestCase):
         self.assertIn("Replace($root, '<sandbox>')", f)                      # first error masked
         self.assertIn("Replace($env:USERPROFILE, '%USERPROFILE%')", f)
         self.assertIn('NOTE: sandbox not fully removed', f)                   # console note kept for operators
+        # A2: the ownership marker is deleted LAST (a failed delete keeps the kit's ownership proof), the folder itself
+        # non-recursively, and the FAIL text only promises a kit repair when marker AND ledger entry are still there
+        kids = f.index("Where-Object { $_.Name -ne 'LOTRADAR_QA_OWNER.txt' }")
+        self.assertLess(kids, f.index('Remove-Item -LiteralPath $ownerMarker -Force -ErrorAction Stop'))
+        self.assertLess(f.index('Remove-Item -LiteralPath $ownerMarker -Force -ErrorAction Stop'),
+                        f.index('Remove-Item -LiteralPath $root -Force -ErrorAction Stop'))
+        self.assertNotIn('Remove-Item -LiteralPath $root -Recurse', f)
+        self.assertIn("(Test-Path -LiteralPath $ownerMarker) -and $qaLedgerFile -and (Test-Path -LiteralPath $qaLedgerFile)", f)
+        self.assertIn('so the next kit run can offer to remove it', f)
+        self.assertIn('the kit cannot prove it is a test folder: check it and delete it by hand', f)
+        self.assertNotIn('it stays recorded so the kit can offer', f)            # the old, unconditional promise is gone
         self.assertIn('-not (Test-Path -LiteralPath $root) -and (Test-Path -LiteralPath $qaLedgerFile)', f)  # ledger kept while folder exists
         # recorded in the final block AFTER the processes are stopped and BEFORE totals, exit code and JSON
         fin = h[h.rindex('} finally {'):]

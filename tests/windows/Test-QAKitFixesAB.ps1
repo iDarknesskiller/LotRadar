@@ -58,6 +58,7 @@ function New-AFixture([string]$Name) {
     $r = Join-Path $fixRoot ('sandbox ' + $Name)
     New-Item -ItemType Directory -Path (Join-Path $r 'Local\sub') -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $r 'Local\sub\file.txt'), 'synthetic', $utf8NoBom)
+    [IO.File]::WriteAllText((Join-Path $r 'LOTRADAR_QA_OWNER.txt'), 'token=synthetic', $utf8NoBom)   # same name the harness uses
     $l = Join-Path $fixRoot ('ledger ' + $Name + '.owned')
     [IO.File]::WriteAllText($l, 'token=synthetic', $utf8NoBom)
     return [pscustomobject]@{ Root = $r; Ledger = $l }
@@ -80,7 +81,8 @@ try {
         Assert-AB ($h.Contains('$operatorKeepSandbox = [bool]$KeepSandbox')) 'operator intent not captured'
         Assert-AB ($h.Contains('$shortcutProtectKeep = $true')) 'shortcut-protection keep flag not set on SC1 failure'
         Assert-AB (-not $h.Contains('$KeepSandbox = $true')) 'operator switch is still overwritten internally'
-        return 'order and flags OK'
+        Assert-AB ($h.Contains("Where-Object { `$_.Name -ne 'LOTRADAR_QA_OWNER.txt' }")) 'ownership marker is not deleted last'
+        return 'order and flags OK; marker deleted last'
     }
     Invoke-AB 'AB-A1' 'Normal cleanup: exactly one CLN1 PASS, folder gone, ledger entry removed' {
         $f = New-AFixture 'a1'; $before = @(Get-CLN1Rows).Count
@@ -108,22 +110,49 @@ try {
         Assert-AB ((Test-Path -LiteralPath $f.Root) -and (Test-Path -LiteralPath $f.Ledger)) 'folder or ledger removed'
         return $rows[-1].Detail
     }
-    Invoke-AB 'AB-A4' 'Deterministic failure (held file handle): CLN1 FAIL, masked first error, folder and ledger kept, run would exit 1' {
+    Invoke-AB 'AB-A4' 'Deterministic failure (held file next to the marker): CLN1 FAIL, no private path, marker and ledger kept, run would exit 1' {
         $f = New-AFixture 'a4'; $before = @(Get-CLN1Rows).Count
-        $held = [IO.File]::Open((Join-Path $f.Root 'Local\sub\held.txt'), 'OpenOrCreate', 'ReadWrite', 'None')
+        # held directly in the sandbox root, next to the ownership marker (the C-5 NA-05 situation)
+        $held = [IO.File]::Open((Join-Path $f.Root 'QA-HELD-HANDLE.txt'), 'CreateNew', 'ReadWrite', 'None')
         try {
             Complete-SandboxCleanup -root $f.Root -OperatorKeep $false -ProtectKeep $false -qaLedgerFile $f.Ledger -Attempts 2 -DelaySeconds 0
         } finally { $held.Dispose() }
         $rows = @(Get-CLN1Rows); Assert-AB ($rows.Count -eq $before + 1) 'not exactly one CLN1 row'
         $r = $rows[-1]
         Assert-AB ($r.Status -eq 'FAIL') ('status ' + $r.Status)
-        Assert-AB ($r.Detail -like '*<sandbox>*') 'first error not reported with the masked sandbox path'
+        # Windows may report only the file name; any path it does report must be masked. Never a raw private path.
+        Assert-AB ($r.Detail -match 'First error: \S') 'first error not reported'
         Assert-AB (-not $r.Detail.Contains($f.Root)) 'raw sandbox path leaked'
         if ($env:USERPROFILE) { Assert-AB (-not $r.Detail.Contains($env:USERPROFILE)) 'profile path leaked' }
+        Assert-AB (Test-Path -LiteralPath (Join-Path $f.Root 'LOTRADAR_QA_OWNER.txt')) 'ownership marker deleted although cleanup failed'
         Assert-AB ((Test-Path -LiteralPath $f.Root) -and (Test-Path -LiteralPath $f.Ledger)) 'folder or ledger removed although cleanup failed'
+        Assert-AB ($r.Detail -like '*next kit run can offer to remove it*') 'FAIL text does not say the kit can repair it'
         # the harness computes its exit code from the FAIL rows after this point: exit 1
         Assert-AB (@($script:Results | Where-Object { $_.Status -eq 'FAIL' }).Count -gt 0) 'no FAIL row for the exit code'
         return $r.Detail
+    }
+    Invoke-AB 'AB-A6' 'Kit-format leftover after a failed cleanup: the kit''s own ownership check accepts it and its own repair delete removes it' {
+        . $CleanupModulePath   # defines functions only (LotRadarQA.Cleanup.ps1, unchanged)
+        $tmpParent = Join-Path $fixRoot 'Temp'
+        New-Item -ItemType Directory -Path $tmpParent -Force | Out-Null
+        $ledgerDir = Join-Path $fixRoot 'owned'
+        $sb = Join-Path $tmpParent ('LotRadar Test Sandbox ' + (New-QAOwnerToken).Substring(0, 8))
+        [void](New-QAOwnedFolder $sb 'sandbox' $ledgerDir 'AB-A6 synthetic fixture. Synthetic files only.')
+        New-Item -ItemType Directory -Path (Join-Path $sb 'Local\sub') -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $sb 'Local\sub\file.txt'), 'synthetic', $utf8NoBom)
+        $ledgerFile = @(Read-QALedger $ledgerDir)[0].File
+        $before = @(Get-CLN1Rows).Count
+        $held = [IO.File]::Open((Join-Path $sb 'QA-HELD-HANDLE.txt'), 'CreateNew', 'ReadWrite', 'None')
+        try {
+            Complete-SandboxCleanup -root $sb -OperatorKeep $false -ProtectKeep $false -qaLedgerFile $ledgerFile -Attempts 2 -DelaySeconds 0
+        } finally { $held.Dispose() }
+        $rows = @(Get-CLN1Rows); Assert-AB ($rows.Count -eq $before + 1 -and $rows[-1].Status -eq 'FAIL') 'not one CLN1 FAIL row'
+        $info = Test-QAOwnedFolder -Dir $sb -Kind 'sandbox' -Parent $tmpParent -Ledger @(Read-QALedger $ledgerDir) -SafeShas @()
+        Assert-AB ($info.Owned) ('kit refuses the leftover: ' + $info.Reason)
+        $res = Remove-QAOwnedFolder $info $tmpParent
+        Assert-AB ($res -eq 'deleted' -and -not (Test-Path -LiteralPath $sb)) ('kit repair did not remove it: ' + $res)
+        Assert-AB (-not (Test-Path -LiteralPath $ledgerFile)) 'kit repair left the ledger entry'
+        return 'ownership proven after failed cleanup; kit repair delete: deleted, ledger entry removed'
     }
     Invoke-AB 'AB-A5' 'Nothing to remove (folder absent): CLN1 PASS, no error, no NOTE' {
         $missing = Join-Path $fixRoot 'sandbox never created'; $before = @(Get-CLN1Rows).Count

@@ -96,14 +96,24 @@ function Skip-Test([string]$Id, [string]$Name, [string]$Why) { Add-Result $Id $N
 #   PASS  no sandbox folder is left
 #   INFO  kept on purpose (operator -KeepSandbox, or it holds the only Desktop shortcut backup); INFO is not a PASS
 #   FAIL  removal failed; the first error is reported with the sandbox path and profile path masked
-# The ownership ledger entry is removed only once the folder is really gone, so a later kit run can still prove it
-# is a test folder. Parameter names match the script variables on purpose (function scope; same meaning).
+# The ownership marker (LOTRADAR_QA_OWNER.txt) is deleted LAST, after everything else, and the ownership ledger entry
+# only once the folder is really gone: if any delete fails, the marker and the ledger entry both remain, so a later
+# kit run can still prove the leftover is a test folder and offer to remove it (a failed recursive delete used to
+# remove the marker first, which made that repair impossible). Parameter names match the script variables on purpose.
 function Complete-SandboxCleanup([string]$root, [bool]$OperatorKeep, [bool]$ProtectKeep, [string]$qaLedgerFile, [int]$Attempts = 3, [int]$DelaySeconds = 4) {
     $firstError = ''
+    $ownerMarker = Join-Path $root 'LOTRADAR_QA_OWNER.txt'
     if (-not ($OperatorKeep -or $ProtectKeep)) {
         for ($try = 1; $try -le $Attempts; $try++) {
             try {
-                if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop }
+                if (Test-Path -LiteralPath $root) {
+                    # 1) everything except the ownership marker, 2) the marker, 3) the now empty folder (not recursive)
+                    foreach ($child in @(Get-ChildItem -LiteralPath $root -Force | Where-Object { $_.Name -ne 'LOTRADAR_QA_OWNER.txt' })) {
+                        Remove-Item -LiteralPath $child.FullName -Recurse -Force -ErrorAction Stop
+                    }
+                    if (Test-Path -LiteralPath $ownerMarker) { Remove-Item -LiteralPath $ownerMarker -Force -ErrorAction Stop }
+                    Remove-Item -LiteralPath $root -Force -ErrorAction Stop
+                }
                 break
             } catch {
                 if (-not $firstError) {
@@ -127,7 +137,12 @@ function Complete-SandboxCleanup([string]$root, [bool]$OperatorKeep, [bool]$Prot
     } else {
         $why = $firstError
         if (-not $why) { $why = 'the folder is still there' }
-        Add-Result 'CLN1' $name 'FAIL' ('sandbox NOT removed after ' + $Attempts + ' attempts; it stays recorded so the kit can offer to remove it later. First error: ' + $why)
+        if ((Test-Path -LiteralPath $ownerMarker) -and $qaLedgerFile -and (Test-Path -LiteralPath $qaLedgerFile)) {
+            $next = 'its ownership record is kept, so the next kit run can offer to remove it'
+        } else {
+            $next = 'its ownership record is incomplete, so the kit cannot prove it is a test folder: check it and delete it by hand'
+        }
+        Add-Result 'CLN1' $name 'FAIL' ('sandbox NOT removed after ' + $Attempts + ' attempts; ' + $next + '. First error: ' + $why)
     }
 }
 function Assert-True($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
