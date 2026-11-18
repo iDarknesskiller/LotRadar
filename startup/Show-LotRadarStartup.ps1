@@ -245,6 +245,7 @@ $script:HealthAt = $null
 $script:LastEventAt = Get-Date
 $script:TerminalAt = $null
 $script:FailReason = ''
+$script:ConsoleShown = $false
 
 function Set-Row([string]$Id, [string]$State, [string]$Text, $Color) {
     $r = $rows[$Id]
@@ -435,7 +436,7 @@ function Show-ConsoleWindow {
         if ([LotRadarStartup.Native]::AttachConsole([uint32]$script:Console.Id)) {
             $h = [LotRadarStartup.Native]::GetConsoleWindow()
             [void][LotRadarStartup.Native]::FreeConsole()
-            if ($h -ne [IntPtr]::Zero) { [void][LotRadarStartup.Native]::ShowWindow($h, 9); [void][LotRadarStartup.Native]::SetForegroundWindow($h) }
+            if ($h -ne [IntPtr]::Zero) { [void][LotRadarStartup.Native]::ShowWindow($h, 9); [void][LotRadarStartup.Native]::SetForegroundWindow($h); $script:ConsoleShown = $true }
         }
     } catch { }
 }
@@ -541,7 +542,7 @@ try {
             $evList = @($script:Events | ForEach-Object { $_.Stage + ':' + $_.State })
             $consoleExit = $null
             try { if ($script:Console -and $script:Console.HasExited) { $consoleExit = $script:Console.ExitCode } } catch { }
-            [IO.File]::WriteAllText($ResultFile, (@{ exit = $script:ExitCode; mode = $script:Mode; reason = $script:FailReason; events = $evList; health = $script:HealthOk; tick_error = [string]$script:LastTickError; console_exit = $consoleExit; boot_pid = $script:BootPid } | ConvertTo-Json -Compress), $utf8)
+            [IO.File]::WriteAllText($ResultFile, (@{ exit = $script:ExitCode; mode = $script:Mode; reason = $script:FailReason; events = $evList; health = $script:HealthOk; tick_error = [string]$script:LastTickError; console_exit = $consoleExit; boot_pid = $script:BootPid; console_shown = [bool]$script:ConsoleShown } | ConvertTo-Json -Compress), $utf8)
         } catch { }
     }
 }

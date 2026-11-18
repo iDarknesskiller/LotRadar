@@ -184,18 +184,52 @@ function Invoke-CmdScript([string]$ScriptPath) {
     return [pscustomobject]@{ Code = $code; Output = $out }
 }
 # Runs the startup window (test options: auto-close, result file) and waits for it. Returns exit code + parsed result.
-function Invoke-StartupWindow([string]$Gui, [int]$TimeoutSec) {
+# Screenshot of one window (startup window evidence). Only the window's own rectangle is captured.
+$qaWinSource = @'
+using System; using System.Runtime.InteropServices;
+namespace LotRadarQA {
+  public static class Win {
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  }
+}
+'@
+function Save-WindowShot($Proc, [string]$Name) {
+    try {
+        if (-not ('LotRadarQA.Win' -as [type])) { Add-Type -TypeDefinition $qaWinSource; [void][LotRadarQA.Win]::SetProcessDPIAware() }
+        Add-Type -AssemblyName System.Drawing
+        $Proc.Refresh()
+        $h = $Proc.MainWindowHandle
+        if ($h -eq [IntPtr]::Zero) { return 'no window to capture' }
+        $r = New-Object LotRadarQA.Win+RECT
+        [void][LotRadarQA.Win]::GetWindowRect($h, [ref]$r)
+        $w = $r.R - $r.L; $hh = $r.B - $r.T
+        if ($w -le 0 -or $hh -le 0) { return 'window has no size' }
+        $bmp = New-Object Drawing.Bitmap $w, $hh
+        $g = [Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($r.L, $r.T, 0, 0, $bmp.Size)
+        $g.Dispose()
+        $path = Join-Path $outFolder ('startup-window-' + $Name + '.png')
+        $bmp.Save($path, [Drawing.Imaging.ImageFormat]::Png)
+        $bmp.Dispose()
+        return ('screenshot ' + (Split-Path -Leaf $path) + ' ' + $w + 'x' + $hh)
+    } catch { return ('screenshot failed: ' + $_.Exception.Message) }
+}
+function Invoke-StartupWindow([string]$Gui, [int]$TimeoutSec, [int]$AutoClose = 2, [scriptblock]$During = $null) {
     $res = Join-Path $root ('gui-result-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
     $saved = $env:LOTRADAR_NO_PAUSE
     Remove-Item Env:\LOTRADAR_NO_PAUSE -ErrorAction SilentlyContinue
     try {
         $t0 = Get-Date
-        $p = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"' + $Gui + '"'), '-AutoCloseSeconds', '2', '-ResultFile', ('"' + $res + '"')) -PassThru
+        $p = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"' + $Gui + '"'), '-AutoCloseSeconds', [string]$AutoClose, '-ResultFile', ('"' + $res + '"')) -PassThru
         $null = $p.Handle
+        $script:DuringNote = ''
+        if ($During) { $script:DuringNote = [string](@(& $During $p) -join '; ') }
         if (-not $p.WaitForExit($TimeoutSec * 1000)) { try { $p.Kill() } catch { }; throw ('the startup window did not finish within ' + $TimeoutSec + ' s') }
         $data = $null
         if (Test-Path -LiteralPath $res) { $data = [IO.File]::ReadAllText($res) | ConvertFrom-Json; Remove-Item -LiteralPath $res -Force }
-        return [pscustomobject]@{ Exit = $p.ExitCode; Result = $data; Seconds = [int]((Get-Date) - $t0).TotalSeconds }
+        return [pscustomobject]@{ Exit = $p.ExitCode; Result = $data; Seconds = [int]((Get-Date) - $t0).TotalSeconds; Note = $script:DuringNote }
     } finally { if ($null -ne $saved) { $env:LOTRADAR_NO_PAUSE = $saved } }
 }
 function Get-ProcessesMentioning([string]$Text) {
@@ -1037,6 +1071,47 @@ try {
         return ('exit 91; only the valid-nonce event accepted; foreign open:complete ignored; ' + $w.Result.reason)
     }
 
+    Invoke-Test 'G9' 'Window closed while LotRadar is still starting: exit 0, startup NOT stopped, its console brought up' {
+        [IO.File]::WriteAllText($gStub, ($emit + 'E ''install'' ''started'' ''stub still working'' $env:LOTRADAR_STARTUP_NONCE; Start-Sleep -Seconds 25; exit 0'), [Text.Encoding]::ASCII)
+        $alive = 0
+        try {
+            $w = Invoke-StartupWindow $gGui 60 0 {
+                param($p)
+                Start-Sleep -Seconds 6
+                Save-WindowShot $p 'in-progress'
+                [void]$p.CloseMainWindow()   # same as clicking X
+            }
+            $alive = @(Get-ProcessesMentioning $gDir | Where-Object { $_.Name -ieq 'cmd.exe' -or $_.Name -ieq 'powershell.exe' }).Count
+        } finally {
+            Start-Sleep -Seconds 1
+            Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null }
+        }
+        Assert-True ($w.Exit -eq 0 -and $w.Result.mode -eq 'running') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
+        Assert-True (@($w.Result.events) -contains 'install:started') ('the stub never reported: ' + ($w.Result | ConvertTo-Json -Compress))
+        Assert-True ($alive -ge 1) 'closing the window STOPPED the startup (its console/script is gone)'
+        return ('exit 0; startup still running after close (' + $alive + ' process(es)); console shown=' + $w.Result.console_shown + '; ' + $w.Note)
+    }
+    Invoke-Test 'G10' 'Window failure by keyboard: Alt+C shows the console, Esc closes (exit 91), nothing left running' {
+        [IO.File]::WriteAllText($gStub, ($emit + 'E ''install'' ''started'' ''stub'' $env:LOTRADAR_STARTUP_NONCE; E ''install'' ''failed'' ''STUB FAILURE FOR KEYBOARD TEST'' $env:LOTRADAR_STARTUP_NONCE; Write-Host "STUB-FAIL"; exit 7'), [Text.Encoding]::ASCII)
+        try {
+            $w = Invoke-StartupWindow $gGui 60 0 {
+                param($p)
+                Start-Sleep -Seconds 6
+                $shot = Save-WindowShot $p 'failure'
+                $ws = New-Object -ComObject WScript.Shell
+                [void]$ws.AppActivate($p.Id); Start-Sleep -Milliseconds 700
+                $ws.SendKeys('%c'); Start-Sleep -Seconds 2          # Alt+C = Show console
+                [void]$ws.AppActivate($p.Id); Start-Sleep -Milliseconds 700
+                $ws.SendKeys('{ESC}')                                # Esc = Close
+                $shot
+            }
+        } finally { Start-Sleep -Seconds 1; Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null } }
+        Assert-True ($w.Exit -eq 91 -and $w.Result.mode -eq 'failed') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
+        Assert-True ($w.Result.reason -eq 'STUB FAILURE FOR KEYBOARD TEST') ('reason: ' + $w.Result.reason)
+        Assert-True ($w.Result.console_shown -eq $true) 'Alt+C did not bring up the console window'
+        return ('exit 91 via Esc; console shown via Alt+C; ' + $w.Note)
+    }
+
     # ---- optional: real bootstrap in the sandbox
     if (-not $FullLaunch) {
         Skip-Test 'F1' 'Real bootstrap launch, /api/health, second launch, single server' 'pass -FullLaunch to run (downloads packages, opens the app window)'
@@ -1180,7 +1255,7 @@ try {
             return @($procs | Where-Object { $ids -notcontains $_.ParentProcessId })
         }
         Invoke-Test 'G6' 'Window + real bootstrap: stages shown, LotRadar opened exactly once, window exits 0, server and launch lock remain' {
-            $w = Invoke-StartupWindow $realGui 600
+            $w = Invoke-StartupWindow $realGui 600 2 { param($p) Start-Sleep -Seconds 3; Save-WindowShot $p 'real-start' }
             $ev = @($w.Result.events)
             Assert-True ($w.Exit -eq 0 -and $w.Result.mode -eq 'done' -and $w.Result.health -eq $true) ('result: ' + ($w.Result | ConvertTo-Json -Compress))
             Assert-True (@($ev | Where-Object { $_ -eq 'open:complete' }).Count -eq 1) ('LotRadar window opened ' + @($ev | Where-Object { $_ -eq 'open:complete' }).Count + ' times: ' + ($ev -join ', '))
@@ -1192,7 +1267,7 @@ try {
             $held = $false
             try { $l = [IO.File]::Open((Join-Path $runtimeDir 'marketplace-launch.lock'), 'OpenOrCreate', 'ReadWrite', 'None'); $l.Dispose() } catch { $held = $true }
             Assert-True $held 'launch lock is NOT held although the server runs (lock released early)'
-            return ('exit 0 after ' + $w.Seconds + ' s; events: ' + ($ev -join ' > ') + '; 1 server tree; launch lock held')
+            return ('exit 0 after ' + $w.Seconds + ' s; events: ' + ($ev -join ' > ') + '; 1 server tree; launch lock held; ' + $w.Note)
         }
         Invoke-Test 'G7' 'Window, second launch while running: opens LotRadar again, no second server, no setup steps' {
             $w = Invoke-StartupWindow $realGui 120

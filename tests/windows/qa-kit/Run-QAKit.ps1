@@ -281,6 +281,9 @@ $counts = 'unknown'
 $r3 = 'not reported'
 $t00 = ''
 if ($log) { [IO.File]::WriteAllText((Join-Path $resultsDir ('SANITIZED-' + $log.Name)), (Protect-Text ([IO.File]::ReadAllText($log.FullName))), $utf8NoBom) }
+# screenshots of the startup window (only the window itself, synthetic test data)
+$shots = @(Get-ChildItem -LiteralPath (Split-Path -Parent $pkgZip) -Filter 'startup-window-*.png' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $started })
+foreach ($s in $shots) { Copy-Item -LiteralPath $s.FullName -Destination (Join-Path $resultsDir $s.Name) -Force }
 if ($json) {
     $jsonText = Protect-Text ([IO.File]::ReadAllText($json.FullName))
     [IO.File]::WriteAllText((Join-Path $resultsDir ('SANITIZED-' + $json.Name)), $jsonText, $utf8NoBom)
@@ -306,7 +309,8 @@ $summary = @(
     ('R3 symlink test : ' + $r3),
     ('Environment     : ' + $t00),
     ('Desktop shortcut: ' + $shortcutStatus),
-    ('Leftover repair : ' + ($script:LeftoverReport -join '; '))
+    ('Leftover repair : ' + ($script:LeftoverReport -join '; ')),
+    ('Screenshots     : ' + $(if ($shots.Count) { ($shots | ForEach-Object { $_.Name }) -join ', ' } else { 'none' }))
 )
 $summaryText = Protect-Text ($summary -join "`r`n")
 [IO.File]::WriteAllText((Join-Path $resultsDir 'SUMMARY.txt'), $summaryText + "`r`n", $utf8NoBom)

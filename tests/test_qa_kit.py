@@ -174,9 +174,14 @@ class QAKit(unittest.TestCase):
 
     def test_startup_window_harness_cases(self):
         text = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
-        for tid in ('G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8'):
+        for tid in ('G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9', 'G10'):
             self.assertIn("Invoke-Test '" + tid + "'", text)
-        self.assertIn("'-AutoCloseSeconds', '2', '-ResultFile'", text)
+        self.assertIn("'-AutoCloseSeconds', [string]$AutoClose, '-ResultFile'", text)
+        g10 = text[text.index("Invoke-Test 'G10'"):]
+        self.assertIn("$ws.SendKeys('%c')", g10)
+        self.assertIn("$w.Result.console_shown -eq $true", g10)
+        g9 = text[text.index("Invoke-Test 'G9'"):text.index("Invoke-Test 'G10'")]
+        self.assertIn("Assert-True ($alive -ge 1)", g9)
         g4 = text[text.index("Invoke-Test 'G4'"):text.index("Invoke-Test 'G5'")]
         self.assertIn("$w.Result.health -ne $true", g4)               # forged ready never accepted
         g6 = text[text.index("Invoke-Test 'G6'"):text.index("Invoke-Test 'G7'")]
