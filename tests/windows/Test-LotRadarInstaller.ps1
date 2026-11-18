@@ -193,6 +193,8 @@ namespace LotRadarQA {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   }
 }
 '@
@@ -218,6 +220,22 @@ function Save-WindowShot($Proc, [string]$Name) {
         $bmp.Dispose()
         return ('screenshot ' + (Split-Path -Leaf $path) + ' ' + $w + 'x' + $hh)
     } catch { return ('screenshot failed: ' + $_.Exception.Message) }
+}
+function Set-WindowFront($Proc) {
+    # Keystrokes only count when the startup window is really in front (Windows can refuse focus changes).
+    # Returns 'front' or 'not-front' so a failure says whether the key ever reached the window.
+    if (-not ('LotRadarQA.Win' -as [type])) { Add-Type -TypeDefinition $qaWinSource; [void][LotRadarQA.Win]::SetProcessDPIAware() }
+    $ws = New-Object -ComObject WScript.Shell
+    for ($i = 0; $i -lt 6; $i++) {
+        $Proc.Refresh(); $h = $Proc.MainWindowHandle
+        if ($h -ne [IntPtr]::Zero) {
+            [void]$ws.AppActivate($Proc.Id); [void][LotRadarQA.Win]::SetForegroundWindow($h)
+            Start-Sleep -Milliseconds 500
+            if ([LotRadarQA.Win]::GetForegroundWindow() -eq $h) { return 'front' }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    return 'not-front'
 }
 function Invoke-StartupWindow([string]$Gui, [int]$TimeoutSec, [int]$AutoClose = 2, [scriptblock]$During = $null) {
     $res = Join-Path $root ('gui-result-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
@@ -1108,16 +1126,18 @@ try {
                 Start-Sleep -Seconds 6
                 $shot = Save-WindowShot $p 'failure'
                 $ws = New-Object -ComObject WScript.Shell
-                [void]$ws.AppActivate($p.Id); Start-Sleep -Milliseconds 700
+                $f1 = Set-WindowFront $p
                 $ws.SendKeys('%c'); Start-Sleep -Seconds 2          # Alt+C = Show console
-                [void]$ws.AppActivate($p.Id); Start-Sleep -Milliseconds 700
+                $f2 = Set-WindowFront $p
                 $ws.SendKeys('{ESC}')                                # Esc = Close
-                $shot
+                $shot + '; before Alt+C: ' + $f1 + '; before Esc: ' + $f2
             }
         } finally { Start-Sleep -Seconds 1; Stop-GuiTestProcesses }
         Assert-True ($w.Exit -eq 91 -and $w.Result.mode -eq 'failed') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True ($w.Result.reason -eq 'STUB FAILURE FOR KEYBOARD TEST') ('reason: ' + $w.Result.reason)
-        Assert-True ($w.Result.console_shown -eq $true) ('Alt+C did not bring up the console window (diagnostics: ' + $w.Result.console_diag + ')')
+        Assert-True ($w.Note -match 'before Alt\+C: front') ('the test could not bring the startup window to the front before Alt+C, so the key did not reach it (' + $w.Note + ')')
+        Assert-True ($w.Result.console_diag -match 'click') ('Alt+C reached the window in front but did not press Show console (' + $w.Note + ')')
+        Assert-True ($w.Result.console_shown -eq $true) ('Alt+C pressed Show console but the console did not come up (diagnostics: ' + $w.Result.console_diag + ')')
         return ('exit 91 via Esc; console shown via Alt+C (' + $w.Result.console_diag + '); ' + $w.Note)
     }
 

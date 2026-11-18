@@ -549,6 +549,7 @@ $btnDetails.Add_Click({
 })
 $btnConsole.Add_Click({
     if ($Preview) { $status.Text = 'Preview: there is no console window to show (nothing was started).'; return }
+    [void]$script:ConsoleDiag.Add('click')
     Show-ConsoleWindow
 })
 $btnRetry.Add_Click({

@@ -101,6 +101,7 @@ class TestStartupWindow(unittest.TestCase):
         for d in ("'no-native'", "'console-exited'", "'shown'", "'no-console-window'", "'attach-failed:'"):
             self.assertIn(d, c)
         self.assertIn("console_diag = (@($script:ConsoleDiag) -join ',')", c)
+        self.assertIn("[void]$script:ConsoleDiag.Add('click')", c)
 
 if __name__ == '__main__':
     unittest.main()
