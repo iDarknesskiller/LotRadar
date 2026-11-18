@@ -110,14 +110,34 @@ class TestStartupWindow(unittest.TestCase):
         # every position/size goes through the scale helpers (only the helpers build raw Point/Size objects)
         raw = [l for l in c.splitlines() if ('New-Object Drawing.Point(' in l or 'New-Object Drawing.Size(' in l) and 'MeasureText' not in l]
         self.assertEqual(len(raw), 2, raw)
-        self.assertTrue(all(l.startswith('function Pt(') or l.startswith('function Sz(') for l in raw), raw)
-        for k in ('$form.ClientSize = (Sz 480 330)', '$form.ClientSize = (Sz 480 460)', '$b.Top = (Sc 420)', '$b.Top = (Sc 290)', '$details.Height = (Sc 120)'):
+        self.assertTrue(all(l.startswith('function ScalePoint(') or l.startswith('function ScaleSize(') for l in raw), raw)
+        for k in ('$form.ClientSize = (ScaleSize 480 330)', '$form.ClientSize = (ScaleSize 480 460)', '$b.Top = (ScalePx 420)', '$b.Top = (ScalePx 290)', '$details.Height = (ScalePx 120)'):
             self.assertIn(k, c)
         self.assertNotRegex(c, r'\.(Top|Height|Width|Left) = \d')
         # the window measures its own texts while it still exists and reports them in the ResultFile
         fc = c[c.index('$form.Add_FormClosing({'):]
         self.assertLess(fc.index('Get-ClippedText'), fc.index('if ($Preview)'))
         self.assertIn('clipped = [string]$script:Clipped; scale = $script:Scale', c)
+    def test_function_names_do_not_shadow_builtin_aliases(self):
+        """2c0cac1 on Windows 11: a function named Sc was shadowed by the built-in alias sc (Set-Content); the window
+        hung invisibly waiting for input. In PowerShell an alias wins over a function of the same name."""
+        builtin = {'ac', 'asnp', 'cat', 'cd', 'chdir', 'clc', 'clear', 'clhy', 'cli', 'clp', 'cls', 'clv', 'cnsn', 'compare',
+                   'copy', 'cp', 'cpi', 'cpp', 'curl', 'cvpa', 'dbp', 'del', 'diff', 'dir', 'dnsn', 'ebp', 'echo', 'epal',
+                   'epcsv', 'epsn', 'erase', 'etsn', 'exsn', 'fc', 'fhx', 'fl', 'foreach', 'ft', 'fw', 'gal', 'gbp', 'gc',
+                   'gcb', 'gci', 'gcm', 'gcs', 'gdr', 'ghy', 'gi', 'gin', 'gjb', 'gl', 'gm', 'gmo', 'gp', 'gps', 'gpv', 'group',
+                   'gsn', 'gsnp', 'gsv', 'gtz', 'gu', 'gv', 'gwmi', 'h', 'history', 'icm', 'iex', 'ihy', 'ii', 'ipal', 'ipcsv',
+                   'ipmo', 'ipsn', 'irm', 'ise', 'iwmi', 'iwr', 'kill', 'lp', 'ls', 'man', 'md', 'measure', 'mi', 'mount',
+                   'move', 'mp', 'mv', 'nal', 'ndr', 'ni', 'nmo', 'npssc', 'nsn', 'nv', 'ogv', 'oh', 'popd', 'ps', 'pushd',
+                   'pwd', 'r', 'rbp', 'rcjb', 'rcsn', 'rd', 'rdr', 'ren', 'ri', 'rjb', 'rm', 'rmdir', 'rmo', 'rni', 'rnp', 'rp',
+                   'rsn', 'rsnp', 'rujb', 'rv', 'rvpa', 'rwmi', 'sajb', 'sal', 'saps', 'sasv', 'sbp', 'sc', 'scb', 'select',
+                   'set', 'shcm', 'si', 'sl', 'sleep', 'sls', 'sort', 'sp', 'spjb', 'spps', 'spsv', 'start', 'stz', 'sujb',
+                   'sv', 'swmi', 'tee', 'trcm', 'type', 'wget', 'where', 'wjb', 'write'}
+        import glob
+        for path in [PATH] + sorted(glob.glob(os.path.join(REPO, '**', '*.ps1'), recursive=True)):
+            with open(path, encoding='utf-8', errors='replace') as h:
+                names = re.findall(r'^\s*function\s+([A-Za-z0-9_-]+)', h.read(), re.M)
+            clash = [n for n in names if n.lower() in builtin]
+            self.assertEqual(clash, [], path)
 
 if __name__ == '__main__':
     unittest.main()

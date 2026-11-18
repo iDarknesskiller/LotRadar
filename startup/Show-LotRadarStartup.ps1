@@ -144,14 +144,16 @@ if ($Preview) { $form.Text = 'LotRadar - PREVIEW (example steps, nothing is star
 $form.AutoScaleMode = [Windows.Forms.AutoScaleMode]::None
 $script:Scale = 1.0
 try { $gs = [Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $script:Scale = [math]::Max(1.0, $gs.DpiX / 96.0); $gs.Dispose() } catch { $script:Scale = 1.0 }
-function Sc([int]$v) { return [int][math]::Round($v * $script:Scale) }
-function Pt([int]$x, [int]$y) { return (New-Object Drawing.Point((Sc $x), (Sc $y))) }
-function Sz([int]$w, [int]$h) { return (New-Object Drawing.Size((Sc $w), (Sc $h))) }
+# NOTE: names must not collide with built-in aliases - an alias wins over a function in PowerShell. 'Sc' is
+# Set-Content: in 2c0cac1 every layout call became Set-Content, which waited invisibly for input (window never opened).
+function ScalePx([int]$v) { return [int][math]::Round($v * $script:Scale) }
+function ScalePoint([int]$x, [int]$y) { return (New-Object Drawing.Point((ScalePx $x), (ScalePx $y))) }
+function ScaleSize([int]$w, [int]$h) { return (New-Object Drawing.Size((ScalePx $w), (ScalePx $h))) }
 $form.Font = New-Object Drawing.Font('Segoe UI', 9)
 $form.FormBorderStyle = [Windows.Forms.FormBorderStyle]::FixedSingle
 $form.MaximizeBox = $false
 $form.StartPosition = [Windows.Forms.FormStartPosition]::CenterScreen
-$form.ClientSize = (Sz 480 330)
+$form.ClientSize = (ScaleSize 480 330)
 $form.KeyPreview = $true
 $ico = Join-Path $programDir 'LotRadar.ico'
 if (Test-Path -LiteralPath $ico -PathType Leaf) { try { $form.Icon = New-Object Drawing.Icon($ico) } catch { } }
@@ -177,22 +179,22 @@ if (-not $brand) {
     $brand.BackColor = [Drawing.Color]::FromArgb(24, 48, 72)
     $brand.ForeColor = [Drawing.Color]::White
 }
-$brand.Location = (Pt 16 14)
-$brand.Size = (Sz 56 56)
+$brand.Location = (ScalePoint 16 14)
+$brand.Size = (ScaleSize 56 56)
 $brand.AccessibleName = 'LotRadar'
 $form.Controls.Add($brand)
 
 $title = New-Object Windows.Forms.Label
 $title.Text = 'Starting LotRadar'
 $title.Font = New-Object Drawing.Font('Segoe UI', 14, [Drawing.FontStyle]::Bold)
-$title.Location = (Pt 84 16)
-$title.Size = (Sz 380 30)
+$title.Location = (ScalePoint 84 16)
+$title.Size = (ScaleSize 380 30)
 $form.Controls.Add($title)
 
 $status = New-Object Windows.Forms.Label
 $status.Text = 'Preparing...'
-$status.Location = (Pt 86 48)
-$status.Size = (Sz 380 34)
+$status.Location = (ScalePoint 86 48)
+$status.Size = (ScaleSize 380 34)
 $form.Controls.Add($status)
 
 $rows = @{}
@@ -200,13 +202,13 @@ $y = 90
 foreach ($st in $Stages) {
     $name = New-Object Windows.Forms.Label
     $name.Text = $st.Label
-    $name.Location = (Pt 20 $y)
-    $name.Size = (Sz 250 22)
+    $name.Location = (ScalePoint 20 $y)
+    $name.Size = (ScaleSize 250 22)
     $state = New-Object Windows.Forms.Label
     $state.Text = 'Waiting'
     $state.ForeColor = [Drawing.Color]::Gray
-    $state.Location = (Pt 276 $y)
-    $state.Size = (Sz 190 22)
+    $state.Location = (ScalePoint 276 $y)
+    $state.Size = (ScaleSize 190 22)
     $state.AccessibleName = $st.Label
     $form.Controls.Add($name); $form.Controls.Add($state)
     $rows[$st.Id] = @{ Label = $state; State = 'waiting'; Since = $null }
@@ -215,16 +217,16 @@ foreach ($st in $Stages) {
 $bar = New-Object Windows.Forms.ProgressBar
 $bar.Style = [Windows.Forms.ProgressBarStyle]::Marquee   # no measurable fraction exists: never a fake percentage
 $bar.MarqueeAnimationSpeed = 30
-$bar.Location = (Pt 20 216)
-$bar.Size = (Sz 440 14)
+$bar.Location = (ScalePoint 20 216)
+$bar.Size = (ScaleSize 440 14)
 $form.Controls.Add($bar)
 
 $details = New-Object Windows.Forms.TextBox
 $details.Multiline = $true
 $details.ReadOnly = $true
 $details.ScrollBars = 'Vertical'
-$details.Location = (Pt 20 238)
-$details.Size = (Sz 440 0)
+$details.Location = (ScalePoint 20 238)
+$details.Size = (ScaleSize 440 0)
 $details.Visible = $false
 $details.AccessibleName = 'Startup details'
 $form.Controls.Add($details)
@@ -232,8 +234,8 @@ $form.Controls.Add($details)
 function New-Button([string]$Text, [int]$X) {
     $b = New-Object Windows.Forms.Button
     $b.Text = $Text
-    $b.Location = (Pt $X 290)
-    $b.Size = (Sz 108 28)
+    $b.Location = (ScalePoint $X 290)
+    $b.Size = (ScaleSize 108 28)
     $form.Controls.Add($b)
     return $b
 }
@@ -470,7 +472,7 @@ function Get-ClippedText {
     foreach ($c in @($form.Controls)) {
         if (-not $c.Visible -or -not $c.Text -or -not ($c -is [Windows.Forms.Label] -or $c -is [Windows.Forms.Button])) { continue }
         if ($c -is [Windows.Forms.Button]) {
-            $avail = $c.ClientSize.Width - (Sc 8)
+            $avail = $c.ClientSize.Width - (ScalePx 8)
             $m = [Windows.Forms.TextRenderer]::MeasureText($c.Text, $c.Font, (New-Object Drawing.Size([int]::MaxValue, [int]::MaxValue)), [Windows.Forms.TextFormatFlags]::SingleLine)
             if ($m.Width -gt $avail -or $m.Height -gt $c.ClientSize.Height) { $out += ('button "' + $c.Text.Replace('&', '') + '"') }
         } else {
@@ -564,14 +566,14 @@ $btnDetails.Add_Click({
     $details.Visible = -not $details.Visible
     if ($details.Visible) {
         Update-Details
-        $details.Height = (Sc 120)
-        $form.ClientSize = (Sz 480 460)
-        foreach ($b in @($btnDetails, $btnConsole, $btnRetry, $btnClose)) { $b.Top = (Sc 420) }
+        $details.Height = (ScalePx 120)
+        $form.ClientSize = (ScaleSize 480 460)
+        foreach ($b in @($btnDetails, $btnConsole, $btnRetry, $btnClose)) { $b.Top = (ScalePx 420) }
         $btnDetails.Text = 'Hide &details'
         $btnConsole.Visible = $true
     } else {
-        $form.ClientSize = (Sz 480 330)
-        foreach ($b in @($btnDetails, $btnConsole, $btnRetry, $btnClose)) { $b.Top = (Sc 290) }
+        $form.ClientSize = (ScaleSize 480 330)
+        foreach ($b in @($btnDetails, $btnConsole, $btnRetry, $btnClose)) { $b.Top = (ScalePx 290) }
         $btnDetails.Text = '&Show details'
         $btnConsole.Visible = ($script:Mode -eq 'failed')
     }
