@@ -1,6 +1,6 @@
 # Copilot Automated Discovery -> Chief Architect Triage
 
-**Status:** Proposed project governance on draft PR #9. This file is **not** a GitHub Actions configuration or proof that Copilot automation is running. The Project Owner reports that GitHub Copilot already performs its own automated issue-finding work. Preserve that automation's existing setup, permissions and schedule; do not add or enable a second scheduler without authorization.
+**Status:** Proposed project governance on draft PR #9. This file is **not** a GitHub Actions configuration or proof that Copilot automation is running. The Project Owner reports prior Copilot issue-finding activity; its automation configuration has **not** been independently verified. As of the setup check, LotRadar is public and GitHub docs restrict Copilot cloud automations to eligible paid plans and private/internal repositories, so do **not** claim native Copilot Free scheduled scans are running. Preserve any separate existing Actions/security scanning and avoid duplicate jobs. Use `.github/copilot-instructions.md` and `COPILOT_FREE_SCOUT_PROMPT.txt` for manual Copilot Chat review until eligible automation is genuinely available.
 
 ## Role and authority
 
@@ -11,7 +11,7 @@
 ## Discovery and work-intake loop
 
 ```text
-Copilot scheduled issue discovery (existing Owner-configured task)
+Copilot manual or genuinely configured discovery (do not assume a schedule)
     -> COPILOT_FINDING.md or existing GitHub issue/PR comment
     -> Chief checks SHA, actual code, duplicates, impact and evidence
     -> Reject false positive / request evidence / create scoped work item
