@@ -193,27 +193,9 @@ namespace LotRadarQA {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
-    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
-    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
-    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
-    public static bool Front(IntPtr h) {
-      // Windows refuses SetForegroundWindow from a process that is not in front (foreground lock). Sharing the
-      // input state with the current foreground thread for a moment is the documented way around it; no keys sent.
-      IntPtr fg = GetForegroundWindow();
-      uint me = GetCurrentThreadId();
-      uint other = fg == IntPtr.Zero ? 0 : GetWindowThreadProcessId(fg, IntPtr.Zero);
-      uint target = GetWindowThreadProcessId(h, IntPtr.Zero);
-      bool a1 = other != 0 && other != me && AttachThreadInput(me, other, true);
-      bool a2 = target != 0 && target != me && AttachThreadInput(me, target, true);
-      BringWindowToTop(h); SetForegroundWindow(h);
-      if (a2) AttachThreadInput(me, target, false);
-      if (a1) AttachThreadInput(me, other, false);
-      return GetForegroundWindow() == h;
-    }
   }
 }
 '@
@@ -247,21 +229,19 @@ function Save-WindowShot($Proc, [string]$Name) {
         return ('screenshot ' + (Split-Path -Leaf $path) + ' ' + $w + 'x' + $hh)
     } catch { return ('screenshot failed: ' + $_.Exception.Message) }
 }
-function Set-WindowFront($Proc) {
-    # Keystrokes only count when the startup window is really in front (Windows can refuse focus changes).
-    # Returns 'front' or 'not-front' so a failure says whether the key ever reached the window.
-    if (-not ('LotRadarQA.Win' -as [type])) { Add-Type -TypeDefinition $qaWinSource; [void][LotRadarQA.Win]::SetProcessDPIAware() }
-    $ws = New-Object -ComObject WScript.Shell
-    for ($i = 0; $i -lt 6; $i++) {
-        $Proc.Refresh(); $h = $Proc.MainWindowHandle
-        if ($h -ne [IntPtr]::Zero) {
-            [void]$ws.AppActivate($Proc.Id); [void][LotRadarQA.Win]::Front($h)
-            Start-Sleep -Milliseconds 500
-            if ([LotRadarQA.Win]::GetForegroundWindow() -eq $h) { return 'front' }
-        }
-        Start-Sleep -Milliseconds 500
+function Send-StartupTestKey($Proc, [uint32]$Message, [int]$Key) {
+    # Target the owned window's message queue. Tests mnemonic/dialog handling, not physical focus (E3).
+    # Never send global keys to an unrelated foreground application.
+    if (-not ('LotRadarQA.Win' -as [type])) { Add-Type -TypeDefinition $qaWinSource }
+    $Proc.Refresh()
+    $h = $Proc.MainWindowHandle
+    if ($Proc.HasExited -or $h -eq [IntPtr]::Zero) { throw 'startup test window is unavailable' }
+    [uint32]$windowPid = 0
+    [void][LotRadarQA.Win]::GetWindowThreadProcessId($h, [ref]$windowPid)
+    if ($windowPid -ne $Proc.Id) { throw 'startup test window ownership changed' }
+    if (-not [LotRadarQA.Win]::PostMessage($h, $Message, [IntPtr]$Key, [IntPtr]::Zero)) {
+        throw 'could not queue keyboard message to the owned startup test window'
     }
-    return 'not-front'
 }
 function Invoke-StartupWindow([string]$Gui, [int]$TimeoutSec, [int]$AutoClose = 2, [scriptblock]$During = $null) {
     $res = Join-Path $root ('gui-result-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
@@ -357,11 +337,11 @@ function Invoke-Installer-Boot {
     return [pscustomobject]@{ Code = $LASTEXITCODE; Output = $out }
 }
 function Stop-SandboxProcesses {
-    # Only processes that belong to THIS sandbox: python server.py under the sandbox path, and the --app window opened for 127.0.0.1:8765.
+    # Only the server under THIS sandbox. A localhost app URL does not prove browser ownership.
+    # Chrome/Edge may reuse a personal process: leave browser windows for manual close, never tree-kill them.
     $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine })
     $targets = @($all | Where-Object {
-        (($_.Name -ieq 'python.exe') -and $_.CommandLine -like '*server.py*' -and $_.CommandLine -like ('*' + $local + '*')) -or
-        ((($_.Name -ieq 'chrome.exe') -or ($_.Name -ieq 'msedge.exe')) -and $_.CommandLine -like '*--app=http://127.0.0.1:8765*')
+        ($_.Name -ieq 'python.exe') -and $_.CommandLine -like '*server.py*' -and $_.CommandLine.Contains($local + '\')
     })
     foreach ($t in $targets) {
         Write-Host ('Stopping sandbox process ' + $t.Name + ' pid ' + $t.ProcessId)
@@ -1149,27 +1129,24 @@ try {
         Assert-True ($w.Result.steps -eq 'system:active,modules:pending,server:pending,launch:pending') ('visible steps while starting: ' + $w.Result.steps)
         return ('exit 0; startup still running after close (' + $alive + ' process(es)); console shown=' + $w.Result.console_shown + ' (' + $w.Result.console_diag + '); ' + $w.Note)
     }
-    Invoke-Test 'G10' 'Window failure by keyboard: Alt+C shows the console, Esc closes (exit 91), nothing left running' {
+    Invoke-Test 'G10' 'Window failure by targeted keyboard messages: mnemonic C shows console, Esc closes (exit 91); physical keys require E3' {
         [IO.File]::WriteAllText($gStub, ($emit + 'E ''install'' ''started'' ''stub'' $env:LOTRADAR_STARTUP_NONCE; E ''install'' ''failed'' ''STUB FAILURE FOR KEYBOARD TEST'' $env:LOTRADAR_STARTUP_NONCE; Write-Host "STUB-FAIL"; exit 7'), [Text.Encoding]::ASCII)
         try {
             $w = Invoke-StartupWindow $gGui 60 0 {
                 param($p)
                 Start-Sleep -Seconds 6
                 $shot = Save-WindowShot $p 'failure'
-                $ws = New-Object -ComObject WScript.Shell
-                $f1 = Set-WindowFront $p
-                $ws.SendKeys('%c'); Start-Sleep -Seconds 2          # Alt+C = Show console
-                $f2 = Set-WindowFront $p
-                $ws.SendKeys('{ESC}')                                # Esc = Close
-                $shot + '; before Alt+C: ' + $f1 + '; before Esc: ' + $f2
+                Send-StartupTestKey $p 0x0106 0x63   # WM_SYSCHAR c: Show console mnemonic
+                Start-Sleep -Seconds 2
+                Send-StartupTestKey $p 0x0100 0x1B   # WM_KEYDOWN Escape: dialog close
+                $shot + '; targeted mnemonic C and Escape (physical focus NOT tested)'
             }
         } finally { Start-Sleep -Seconds 1; Stop-GuiTestProcesses }
         Assert-True ($w.Exit -eq 91 -and $w.Result.mode -eq 'failed') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True ($w.Result.reason -eq 'STUB FAILURE FOR KEYBOARD TEST') ('reason: ' + $w.Result.reason)
-        Assert-True ($w.Note -match 'before Alt\+C: front') ('the test could not bring the startup window to the front before Alt+C, so the key did not reach it (' + $w.Note + ')')
-        Assert-True ($w.Result.console_diag -match 'click') ('Alt+C reached the window in front but did not press Show console (' + $w.Note + ')')
-        Assert-True ($w.Result.console_shown -eq $true) ('Alt+C pressed Show console but the console did not come up (diagnostics: ' + $w.Result.console_diag + ')')
-        return ('exit 91 via Esc; console shown via Alt+C (' + $w.Result.console_diag + '); ' + $w.Note)
+        Assert-True ($w.Result.console_diag -match 'click') ('targeted mnemonic did not press Show console (' + $w.Note + ')')
+        Assert-True ($w.Result.console_shown -eq $true) ('mnemonic pressed Show console but the console did not come up (diagnostics: ' + $w.Result.console_diag + ')')
+        return ('exit 91 via targeted Escape; console shown via targeted mnemonic (' + $w.Result.console_diag + '); ' + $w.Note)
     }
 
     # ---- optional: real bootstrap in the sandbox

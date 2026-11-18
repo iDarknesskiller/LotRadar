@@ -86,3 +86,10 @@ the four visible steps the window reports. Still manual:
 | C | | |
 | D | | |
 | E1-E6 | | |
+
+
+### PR #5 automated keyboard scope (Codex takeover)
+
+G10 posts mnemonic C and Escape messages only to the owned startup test window. It verifies WinForms mnemonic/dialog handling and failure-console lifetime without global SendKeys or forced foreground changes. It does not prove physical keyboard routing: E3 must still be performed interactively.
+
+The installer test cleanup no longer terminates Chrome/Edge based on a localhost app URL. Such a browser may share a personal process. Close leftover test app windows manually; no browser process tree is killed by Stop-SandboxProcesses.

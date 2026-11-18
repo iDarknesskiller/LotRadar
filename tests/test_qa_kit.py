@@ -178,7 +178,7 @@ class QAKit(unittest.TestCase):
             self.assertIn("Invoke-Test '" + tid + "'", text)
         self.assertIn("'-AutoCloseSeconds', [string]$AutoClose, '-ResultFile'", text)
         g10 = text[text.index("Invoke-Test 'G10'"):]
-        self.assertIn("$ws.SendKeys('%c')", g10)
+        self.assertIn('Send-StartupTestKey $p 0x0106 0x63', g10)
         self.assertIn("$w.Result.console_shown -eq $true", g10)
         g9 = text[text.index("Invoke-Test 'G9'"):text.index("Invoke-Test 'G10'")]
         self.assertIn("Assert-True ($alive -ge 1)", g9)
@@ -356,8 +356,8 @@ class QAKit(unittest.TestCase):
         self.assertGreaterEqual(h.count('Stop-GuiTestProcesses'), 6)
         g10 = h[h.index("Invoke-Test 'G10'"):]
         self.assertIn('console_diag', g10)
-        self.assertIn('$f1 = Set-WindowFront $p', g10)
-        self.assertIn('[LotRadarQA.Win]::Front($h)', h)               # foreground lock: AttachThreadInput, no keys            # Alt+C only counts when the window is in front
+        self.assertIn('Send-StartupTestKey $p 0x0100 0x1B', g10)
+        self.assertNotIn('SendKeys', g10)
         self.assertIn("$w.Result.console_diag -match 'click'", g10)
         g3 = h[h.index("Invoke-Test 'G3'"):h.index("Invoke-Test 'G4'")]
         self.assertIn("$w.Result.clipped -eq ''", g3)
