@@ -195,6 +195,24 @@ namespace LotRadarQA {
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+    public static bool Front(IntPtr h) {
+      // Windows refuses SetForegroundWindow from a process that is not in front (foreground lock). Sharing the
+      // input state with the current foreground thread for a moment is the documented way around it; no keys sent.
+      IntPtr fg = GetForegroundWindow();
+      uint me = GetCurrentThreadId();
+      uint other = fg == IntPtr.Zero ? 0 : GetWindowThreadProcessId(fg, IntPtr.Zero);
+      uint target = GetWindowThreadProcessId(h, IntPtr.Zero);
+      bool a1 = other != 0 && other != me && AttachThreadInput(me, other, true);
+      bool a2 = target != 0 && target != me && AttachThreadInput(me, target, true);
+      BringWindowToTop(h); SetForegroundWindow(h);
+      if (a2) AttachThreadInput(me, target, false);
+      if (a1) AttachThreadInput(me, other, false);
+      return GetForegroundWindow() == h;
+    }
   }
 }
 '@
@@ -229,7 +247,7 @@ function Set-WindowFront($Proc) {
     for ($i = 0; $i -lt 6; $i++) {
         $Proc.Refresh(); $h = $Proc.MainWindowHandle
         if ($h -ne [IntPtr]::Zero) {
-            [void]$ws.AppActivate($Proc.Id); [void][LotRadarQA.Win]::SetForegroundWindow($h)
+            [void]$ws.AppActivate($Proc.Id); [void][LotRadarQA.Win]::Front($h)
             Start-Sleep -Milliseconds 500
             if ([LotRadarQA.Win]::GetForegroundWindow() -eq $h) { return 'front' }
         }

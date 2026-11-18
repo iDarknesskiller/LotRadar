@@ -352,7 +352,8 @@ class QAKit(unittest.TestCase):
         self.assertGreaterEqual(h.count('Stop-GuiTestProcesses'), 6)
         g10 = h[h.index("Invoke-Test 'G10'"):]
         self.assertIn('console_diag', g10)
-        self.assertIn('$f1 = Set-WindowFront $p', g10)            # Alt+C only counts when the window is in front
+        self.assertIn('$f1 = Set-WindowFront $p', g10)
+        self.assertIn('[LotRadarQA.Win]::Front($h)', h)               # foreground lock: AttachThreadInput, no keys            # Alt+C only counts when the window is in front
         self.assertIn("$w.Result.console_diag -match 'click'", g10)
         # screenshots: visible frame only (no slivers of the desktop behind the window)
         self.assertIn('DwmGetWindowAttribute($h, 9, [ref]$r, 16)', h)
