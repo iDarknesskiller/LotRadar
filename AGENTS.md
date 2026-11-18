@@ -8,14 +8,23 @@
 | --- | --- | --- |
 | Project Owner | Human Owner | Set priorities, accept scope/waivers, authorize merges and releases |
 | Chief Architect and Work Intake | ChatGPT | Independently validate Copilot candidates against approved main; deduplicate, classify and **create scoped backlog issues/work orders**; design architecture and coordinate risk/priority with Owner |
-| Automated Issue Discovery | GitHub Copilot | Run its already configured independent discovery task; report suspected bugs, risks, missing tests and maintenance opportunities as **unverified candidate findings**, never as automatic approval for a fix |\n| Lead Programmer and Test Designer | Claude | Implement the change; design and approve the test plan; review Codex's full independent report; decide if the candidate is ready to be submitted to Gemini |
+| Automated Issue Discovery | GitHub Copilot | Investigate suspected bugs, risks, missing tests and maintenance when invoked; findings are **unverified candidates**, not approval for a fix. Copilot Free cloud automations are unavailable for this public repository |
+| Lead Programmer and Test Designer | Claude | Implement the change; design and approve the test plan; review Codex's full independent report; decide if the candidate is ready to be submitted to Gemini |
 | Independent Test Engineer | Codex (default) | Test the frozen candidate independently; challenge Claude's tests, add missing tests in isolated test-only changes, run tests and send a complete report **back to Claude first** |
 | Final Independent QA Auditor | Gemini | Independently review candidate source and complete evidence after Claude's readiness gate; identify defects and provide a QA verdict. Gemini does not merge |
 | Stand-in Senior Developer | Codex (explicit reassignment only) | If Claude is unavailable, may implement an assigned change on a scoped branch; **must not represent its own tests as independent certification of the code it authored** |
 
-**Copilot discovery and Architect triage:** [`docs/ai/COPILOT_AUTOMATED_DISCOVERY.md`](docs/ai/COPILOT_AUTOMATED_DISCOVERY.md).  \n**Architect work order template:** [`docs/ai/ARCHITECT_WORK_ORDER_TEMPLATE.md`](docs/ai/ARCHITECT_WORK_ORDER_TEMPLATE.md).  \n**Canonical workflow:** [`docs/ai/QA_WORKFLOW.md`](docs/ai/QA_WORKFLOW.md).  
+**Copilot discovery and Architect triage:** [`docs/ai/COPILOT_AUTOMATED_DISCOVERY.md`](docs/ai/COPILOT_AUTOMATED_DISCOVERY.md).  
+**Architect work order template:** [`docs/ai/ARCHITECT_WORK_ORDER_TEMPLATE.md`](docs/ai/ARCHITECT_WORK_ORDER_TEMPLATE.md).  
+**Canonical workflow:** [`docs/ai/QA_WORKFLOW.md`](docs/ai/QA_WORKFLOW.md).  
 **Codex role:** [`docs/ai/CODEX_INDEPENDENT_TESTER.md`](docs/ai/CODEX_INDEPENDENT_TESTER.md).  
 **Architect role change:** [`docs/ai/ARCHITECT_HANDOFF.md`](docs/ai/ARCHITECT_HANDOFF.md).
+
+## Copilot issue-scout intake and Free-plan limitations
+
+Copilot-specific repo rules: [`.github/copilot-instructions.md`](.github/copilot-instructions.md). Manual Free-plan scout prompt: [`docs/ai/COPILOT_FREE_SCOUT_PROMPT.txt`](docs/ai/COPILOT_FREE_SCOUT_PROMPT.txt).
+
+Current public LotRadar repository cannot use GitHub Copilot cloud automations: GitHub requires a qualifying paid plan and private/internal repository. Any other scheduled scanner needs a separately verified configuration. The Chief Architect must source-check, deduplicate and classify Copilot or scanner findings, then propose scoped work for Owner priority/authorization; no automatic implementation. Free CodeQL/Dependabot public-repository scanning is separate from Copilot cloud agent.
 
 ## Required sequence for every substantive code PR
 
