@@ -1104,7 +1104,8 @@ try {
         Assert-True (@(Get-ProcessesMentioning $gDir).Count -eq 0) 'the failed attempt''s console is still running'
         $after = @(Get-ChildItem -LiteralPath $runtimeDir -Filter 'startup-status-*.jsonl' -ErrorAction SilentlyContinue).Count
         Assert-True ($after -le $before) 'status file of the attempt was left behind'
-        return ('exit 91 (launcher returns 1); reason shown: ' + $w.Result.reason + '; console closed; ' + $w.Seconds + ' s')
+        Assert-True ($w.Result.clipped -eq '') ('text or buttons cut off at display scale ' + $w.Result.scale + ': ' + $w.Result.clipped)
+        return ('exit 91 (launcher returns 1); reason shown: ' + $w.Result.reason + '; console closed; nothing cut off at scale ' + $w.Result.scale + '; ' + $w.Seconds + ' s')
     }
     Invoke-Test 'G4' 'Window: a forged "opened" event without a healthy server is NOT reported as success' {
         Assert-True (-not (Test-PortBusy)) 'test setup: something listens on 8765'

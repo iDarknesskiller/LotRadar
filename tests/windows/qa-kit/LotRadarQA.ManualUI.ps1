@@ -117,7 +117,8 @@ if ($UiPreview) {
         if (-not $ge) { throw 'the startup window is not in this package' }
         [IO.Compression.ZipFileExtensions]::ExtractToFile($ge, $gui, $true)
     } finally { $z.Dispose() }
-    $p = Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"' + $gui + '"'), '-Preview') -PassThru
+    $pvResult = Join-Path $resultsDir 'preview-window-result.json'
+    $p = Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"' + $gui + '"'), '-Preview', '-ResultFile', ('"' + $pvResult + '"')) -PassThru
     $null = $p.Handle
     Start-Sleep -Seconds 4
     $s1 = Save-Shot $p ('preview-progress-' + $pct + 'pct')
@@ -132,11 +133,18 @@ if ($UiPreview) {
     Say '  4. Press Esc (or Alt+L) to close it.' 'Gray'
     Say '  While looking: is any text cut off or a button partly hidden, also with details open?' 'Gray'
     $null = $p.WaitForExit(600000)
+    # Automatic display check by the window itself (every label/button text measured against its control).
+    $auto = $null
+    try { if (Test-Path -LiteralPath $pvResult) { $auto = [IO.File]::ReadAllText($pvResult) | ConvertFrom-Json } } catch { }
+    if ($null -eq $auto -or [string]$auto.clipped -eq 'not checked') { Add-M 'E4a' 'Automatic check: no text cut off' 'SKIP' 'the window did not report a measurement' }
+    elseif ([string]$auto.clipped) { Add-M 'E4a' 'Automatic check: no text cut off' 'FAIL' ('cut off at ' + $pct + '%: ' + $auto.clipped) }
+    else { Add-M 'E4a' 'Automatic check: no text cut off' 'PASS' ('every label and button fits at ' + $pct + '% (layout scale ' + $auto.scale + ')') }
     $e3 = Read-YesNo 'E3 keyboard: did Tab, Alt+S/D/C/R and Esc (or Alt+L) all work?'
     Add-M 'E3' 'Keyboard: Tab order, Alt+S/C/R/L, Esc' $(switch ($e3) { 'Y' { 'PASS' } 'N' { 'FAIL' } default { 'SKIP' } }) ('answered by the person at ' + $pct + '% scaling')
     $e4 = Read-YesNo ('E4 display at ' + $pct + '%: was ALL text and every button fully visible (also with details open)?')
     $e4Status = switch ($e4) { 'Y' { 'PASS' } 'N' { 'FAIL' } default { 'SKIP' } }
     $e4Detail = ('scaling ' + $pct + '%')
+    if ($e4Status -eq 'PASS' -and $null -ne $auto -and [string]$auto.clipped -and [string]$auto.clipped -ne 'not checked') { $e4Status = 'FAIL'; $e4Detail += ' (person answered yes, but the automatic check found text cut off)' }
     if ($e4Status -eq 'PASS' -and $pct -lt 150) { $e4Status = 'INCOMPLETE'; $e4Detail += ' (looks fine here; E4 needs a run at 150%)' }
     Add-M 'E4' 'Display scaling: no clipped text or controls' $e4Status $e4Detail
     Write-ManualSummary 'LotRadar manual UI acceptance - Stage A (preview only; proves appearance/keyboard, NOT a real launch)' @(('Display scaling : ' + $pct + '% (' + $dpi + ' dpi)'))

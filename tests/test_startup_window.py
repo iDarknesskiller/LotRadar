@@ -102,6 +102,22 @@ class TestStartupWindow(unittest.TestCase):
             self.assertIn(d, c)
         self.assertIn("console_diag = (@($script:ConsoleDiag) -join ',')", c)
         self.assertIn("[void]$script:ConsoleDiag.Add('click')", c)
+    def test_layout_scales_with_display_dpi(self):
+        """Windows 11 preview at 150% (f9742a7): text and buttons were cut off - fonts grew, layout did not."""
+        c = self.code
+        self.assertIn('$form.AutoScaleMode = [Windows.Forms.AutoScaleMode]::None', c)
+        self.assertIn('$script:Scale = [math]::Max(1.0, $gs.DpiX / 96.0)', c)
+        # every position/size goes through the scale helpers (only the helpers build raw Point/Size objects)
+        raw = [l for l in c.splitlines() if ('New-Object Drawing.Point(' in l or 'New-Object Drawing.Size(' in l) and 'MeasureText' not in l]
+        self.assertEqual(len(raw), 2, raw)
+        self.assertTrue(all(l.startswith('function Pt(') or l.startswith('function Sz(') for l in raw), raw)
+        for k in ('$form.ClientSize = (Sz 480 330)', '$form.ClientSize = (Sz 480 460)', '$b.Top = (Sc 420)', '$b.Top = (Sc 290)', '$details.Height = (Sc 120)'):
+            self.assertIn(k, c)
+        self.assertNotRegex(c, r'\.(Top|Height|Width|Left) = \d')
+        # the window measures its own texts while it still exists and reports them in the ResultFile
+        fc = c[c.index('$form.Add_FormClosing({'):]
+        self.assertLess(fc.index('Get-ClippedText'), fc.index('if ($Preview)'))
+        self.assertIn('clipped = [string]$script:Clipped; scale = $script:Scale', c)
 
 if __name__ == '__main__':
     unittest.main()

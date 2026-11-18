@@ -138,12 +138,20 @@ if (-not $Preview) { try {
 $form = New-Object Windows.Forms.Form
 $form.Text = 'LotRadar'
 if ($Preview) { $form.Text = 'LotRadar - PREVIEW (example steps, nothing is started)' }
-$form.AutoScaleMode = [Windows.Forms.AutoScaleMode]::Dpi
+# Layout is written in 96-dpi units and scaled here by the real display scale (Windows 11 preview at 150%:
+# fonts grew with the DPI but positions/sizes did not, so text and buttons were cut off). WinForms' own
+# AutoScale is off so nothing is scaled twice; fonts are in points and follow the DPI by themselves.
+$form.AutoScaleMode = [Windows.Forms.AutoScaleMode]::None
+$script:Scale = 1.0
+try { $gs = [Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $script:Scale = [math]::Max(1.0, $gs.DpiX / 96.0); $gs.Dispose() } catch { $script:Scale = 1.0 }
+function Sc([int]$v) { return [int][math]::Round($v * $script:Scale) }
+function Pt([int]$x, [int]$y) { return (New-Object Drawing.Point((Sc $x), (Sc $y))) }
+function Sz([int]$w, [int]$h) { return (New-Object Drawing.Size((Sc $w), (Sc $h))) }
 $form.Font = New-Object Drawing.Font('Segoe UI', 9)
 $form.FormBorderStyle = [Windows.Forms.FormBorderStyle]::FixedSingle
 $form.MaximizeBox = $false
 $form.StartPosition = [Windows.Forms.FormStartPosition]::CenterScreen
-$form.ClientSize = New-Object Drawing.Size(480, 330)
+$form.ClientSize = (Sz 480 330)
 $form.KeyPreview = $true
 $ico = Join-Path $programDir 'LotRadar.ico'
 if (Test-Path -LiteralPath $ico -PathType Leaf) { try { $form.Icon = New-Object Drawing.Icon($ico) } catch { } }
@@ -169,22 +177,22 @@ if (-not $brand) {
     $brand.BackColor = [Drawing.Color]::FromArgb(24, 48, 72)
     $brand.ForeColor = [Drawing.Color]::White
 }
-$brand.Location = New-Object Drawing.Point(16, 14)
-$brand.Size = New-Object Drawing.Size(56, 56)
+$brand.Location = (Pt 16 14)
+$brand.Size = (Sz 56 56)
 $brand.AccessibleName = 'LotRadar'
 $form.Controls.Add($brand)
 
 $title = New-Object Windows.Forms.Label
 $title.Text = 'Starting LotRadar'
 $title.Font = New-Object Drawing.Font('Segoe UI', 14, [Drawing.FontStyle]::Bold)
-$title.Location = New-Object Drawing.Point(84, 16)
-$title.Size = New-Object Drawing.Size(380, 30)
+$title.Location = (Pt 84 16)
+$title.Size = (Sz 380 30)
 $form.Controls.Add($title)
 
 $status = New-Object Windows.Forms.Label
 $status.Text = 'Preparing...'
-$status.Location = New-Object Drawing.Point(86, 48)
-$status.Size = New-Object Drawing.Size(380, 34)
+$status.Location = (Pt 86 48)
+$status.Size = (Sz 380 34)
 $form.Controls.Add($status)
 
 $rows = @{}
@@ -192,13 +200,13 @@ $y = 90
 foreach ($st in $Stages) {
     $name = New-Object Windows.Forms.Label
     $name.Text = $st.Label
-    $name.Location = New-Object Drawing.Point(20, $y)
-    $name.Size = New-Object Drawing.Size(250, 22)
+    $name.Location = (Pt 20 $y)
+    $name.Size = (Sz 250 22)
     $state = New-Object Windows.Forms.Label
     $state.Text = 'Waiting'
     $state.ForeColor = [Drawing.Color]::Gray
-    $state.Location = New-Object Drawing.Point(276, $y)
-    $state.Size = New-Object Drawing.Size(190, 22)
+    $state.Location = (Pt 276 $y)
+    $state.Size = (Sz 190 22)
     $state.AccessibleName = $st.Label
     $form.Controls.Add($name); $form.Controls.Add($state)
     $rows[$st.Id] = @{ Label = $state; State = 'waiting'; Since = $null }
@@ -207,16 +215,16 @@ foreach ($st in $Stages) {
 $bar = New-Object Windows.Forms.ProgressBar
 $bar.Style = [Windows.Forms.ProgressBarStyle]::Marquee   # no measurable fraction exists: never a fake percentage
 $bar.MarqueeAnimationSpeed = 30
-$bar.Location = New-Object Drawing.Point(20, 216)
-$bar.Size = New-Object Drawing.Size(440, 14)
+$bar.Location = (Pt 20 216)
+$bar.Size = (Sz 440 14)
 $form.Controls.Add($bar)
 
 $details = New-Object Windows.Forms.TextBox
 $details.Multiline = $true
 $details.ReadOnly = $true
 $details.ScrollBars = 'Vertical'
-$details.Location = New-Object Drawing.Point(20, 238)
-$details.Size = New-Object Drawing.Size(440, 0)
+$details.Location = (Pt 20 238)
+$details.Size = (Sz 440 0)
 $details.Visible = $false
 $details.AccessibleName = 'Startup details'
 $form.Controls.Add($details)
@@ -224,8 +232,8 @@ $form.Controls.Add($details)
 function New-Button([string]$Text, [int]$X) {
     $b = New-Object Windows.Forms.Button
     $b.Text = $Text
-    $b.Location = New-Object Drawing.Point($X, 290)
-    $b.Size = New-Object Drawing.Size(108, 28)
+    $b.Location = (Pt $X 290)
+    $b.Size = (Sz 108 28)
     $form.Controls.Add($b)
     return $b
 }
@@ -455,6 +463,27 @@ function Update-Health {
     $script:HealthAt = Get-Date
     $script:HealthAr = $req.BeginGetResponse($null, $null)
 }
+function Get-ClippedText {
+    # Automatic display check (tests and preview only, via ResultFile): every visible label/button text must fit
+    # its control at the current scale. Returns short descriptions of the ones that do not.
+    $out = @()
+    foreach ($c in @($form.Controls)) {
+        if (-not $c.Visible -or -not $c.Text -or -not ($c -is [Windows.Forms.Label] -or $c -is [Windows.Forms.Button])) { continue }
+        if ($c -is [Windows.Forms.Button]) {
+            $avail = $c.ClientSize.Width - (Sc 8)
+            $m = [Windows.Forms.TextRenderer]::MeasureText($c.Text, $c.Font, (New-Object Drawing.Size([int]::MaxValue, [int]::MaxValue)), [Windows.Forms.TextFormatFlags]::SingleLine)
+            if ($m.Width -gt $avail -or $m.Height -gt $c.ClientSize.Height) { $out += ('button "' + $c.Text.Replace('&', '') + '"') }
+        } else {
+            $flags = [Windows.Forms.TextFormatFlags]::WordBreak -bor [Windows.Forms.TextFormatFlags]::TextBoxControl
+            $m = [Windows.Forms.TextRenderer]::MeasureText($c.Text, $c.Font, (New-Object Drawing.Size($c.ClientSize.Width, [int]::MaxValue)), $flags)
+            if ($m.Height -gt $c.ClientSize.Height -or $m.Width -gt $c.ClientSize.Width) {
+                $t = $c.Text; if ($t.Length -gt 24) { $t = $t.Substring(0, 24) + '...' }
+                $out += ('label "' + $t + '"')
+            }
+        }
+    }
+    return $out
+}
 function Test-ProcessExited($p) {
     if (-not $p) { return $true }
     try { return $p.HasExited } catch { return $true }
@@ -535,14 +564,14 @@ $btnDetails.Add_Click({
     $details.Visible = -not $details.Visible
     if ($details.Visible) {
         Update-Details
-        $details.Height = 120
-        $form.ClientSize = New-Object Drawing.Size(480, 460)
-        foreach ($b in @($btnDetails, $btnConsole, $btnRetry, $btnClose)) { $b.Top = 420 }
+        $details.Height = (Sc 120)
+        $form.ClientSize = (Sz 480 460)
+        foreach ($b in @($btnDetails, $btnConsole, $btnRetry, $btnClose)) { $b.Top = (Sc 420) }
         $btnDetails.Text = 'Hide &details'
         $btnConsole.Visible = $true
     } else {
-        $form.ClientSize = New-Object Drawing.Size(480, 330)
-        foreach ($b in @($btnDetails, $btnConsole, $btnRetry, $btnClose)) { $b.Top = 290 }
+        $form.ClientSize = (Sz 480 330)
+        foreach ($b in @($btnDetails, $btnConsole, $btnRetry, $btnClose)) { $b.Top = (Sc 290) }
         $btnDetails.Text = '&Show details'
         $btnConsole.Visible = ($script:Mode -eq 'failed')
     }
@@ -563,8 +592,11 @@ $btnRetry.Add_Click({
     try { Start-Attempt } catch { $script:Mode = 'running'; Set-Failed 'install' ('Could not start the LotRadar startup script: ' + (Protect-Message $_.Exception.Message)) }
 })
 $btnClose.Add_Click({ $form.Close() })
+$script:Clipped = 'not checked'
 $form.Add_FormClosing({
     $timer.Stop()
+    # measured while the window still exists (after Run returns its controls are disposed)
+    try { $script:Clipped = (@(Get-ClippedText) -join '; ') } catch { $script:Clipped = 'check failed: ' + $_.Exception.Message }
     if ($Preview) { $script:ExitCode = 0; return }   # preview: nothing was started, nothing to show or clean up
     if ($script:Mode -eq 'running') {
         # Setup continues: never stop anything. Make its console visible so progress is not hidden.
@@ -605,7 +637,7 @@ try {
             $evList = @($script:Events | ForEach-Object { $_.Stage + ':' + $_.State })
             $consoleExit = $null
             try { if ($script:Console -and $script:Console.HasExited) { $consoleExit = $script:Console.ExitCode } } catch { }
-            [IO.File]::WriteAllText($ResultFile, (@{ exit = $script:ExitCode; mode = $script:Mode; reason = $script:FailReason; events = $evList; health = $script:HealthOk; tick_error = [string]$script:LastTickError; console_exit = $consoleExit; boot_pid = $script:BootPid; console_shown = [bool]$script:ConsoleShown; console_diag = (@($script:ConsoleDiag) -join ',') } | ConvertTo-Json -Compress), $utf8)
+            [IO.File]::WriteAllText($ResultFile, (@{ exit = $script:ExitCode; mode = $script:Mode; reason = $script:FailReason; events = $evList; health = $script:HealthOk; tick_error = [string]$script:LastTickError; console_exit = $consoleExit; boot_pid = $script:BootPid; console_shown = [bool]$script:ConsoleShown; console_diag = (@($script:ConsoleDiag) -join ','); clipped = [string]$script:Clipped; scale = $script:Scale } | ConvertTo-Json -Compress), $utf8)
         } catch { }
     }
 }

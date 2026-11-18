@@ -307,6 +307,9 @@ class QAKit(unittest.TestCase):
         a = m[m.index('if ($UiPreview) {'):m.index('# ===', m.index('if ($UiPreview) {'))]
         self.assertIn("GetEntry('MarketplaceScanner/startup/Show-LotRadarStartup.ps1')", a)
         self.assertIn("'-Preview'", a)
+        self.assertIn("'-ResultFile'", a)
+        self.assertIn("Add-M 'E4a'", a)                             # automatic cut-off check reported
+        self.assertIn('the automatic check found text cut off', a)  # a person's yes cannot override it
         for banned in ('Install-LotRadar', 'Expand-KitPackage', 'TcpListener', 'taskkill', 'Confirm-Start'):
             self.assertNotIn(banned, a)
         b = m[m.index('# ---- B0'):]
@@ -355,6 +358,8 @@ class QAKit(unittest.TestCase):
         self.assertIn('$f1 = Set-WindowFront $p', g10)
         self.assertIn('[LotRadarQA.Win]::Front($h)', h)               # foreground lock: AttachThreadInput, no keys            # Alt+C only counts when the window is in front
         self.assertIn("$w.Result.console_diag -match 'click'", g10)
+        g3 = h[h.index("Invoke-Test 'G3'"):h.index("Invoke-Test 'G4'")]
+        self.assertIn("$w.Result.clipped -eq ''", g3)
         # screenshots: visible frame only (no slivers of the desktop behind the window)
         self.assertIn('DwmGetWindowAttribute($h, 9, [ref]$r, 16)', h)
         mu = self.read('tools/LotRadarQA.ManualUI.ps1').decode('ascii')
