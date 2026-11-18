@@ -147,7 +147,8 @@ if (@($odParents).Count -gt 0) {
     Say 'The OneDrive cases (CL21, CL22) create ONE temporary folder "LotRadar QA TEST ONLY <random>" in your OneDrive' 'Yellow'
     Say 'with a few synthetic text files, then delete it. OneDrive may upload it while it exists and keep it in its' 'Yellow'
     Say 'online recycle bin for a while. Your OneDrive settings and your own files are not changed.' 'Yellow'
-    $useOneDrive = Get-QAOneDriveChoice { Read-QAAnswer 'Include the OneDrive cases? Type Y and press Enter to include them, or just press Enter to skip them (default: skip)' }
+    # The safe default comes FIRST in the question (C-5: "Type Y ..." first was read as the thing to do).
+    $useOneDrive = Get-QAOneDriveChoice { Read-QAAnswer 'OneDrive cases: press Enter to SKIP them (recommended). Type Y only if you were asked to include them' }
     if ($useOneDrive) { Say 'OneDrive cases will run (you typed Y).' 'Yellow' }
     else { Say 'OneDrive cases will be skipped; the local cases still run.' 'Yellow' }
 }

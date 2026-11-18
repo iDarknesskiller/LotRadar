@@ -333,17 +333,19 @@ class QAKit(unittest.TestCase):
         self.assertIn('function Get-QAOneDriveChoice([scriptblock]$Ask)', st)
         self.assertIn("-cmatch '^\\s*[Yy]\\s*$'", st)                          # only Y / y includes them
         self.assertIn('catch { $answer = \'\' }', st)                           # no console / error -> skip
-        self.assertIn("$useOneDrive = Get-QAOneDriveChoice { Read-QAAnswer 'Include the OneDrive cases?", st)
-        self.assertIn('just press Enter to skip them (default: skip)', st)
+        # B2: the question leads with the safe default; the opt-in comes last and is conditional
+        self.assertIn("$useOneDrive = Get-QAOneDriveChoice { Read-QAAnswer 'OneDrive cases: press Enter to SKIP them (recommended). "
+                      "Type Y only if you were asked to include them' }", st)
+        self.assertNotIn('Type Y and press Enter to include them', st)
         gate = code.index('if (-not $useOneDrive) {')
         self.assertEqual(code.count("New-QAOwnedFolder $odCtr 'onedrive'"), 1)
         self.assertLess(gate, code.index("New-QAOwnedFolder $odCtr 'onedrive'"))   # the only cloud write is behind the choice
         self.assertIn('online recycle bin', st)                                     # disclosed before the question
         self.assertLess(st.index('online recycle bin'), st.index('$useOneDrive = Get-QAOneDriveChoice'))
         flat = lambda b: ' '.join(b.decode('ascii').split())
-        self.assertIn('Only Y includes them.', flat(self.read('RUN_CLEANUP_SAFETY_TESTS.cmd')))
+        for rel in ('RUN_CLEANUP_SAFETY_TESTS.cmd', 'START_HERE.txt'):
+            self.assertIn('press Enter to SKIP them (recommended). Type Y only if you were asked to include them.', flat(self.read(rel)), rel)
         self.assertIn('your OK for the LOCAL checks only', flat(self.read('RUN_CLEANUP_SAFETY_TESTS.cmd')))
-        self.assertIn('Just press Enter to skip them - that is the default; only Y includes them.', flat(self.read('START_HERE.txt')))
         # unchanged: the OneDrive installer test keeps its own double-click consent
         self.assertIn('-OneDrive -Yes', self.read('RUN_ONEDRIVE_TESTS.cmd').decode('ascii'))
 

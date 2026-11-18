@@ -100,8 +100,8 @@ Checks the rules above on SYNTHETIC test folders and a pretend Desktop, never yo
 Double-clicking it is your OK for these LOCAL checks only. If you have OneDrive, it then asks you a
 SEPARATE question: whether to include two extra OneDrive cases, which create one temporary
 "LotRadar QA TEST ONLY <random>" folder there with a few text files and delete it again (OneDrive may
-keep it in its online recycle bin for a while). Just press Enter to skip them - that is the default;
-only Y includes them. The local checks run either way.
+keep it in its online recycle bin for a while). At that question press Enter to SKIP them
+(recommended). Type Y only if you were asked to include them. The local checks run either way.
 Developer Mode ON lets it run every case (one case needs a special link).
 It takes about a minute. Send back SUMMARY.txt and SANITIZED-cleanup-selftest.json from the results
 folder it opens (on this PC, under LotRadar QA Results).
