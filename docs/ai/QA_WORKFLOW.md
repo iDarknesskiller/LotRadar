@@ -10,7 +10,7 @@ A release must not depend on one AI accepting its own claims. Preserve Codex's f
 
 ## Independent Copilot discovery (before G0)
 
-**GitHub Copilot** performs its existing Owner-configured automated issue discovery in parallel. It can flag suspected bugs, performance bottlenecks, security/data risks and test coverage gaps, but findings are only **candidates**, not verified facts. See [`COPILOT_AUTOMATED_DISCOVERY.md`](COPILOT_AUTOMATED_DISCOVERY.md).
+**GitHub Copilot** can investigate potential issues in parallel when invoked. The Owner previously described an automated task, but its availability has not been verified; GitHub Copilot Free cloud automations are unavailable for this public repository. Separate GitHub security scanning may be automatic without being Copilot agent automation. It can flag suspected bugs, performance bottlenecks, security/data risks and test coverage gaps, but findings are only **candidates**, not verified facts. See [`COPILOT_AUTOMATED_DISCOVERY.md`](COPILOT_AUTOMATED_DISCOVERY.md).
 
 **ChatGPT Chief Architect** owns validation, de-duplication against open issues/draft PRs, severity/impact and creation of **new scoped backlog work** via [`ARCHITECT_WORK_ORDER_TEMPLATE.md`](ARCHITECT_WORK_ORDER_TEMPLATE.md). For substantiated claims create a verified issue; for uncertain findings create an investigation task; reject false positives. Owner decides which work is prioritized and authorized for Claude to start. Do not automatically interrupt an active branch.
 
