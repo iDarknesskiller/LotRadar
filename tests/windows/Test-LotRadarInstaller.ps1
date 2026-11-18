@@ -1336,7 +1336,8 @@ try {
             Assert-True ($w.Exit -eq 0 -and $w.Result.mode -eq 'done') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
             Assert-True (@($ev | Where-Object { $_ -eq 'open:complete' }).Count -eq 1) ('open count wrong: ' + ($ev -join ', '))
             Assert-True ($ev -notcontains 'python:started' -and $ev -notcontains 'server:started') ('setup ran again: ' + ($ev -join ', '))
-            Assert-True ($w.Result.steps -eq 'system:skipped,modules:skipped,server:skipped,launch:done') ('visible steps wrong for an already running LotRadar: ' + $w.Result.steps)
+            # the bootstrap still checks the installation before reopening (7998f70 full-launch run): SYSTEM CHECK done
+            Assert-True ($w.Result.steps -eq 'system:done,modules:skipped,server:skipped,launch:done') ('visible steps wrong for an already running LotRadar: ' + $w.Result.steps)
             Assert-True (@(Get-ServerRoots).Count -eq 1) ('expected 1 server process tree, found ' + @(Get-ServerRoots).Count)
             return ('exit 0; events: ' + ($ev -join ' > ') + '; still 1 server tree')
         }
