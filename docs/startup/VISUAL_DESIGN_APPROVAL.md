@@ -1,72 +1,73 @@
-# LotRadar Startup Splash — Approved Visual Reference
+# ARCHITECT_HANDOFF — FINAL Owner Startup Visual Direction (PR #5)
 
 **To:** Claude — Lead Programmer  
-**Approval:** Project Owner selected the final image in the ChatGPT LotRadar design discussion on 2026-11-17. **Visual direction is approved; code/build/merge are not approved.**  
-**Correct implementation PR:** [PR #5 — Windows startup status window](https://github.com/iDarknesskiller/LotRadar/pull/5), branch `feat/windows-startup-status-window`.  
-**Approved baseline `main`:** `bf61207a21999c8ff256b08c0d17650193e3835f`  
-**Feature HEAD inspected before this approval:** `2604a6161ff57a32ff0b2c91c58fb4b4246dc4be`  
-**Candidate app version:** no unified application version; the extension independently has a version, but the packaged candidate must retain `source_commit` and manifest version.
+**From:** ChatGPT — LotRadar Chief Architect  
+**Owner's latest decision:** The Project Owner explicitly **REVOKED** the earlier full-scene/cinematic fantasy splash and confirmed that the startup must show **only the original radar logo, the progress bar, and the startup steps**. This file **replaces the prior visual proposal** even where that proposal was described as previously approved. Do not implement any superseded illustration requirements from older PR comments.  
+**PR:** [#5 — Windows startup window](https://github.com/iDarknesskiller/LotRadar/pull/5), `feat/windows-startup-status-window` (DRAFT).  
+**Approved baseline `main` at decision:** `bf61207a21999c8ff256b08c0d17650193e3835f`.  
+**PR HEAD at decision:** `87499ef1346a729772ec8545344a0063fd0024cd`.  
+**App version:** No unified app version; the install manifest `source_commit` + `package_version` remain authoritative for the built artifact.
 
-## Request / approved image identity
+## Request
 
-The Project Owner wants the **actual startup screen** to look like the *last approved supplied screenshot*, **not** the earlier red-themed variant, text-heavy logo variant, or the version with the progress bar removed.
+Replace the previous fantasy/cinematic startup concept with a **small, clean, dark, polished LotRadar-native startup window**. The original LotRadar watch-shaped radar logo is the main visual, followed by **a functioning blue progress bar and four functioning startup-step indicators**. No additional scene, poster, title treatment or other background illustration.
 
-Approved visual master (uploaded in ChatGPT):
-- Source filename: `c7ab77cd-909b-49b2-9092-bb019f7e3bce.png`.
-- PNG, RGBA, **1670 × 941 pixels** (approximately 16:9), **3.3 MB**.
-- **SHA-256:** `4024522afe01a8d35953e28d2e6ec4611267ecb1eccc9c72655279576d2fe763`.
-- The exact image is the visual acceptance authority. Preserve its subject placement, palette, pocket-radar shape, loading area, and hierarchy; do not re-generate it as a different-looking image.
+## Current behavior / root cause
 
-**Asset access/security:** This image was supplied through the private ChatGPT conversation; its bytes are **not** in the public GitHub repository or retrievable through this GitHub handoff. The user should provide the PNG to Claude via an authorized private asset-delivery channel. Do not claim that the PNG has been uploaded to PR #5 and **do not commit** this image or the original private logo/branding to the public GitHub repository. The source SHA above lets Claude verify the exact received file. If the binary is not accessible, implement/test the asset contract and mark **final visual comparison BLOCKED (asset not received)**. Do not substitute a guessed public image.
+- `startup/Show-LotRadarStartup.ps1` is the existing native Windows Forms/PowerShell 5.1 progress window. Its current approx. 480×330 logical-pixel layout includes the packaged private logo if available, multiple literal backend stages, an indeterminate `ProgressBar`, details, console, retry and close.
+- `Marketplace Bootstrap.ps1` remains the only owner of real startup, lock, server and browser launch. It emits nonce-bound `install`, `python`, `browser`, `server`, `open` events; the UI requires both `open:complete` and live `127.0.0.1:8765/api/health` to report ready.
+- `scripts/build_installer.py` already privately packages `branding/lotradar_logo.png` for production via `--asset-dir`. Development packages may fall back to an unbranded/text version. No new private image asset is required for this redesign.
+- The prior `VISUAL_DESIGN_APPROVAL.md` wrongly demanded a huge blue/purple fantasy image, moon, warrior, banners, 16:9 artwork, a `startup_splash.png` and baked 72% fake progress. **Those instructions are revoked.** The earlier screenshot is **not a production artwork dependency** and its hash is NOT an acceptance criterion.
+- This is a UI refinement only; it must not change launch/installer permissions or data.
 
-## Required appearance, with reference composition
+## Required behavior / visual specification (single source of truth)
 
-- Overall look: dramatic **electric blue / indigo / violet** cinematic fantasy lighting, silver steel, vivid green radar center, blue moon at upper right, atmospheric armored silhouette with glowing energy, cool-colored lightning and flags. **No dominant red background**.
-- **One main logo in center:** the supplied **metal pocket radar / stopwatch**, round gunmetal/silver body, screws and top loop, **red arched `LOT RADAR` on the upper metal rim**, **green `LOT RADAR` inside the screen**, green grid and sweep, and rows of miniature colored cars. Preserve its exact face/lettering and style from the supplied original emblem. The earlier failed versions replaced or dropped its lettering; never do that again.
-- **No enormous separate `LOTRADAR` wordmark** beneath the stopwatch. The logo itself is the brand.
-- Lower center: elegant small **`INITIALIZING LOTRADAR`** line, blue metallic horizontal loading meter underneath, and visible startup stages across the bottom. The mocked image's aesthetic is the target, not a fixed 72%-complete runtime state.
-- Preserve four short prominent statuses **SYSTEM CHECK / LOADING MODULES / STARTING SERVER / LAUNCHING LOTRADAR**, with clear complete/active/pending indicators. Under `LOADING MODULES` disclose Python/dependencies and browser runtime (both are real distinct bootstrap stages) in details or a small substatus, so no stage is falsely skipped. If changes to stage grouping are necessary, explain and test exact mapping.
-- Keep the actual working controls available: **Show details**, **Show console**, **Retry** on failure, and **Close** with the established safely-continue-startup semantics. They may be visually subdued/contextual in the cinematic interface, never clipped or removed.
-- Center the artwork within a 16:9 launch window; adapt to narrow laptop displays, high DPI, and ultrawide desktop without stretching the stopwatch/cars. Avoid covering logo/sweep with controls.
+1. **Original radar logo as the main focal point.** Center the existing circular silver stopwatch/radar icon, preserving its exact shape, green radar face and the red outer and green inner **`LOT RADAR` lettering** from the Owner's supplied logo. Use the existing private `branding/lotradar_logo.png` and retain its existing private build contract. Do **not** substitute a regenerated logo, and do **not** add a giant external `LOTRADAR` wordmark.
+2. **Minimal supporting backdrop.** Use a dark near-black/charcoal solid or subtle gradient panel, restrained steel-blue trim and a subtle blue glow around the logo if feasible with existing WinForms drawing. **NO** armored warrior, Diablo character, moon, lightning, banners, dramatic scene, poster/landscape illustration, red background, giant title, or full-screen splash art.
+3. **Live status and bar.** Small `Initializing LotRadar` line below logo; **real blue animated progress bar** beneath. When an objectively measured fraction is unavailable, use honest indeterminate animation (no invented percentages, fixed 72%, ETA or countdown). Optionally show a real fraction only for a truly measured sub-operation with tested semantics.
+4. **Four visible stages below the bar**, labeled exactly: `SYSTEM CHECK`, `LOADING MODULES`, `STARTING SERVER`, `LAUNCHING LOTRADAR`. Show clear live **pending / active / complete / failed** states; not image-baked checks. Stage map: `install` → SYSTEM CHECK; `python` and `browser` → LOADING MODULES (surface the current Python vs browser substage in details/status; do not incorrectly mark complete before both finish); `server` → STARTING SERVER; `open` + verified health → LAUNCHING LOTRADAR complete. Event changes must be driven by the existing nonce-bound startup messages.
+5. **Existing practical controls preserved:** `Show details` (or equivalent), `Show console`, `Retry` on failed startup, `Close`/Esc. If controls are contextual, they still need to be discoverable, keyboard-accessible, and visible without clipping. Do not convert Close into Kill Server; existing close-while-starting must allow console takeover.
+6. **Window proportions:** compact centered application window with enough padding for logo, bar, four stages and controls. Respect 1366×768, 1920×1080 and 3440×1440, plus 100/125/150/200% DPI. Do not force fullscreen or hijack focus from games. Single radar image, no background image dependency.
 
-## Current architecture / behavior
+## Relevant architecture / files to modify
 
-At the inspected PR #5 HEAD:
-- `startup/Show-LotRadarStartup.ps1` (WinForms/PowerShell 5.1) constructs a fixed 480×330 logical-pixel, manually DPI-scaled window with standard labels/buttons and an indeterminate progress bar. This is functional infrastructure but **not** the approved cinematic artwork.
-- `Launch Marketplace Scanner.cmd` invokes the startup GUI where available, with console fallback.
-- `Marketplace Bootstrap.ps1` alone owns the local server and launch locks, emits nonce-bound real startup stages, and opens the browser once.
-- The GUI verifies real `open:complete` **plus** localhost `/api/health` before indicating ready.
-- Installer builder `scripts/build_installer.py` currently obtains private branding via `--asset-dir`, never public Git. The new splash needs a **separate private asset** production-path contract; its existence/format/hash must be checked, and its absence in DEV builds must not silently misrepresent an approved production splash.
-- PR #8 plans compiled distribution later; this visual addition must remain compatible with its final resource embedding without editing PR #8 as part of PR #5.
+**Primary:** `startup/Show-LotRadarStartup.ps1` for visual layout, logo dimensions, WinForms progress appearance and state mapping; `tests/test_startup_window.py`, `tests/windows/Test-LotRadarInstaller.ps1` and existing QA kit/manual UI preview tests; `docs/MANUAL_ACCEPTANCE.md` for visible appearance checks; this architecture file and the canonical `docs/startup/ARCHITECT_HANDOFF.md` for design precedence.
 
-## Implementation plan for Claude
+**Expected NOT to modify:** `Marketplace Bootstrap.ps1` stage semantics or `Launch Marketplace Scanner.cmd` launch logic; installer private asset allowlist or manifest (there is **no new splash image**); `server.py`, `core.py`, photo modules, Facebook modules, Chrome extension, scanner, inventory database, draft/photo data, packaging PR #8 or uninstaller PR #7. Any deviation requires a specific demonstrated blocker and Architect review.
 
-1. On `feat/windows-startup-status-window`, verify the latest feature SHA, current `main` and UI/installer/QA files. Do not alter installed Owner data. Confirm private approved image bytes by SHA-256 when they are made available.
-2. **Separate static art from live controls.** The reference PNG **contains baked-in** `72%` and a fully drawn progress meter/checkmarks. Those **must not be used as a static progress display**. Make a clean visual-background derivative by removing/reconstructing the lower mock UI region, while preserving the approved high-detail artwork and main logo. Then build actual progress and status indicators as live, accessible controls over that region. Do not fake percentage values: use an indeterminate blue animation if no objectively measurable progress fraction exists; phase completion must come from real bootstrap events. Do not fabricate countdowns or ETAs.
-3. Introduce a secure resource loader for `branding/startup_splash.png` or a clearly named private build resource. In production, **require and verify** the approved splash asset along with existing private production branding, without placing it in public Git. For DEV/test kit, have a clearly labeled nonbranded fallback with unchanged startup behavior and tests. Resource-loading failures must show meaningful fallback/status, not strand launcher/server.
-4. Preserve and animate real stage changes only: install => SYSTEM CHECK; python + browser checks => LOADING MODULES (accurate subdetails); server => STARTING SERVER; open/health => LAUNCHING LOTRADAR and terminal complete. On failure, show the actual short error and Show console/Retry/Close. Preserve existing nonce, health, no-double-launch and return-code semantics.
-5. Implement professional resizing/scaling: default centered window sized reasonably within available work area, 16:9 safe composition, 100/125/150/200% DPI, 1366×768 and 1920×1080 and 3440×1440 displays, no stretched logo, no cropped progress/status/buttons, no stealing game/fullscreen focus. No forced fullscreen. UI remains responsive under slow downloads and errors; close-while-starting makes server console visible without killing the owned startup job.
-6. Ensure all UI artwork is bundled into **private production installer payload**, SHA-256 manifest recorded, rollback-safe, and no runtime network image loading. Dev/test QA kits do not include the owner's private artwork unless explicitly authorized through a private delivery mechanism. Never send user-specific imagery/logs to public Git.
-7. Write visual acceptance tests and safe manual QA instructions: compare screenshot against approved master at matching aspect ratio, inspect exact `LOT RADAR` bezel + center lettering, presence of moon and cool palette, absence of giant independent wordmark, correct lower UI state, control visibility, accessibility/keyboard navigation, high DPI, success/failure/retry, second-launch and close-mid-start flows.
-8. Rerun the already established `G1–G10`, `E1–E6`, R1–R8, OneDrive, installer/launcher and full-launch tests from a fresh feature-head package, with proper result flags for tests not executed. Have Gemini independently audit the actual rebuilt private package at an exact SHA. Return `CLAUDE_PR5_CINEMATIC_SPLASH_HANDOFF.md` detailing image hash, file changes, screenshots, build artifacts, test results, remaining blocked gates and regressions.
+## Ordered implementation plan for Claude
 
-## Protected functionality and files
+1. Reconfirm current approved `main` SHA and draft PR #5 HEAD; examine actual WinForms form layout, logo loader, stage-event handling, previews and manual QA state. Record the before behavior/screenshots without altering user data.
+2. Remove the obsolete requirement for `startup_splash.png` and fantasy art. Do **not** add a new image file to public or private packaging. Reuse the private logo as already supported.
+3. Adjust the WinForms form so logo is large and centered, with `Initializing LotRadar`, blue indeterminate progress bar, four concise status badges/rows, and accessible details/console/retry/close actions. Use native controls or simple code-drawn shapes rather than embedding fixed stage artwork. Preserve text equivalents for screen readers and no fake percentages.
+4. Map actual `install/python/browser/server/open` events into the four visible stages without losing detail or declaring browser readiness early. Ensure failed state and retry reset each indicator correctly; only declare all complete after real health.
+5. Update safe `-Preview` synthetic tests to display the correct visual without starting a server. Keep preview unmistakably nonproduction; real sandbox E1–E6 remain separate and may not be marked PASS just because preview works.
+6. Test Windows 11 PowerShell 5.1 behavior at 100/125/150/200% scaling, including 1366×768 and ultrawide, expanded details, mouse/keyboard/Alt accelerators, real logo/no-asset fallback, dark colors, no clipping, normal / existing server / failure / retry / close-while-starting / console behavior.
+7. Run the existing Python unit tests, Windows full-launch G1–G10, real E1–E6 manual checks, OneDrive installer/security R1–R8, app lifecycle and shortcut/lock safeguards on the exact new SHA. Record PASS/FAIL/SKIP/BLOCKED honestly. Gemini audits executed tests and screenshots. Do not claim that this docs-only change executes any tests.
+8. Deliver `CLAUDE_PR5_STARTUP_VISUAL_CORRECTION_HANDOFF.md` with exact commit, modified paths, before/after screen captures, source of private logo, test results and waivers. Owner reviews the visual result; no merge authorized.
 
-**Allowed to change for this task:** `startup/Show-LotRadarStartup.ps1`, narrow static-resource/private-asset paths in `scripts/build_installer.py`, `tests/test_installer_build.py`, `tests/test_startup_window.py`, `tests/windows/*`, QA-kit build logic and relevant `docs/*`. Any `Marketplace Bootstrap.ps1` or `Launch Marketplace Scanner.cmd` semantic changes must be justified and separately reviewed.
+## Protected functionality and risk areas
 
-**Do NOT change:** `server.py`, `core.py`, SQLite/drafts, imported vehicle records, photo export/picker/classification, Chrome Reader pairing and permissions, Facebook posting/prep, SalesmanHub connector, runtime lock/port behavior, local-only data/photo directory, original private business card/dedication/logo, source-only cloud reparse guard, strict destination guard, rollback checks or PR #7/#8 scope.
+- **Never regress** bootstrap real stages, nonce validation, local health check, exactly one server/browser, port 8765, launch/install locks, existing failed attempt cleanup and safe close/console takeover.
+- **Never touch** private photo/cache/database/draft state, vehicle records, OneDrive, production icon/logo pixels, user Desktop shortcut except in already-guarded sandbox QA, or SalesmanHub integration.
+- Risks: oversimplifying five backend stages into four hides browser setup; status marked done before server is healthy; hardcoded blue Windows Forms ProgressBar renders OS-themed green; UI freezes during dependency downloads; too-large logo clips actions at high DPI; private logo missing in dev; automatic checkmarks appear falsely from image; public branding leak.
+- If the native Windows ProgressBar cannot render reliable blue across themes without harming accessibility, use a small custom WinForms-painted indeterminate indicator with real animation/timer and high-contrast fallback. Test it; no fake completion.
 
 ## Acceptance criteria
 
-| Gate | Measurable pass condition |
+| ID | Required measurable result |
 | --- | --- |
-| VIS-01 | Exact approved PNG received privately, width/height and SHA-256 match; not committed to public Git. |
-| VIS-02 | New production GUI visually follows the approved blue/purple cinematic composition and full-size correct radar watch face, with both `LOT RADAR` labels but **no separate oversized wordmark**. |
-| VIS-03 | Animated progress/stage UI is independently rendered, real data-driven and never stuck/falsely displaying baked-in 72%; four visible stage headings have correct complete/active/pending states. |
-| VIS-04 | Real `open:complete` + healthy localhost service required for terminal success; failure/retry/console semantics intact, one server only and no duplicate browser launch. |
-| VIS-05 | 100/125/150/200% DPI and 1366×768 / 1920×1080 / 3440×1440 manual and screenshot checks show readable, accessible, uncropped artwork and controls. |
-| VIS-06 | Private production package manifest includes validated splash, original 4 branding assets and exact source SHA; no private asset, compiled program, sensitive data or passwords committed to public branch. |
-| VIS-07 | Synthetic DEV package still testable with clear nonproduction fallback; real install, OneDrive, symlink, startup and cleanup regression suites pass on the final change SHA. |
-| VIS-08 | Owner visually signs off on a private packaged screenshot/sample and Gemini audits before PR #5 can be considered ready. |
+| UI-01 | Only existing watch-shaped LotRadar logo, minimal dark window, actual bar and four live stages dominate the screen; no fantasy character, moon or full-scene backdrop. |
+| UI-02 | Original private radar logo is unchanged, with outer and inner `LOT RADAR` lettering; no giant separate wordmark. |
+| UI-03 | Progress bar is visible, styled blue, animated from actual running state and never fixed to an invented percentage. |
+| UI-04 | Four stage headings exactly match Owner request, mapped faithfully to all five real bootstrap stages, with pending/active/done/failed states. |
+| UI-05 | UI reports success only after real `open:complete` and healthy `/api/health`; does not double-launch or break install/launch locks. |
+| UI-06 | Show details, Show console, Retry, Close and keyboard controls remain operational with real errors. |
+| UI-07 | UI clean and readable at 100/125/150/200% DPI and 1366×768/1920×1080/3440×1440, with no clipped controls. |
+| UI-08 | DEV without logo uses a clear safe fallback; production uses the **existing** private logo without introducing any new mandatory splash asset. |
+| UI-09 | Windows unit/full-launch/security/OneDrive/manual E1–E6 tests run and pass or honestly report unresolved failures; Gemini and Owner can review screenshot proof. |
+| UI-10 | New splash-only private asset requirement, cinematic background and fake 72% requirement are absent from current design contract; no code or private assets added by this architect-docs revision. |
 
-**Git:** Continue existing **draft PR #5**. No separate competing startup PR, no merge into `main`, no publishing the raw approved picture or binary installer in public Git. Only Project Owner may authorize final merge/release.
+## Git / handoff
+
+Continue existing **draft PR #5** only. This document supersedes the earlier cinematic visual approval and any conflicting PR comment. Do not merge to `main`, do not make PR #5 ready, and do not modify PR #7/#8 as part of this task. Owner alone decides final release/merge.
