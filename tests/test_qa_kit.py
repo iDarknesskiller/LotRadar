@@ -357,7 +357,13 @@ class QAKit(unittest.TestCase):
         self.assertIn("$w.Result.console_diag -match 'click'", g10)
         # screenshots: visible frame only (no slivers of the desktop behind the window)
         self.assertIn('DwmGetWindowAttribute($h, 9, [ref]$r, 16)', h)
-        self.assertIn('DwmGetWindowAttribute($h, 9, [ref]$r, 16)', self.read('tools/LotRadarQA.ManualUI.ps1').decode('ascii'))
+        mu = self.read('tools/LotRadarQA.ManualUI.ps1').decode('ascii')
+        self.assertIn('DwmGetWindowAttribute($h, 9, [ref]$r, 16)', mu)
+        # the window draws itself (PrintWindow): overlapping windows can never be captured
+        for src in (h, mu):
+            self.assertNotIn('CopyFromScreen', src)
+            self.assertIn('PrintWindow($h, $hdc, 2)', src)
+        self.assertIn('SIGN OUT of Windows and back in', mu)
 
 if __name__ == '__main__':
     unittest.main()

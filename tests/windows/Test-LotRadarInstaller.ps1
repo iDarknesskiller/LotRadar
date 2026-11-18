@@ -199,6 +199,7 @@ namespace LotRadarQA {
     [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
     [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
     public static bool Front(IntPtr h) {
       // Windows refuses SetForegroundWindow from a process that is not in front (foreground lock). Sharing the
       // input state with the current foreground thread for a moment is the documented way around it; no keys sent.
@@ -227,12 +228,19 @@ function Save-WindowShot($Proc, [string]$Name) {
         # Visible frame only (DWMWA_EXTENDED_FRAME_BOUNDS): GetWindowRect includes the invisible resize border,
         # which captured slivers of whatever was behind the window.
         if ([LotRadarQA.Win]::DwmGetWindowAttribute($h, 9, [ref]$r, 16) -ne 0) { [void][LotRadarQA.Win]::GetWindowRect($h, [ref]$r) }
-        $w = $r.R - $r.L; $hh = $r.B - $r.T
-        if ($w -le 0 -or $hh -le 0) { return 'window has no size' }
-        $bmp = New-Object Drawing.Bitmap $w, $hh
-        $g = [Drawing.Graphics]::FromImage($bmp)
-        $g.CopyFromScreen($r.L, $r.T, 0, 0, $bmp.Size)
-        $g.Dispose()
+        # PrintWindow asks the window to draw itself, so nothing that overlaps it on screen (other apps, chats,
+        # names) can end up in the picture (Windows 11 preview run of 9b81e2c captured an overlapping window).
+        $wr = New-Object LotRadarQA.Win+RECT; [void][LotRadarQA.Win]::GetWindowRect($h, [ref]$wr)
+        $fw = $wr.R - $wr.L; $fh = $wr.B - $wr.T
+        if ($fw -le 0 -or $fh -le 0) { return 'window has no size' }
+        $full = New-Object Drawing.Bitmap $fw, $fh
+        $g = [Drawing.Graphics]::FromImage($full); $hdc = $g.GetHdc()
+        $okPrint = [LotRadarQA.Win]::PrintWindow($h, $hdc, 2)
+        $g.ReleaseHdc($hdc); $g.Dispose()
+        if (-not $okPrint) { $full.Dispose(); return 'window could not draw itself (no picture saved)' }
+        $cx = [math]::Max(0, $r.L - $wr.L); $cy = [math]::Max(0, $r.T - $wr.T)
+        $w = [math]::Min($r.R - $r.L, $fw - $cx); $hh = [math]::Min($r.B - $r.T, $fh - $cy)
+        $bmp = $full.Clone((New-Object Drawing.Rectangle $cx, $cy, $w, $hh), $full.PixelFormat); $full.Dispose()
         $path = Join-Path $outFolder ('startup-window-' + $Name + '.png')
         $bmp.Save($path, [Drawing.Imaging.ImageFormat]::Png)
         $bmp.Dispose()

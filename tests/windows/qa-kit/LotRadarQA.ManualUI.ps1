@@ -47,7 +47,7 @@ function Get-Dpi {
 function Save-Shot($Proc, [string]$Name) {
     # Only the window's own rectangle; it is brought to the front first. Inspect before sharing.
     try {
-        $src = 'using System; using System.Runtime.InteropServices; namespace LotRadarQA { public static class MWin { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; } [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out RECT r, int s); [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); } }'
+        $src = 'using System; using System.Runtime.InteropServices; namespace LotRadarQA { public static class MWin { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; } [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out RECT r, int s); [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags); } }'
         if (-not ('LotRadarQA.MWin' -as [type])) { Add-Type -TypeDefinition $src; [void][LotRadarQA.MWin]::SetProcessDPIAware() }
         Add-Type -AssemblyName System.Drawing
         $Proc.Refresh(); $h = $Proc.MainWindowHandle
@@ -55,10 +55,19 @@ function Save-Shot($Proc, [string]$Name) {
         [void][LotRadarQA.MWin]::SetForegroundWindow($h); Start-Sleep -Milliseconds 600
         $r = New-Object LotRadarQA.MWin+RECT
         if ([LotRadarQA.MWin]::DwmGetWindowAttribute($h, 9, [ref]$r, 16) -ne 0) { [void][LotRadarQA.MWin]::GetWindowRect($h, [ref]$r) }   # visible frame only
-        $w = $r.R - $r.L; $hh = $r.B - $r.T
-        if ($w -le 0 -or $hh -le 0) { return 'window has no size' }
-        $bmp = New-Object Drawing.Bitmap $w, $hh
-        $g = [Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($r.L, $r.T, 0, 0, $bmp.Size); $g.Dispose()
+        # PrintWindow asks the window to draw itself, so nothing that overlaps it on screen (other apps, chats,
+        # names) can end up in the picture (Windows 11 preview run of 9b81e2c captured an overlapping window).
+        $wr = New-Object LotRadarQA.MWin+RECT; [void][LotRadarQA.MWin]::GetWindowRect($h, [ref]$wr)
+        $fw = $wr.R - $wr.L; $fh = $wr.B - $wr.T
+        if ($fw -le 0 -or $fh -le 0) { return 'window has no size' }
+        $full = New-Object Drawing.Bitmap $fw, $fh
+        $g = [Drawing.Graphics]::FromImage($full); $hdc = $g.GetHdc()
+        $okPrint = [LotRadarQA.MWin]::PrintWindow($h, $hdc, 2)
+        $g.ReleaseHdc($hdc); $g.Dispose()
+        if (-not $okPrint) { $full.Dispose(); return 'window could not draw itself (no picture saved)' }
+        $cx = [math]::Max(0, $r.L - $wr.L); $cy = [math]::Max(0, $r.T - $wr.T)
+        $w = [math]::Min($r.R - $r.L, $fw - $cx); $hh = [math]::Min($r.B - $r.T, $fh - $cy)
+        $bmp = $full.Clone((New-Object Drawing.Rectangle $cx, $cy, $w, $hh), $full.PixelFormat); $full.Dispose()
         $path = Join-Path $resultsDir ('startup-window-' + $Name + '.png')
         $bmp.Save($path, [Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
         return (Split-Path -Leaf $path) + ' ' + $w + 'x' + $hh
@@ -97,6 +106,7 @@ if ($UiPreview) {
     $dpi = Get-Dpi
     $pct = 0; if ($dpi -gt 0) { $pct = [int][math]::Round($dpi * 100 / 96) }
     Say ('Display scaling now: ' + $pct + '% (' + $dpi + ' dpi). For E4 run this preview once at 150% (Settings > Display > Scale).') 'Yellow'
+    Say 'After changing Scale, SIGN OUT of Windows and back in before running this; until then the window is only stretched and this test still measures the old value.' 'Yellow'
     # Only the startup window script is taken from the verified package (no other program files are unpacked).
     $gui = Join-Path $resultsDir 'preview\startup\Show-LotRadarStartup.ps1'
     New-Item -ItemType Directory -Path (Split-Path -Parent $gui) -Force | Out-Null
