@@ -47,13 +47,14 @@ function Get-Dpi {
 function Save-Shot($Proc, [string]$Name) {
     # Only the window's own rectangle; it is brought to the front first. Inspect before sharing.
     try {
-        $src = 'using System; using System.Runtime.InteropServices; namespace LotRadarQA { public static class MWin { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; } [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); } }'
-        if (-not ('LotRadarQA.MWin' -as [type])) { Add-Type -TypeDefinition $src }
+        $src = 'using System; using System.Runtime.InteropServices; namespace LotRadarQA { public static class MWin { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; } [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out RECT r, int s); [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); } }'
+        if (-not ('LotRadarQA.MWin' -as [type])) { Add-Type -TypeDefinition $src; [void][LotRadarQA.MWin]::SetProcessDPIAware() }
         Add-Type -AssemblyName System.Drawing
         $Proc.Refresh(); $h = $Proc.MainWindowHandle
         if ($h -eq [IntPtr]::Zero) { return 'no window to capture' }
         [void][LotRadarQA.MWin]::SetForegroundWindow($h); Start-Sleep -Milliseconds 600
-        $r = New-Object LotRadarQA.MWin+RECT; [void][LotRadarQA.MWin]::GetWindowRect($h, [ref]$r)
+        $r = New-Object LotRadarQA.MWin+RECT
+        if ([LotRadarQA.MWin]::DwmGetWindowAttribute($h, 9, [ref]$r, 16) -ne 0) { [void][LotRadarQA.MWin]::GetWindowRect($h, [ref]$r) }   # visible frame only
         $w = $r.R - $r.L; $hh = $r.B - $r.T
         if ($w -le 0 -or $hh -le 0) { return 'window has no size' }
         $bmp = New-Object Drawing.Bitmap $w, $hh

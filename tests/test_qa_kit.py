@@ -342,6 +342,18 @@ class QAKit(unittest.TestCase):
         self.assertIn('Confirm-Start', b)
         for case in ("'E1'", "'E2'", "'E5'", "'E6'", "'B9'"):
             self.assertIn(case, b)
+    def test_gui_cases_cleanup_never_fails_and_report_console_diag(self):
+        """Windows 11 run of dc4244e: G9 failed on taskkill "not found" under ErrorActionPreference Stop."""
+        h = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
+        f = h[h.index('function Stop-GuiTestProcesses'):]
+        f = f[:f.index('\r\n}')]
+        self.assertIn("$ErrorActionPreference = 'Continue'", f)
+        self.assertNotIn('Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill', h)
+        self.assertGreaterEqual(h.count('Stop-GuiTestProcesses'), 6)
+        self.assertIn('console_diag', h[h.index("Invoke-Test 'G10'"):])
+        # screenshots: visible frame only (no slivers of the desktop behind the window)
+        self.assertIn('DwmGetWindowAttribute($h, 9, [ref]$r, 16)', h)
+        self.assertIn('DwmGetWindowAttribute($h, 9, [ref]$r, 16)', self.read('tools/LotRadarQA.ManualUI.ps1').decode('ascii'))
 
 if __name__ == '__main__':
     unittest.main()

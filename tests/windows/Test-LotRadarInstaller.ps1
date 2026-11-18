@@ -192,6 +192,7 @@ namespace LotRadarQA {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
   }
 }
 '@
@@ -203,7 +204,9 @@ function Save-WindowShot($Proc, [string]$Name) {
         $h = $Proc.MainWindowHandle
         if ($h -eq [IntPtr]::Zero) { return 'no window to capture' }
         $r = New-Object LotRadarQA.Win+RECT
-        [void][LotRadarQA.Win]::GetWindowRect($h, [ref]$r)
+        # Visible frame only (DWMWA_EXTENDED_FRAME_BOUNDS): GetWindowRect includes the invisible resize border,
+        # which captured slivers of whatever was behind the window.
+        if ([LotRadarQA.Win]::DwmGetWindowAttribute($h, 9, [ref]$r, 16) -ne 0) { [void][LotRadarQA.Win]::GetWindowRect($h, [ref]$r) }
         $w = $r.R - $r.L; $hh = $r.B - $r.T
         if ($w -le 0 -or $hh -le 0) { return 'window has no size' }
         $bmp = New-Object Drawing.Bitmap $w, $hh
@@ -234,6 +237,12 @@ function Invoke-StartupWindow([string]$Gui, [int]$TimeoutSec, [int]$AutoClose = 
 }
 function Get-ProcessesMentioning([string]$Text) {
     return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.ProcessId -ne $PID -and $_.CommandLine -like ('*' + $Text + '*') })
+}
+function Stop-GuiTestProcesses {
+    # Only processes started from the GUI test folder. A tree kill can already have ended a later PID: "not found"
+    # from taskkill is expected and must not fail the test (Windows 11 run of dc4244e, G9).
+    $ErrorActionPreference = 'Continue'
+    foreach ($gp in @(Get-ProcessesMentioning $gDir)) { & taskkill.exe /PID $gp.ProcessId /T /F 2>&1 | Out-Null }
 }
 function Test-PortBusy {
     $client = New-Object System.Net.Sockets.TcpClient
@@ -1044,7 +1053,7 @@ try {
     Invoke-Test 'G3' 'Window: a reported failure is shown, exit 91, the failed console is closed, status file removed' {
         [IO.File]::WriteAllText($gStub, ($emit + 'E ''install'' ''started'' ''stub'' $env:LOTRADAR_STARTUP_NONCE; E ''install'' ''failed'' ''STUB FAILURE 7'' $env:LOTRADAR_STARTUP_NONCE; Write-Host "STUB-FAIL"; exit 7'), [Text.Encoding]::ASCII)
         $before = @(Get-ChildItem -LiteralPath $runtimeDir -Filter 'startup-status-*.jsonl' -ErrorAction SilentlyContinue).Count
-        try { $w = Invoke-StartupWindow $gGui 90 } finally { Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null } }
+        try { $w = Invoke-StartupWindow $gGui 90 } finally { Stop-GuiTestProcesses }
         Assert-True ($w.Exit -eq 91) ('window exit ' + $w.Exit + '; result ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True ($w.Result.mode -eq 'failed' -and $w.Result.reason -eq 'STUB FAILURE 7') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
         Start-Sleep -Seconds 2
@@ -1056,7 +1065,7 @@ try {
     Invoke-Test 'G4' 'Window: a forged "opened" event without a healthy server is NOT reported as success' {
         Assert-True (-not (Test-PortBusy)) 'test setup: something listens on 8765'
         [IO.File]::WriteAllText($gStub, ($emit + 'E ''open'' ''started'' ''forged'' $env:LOTRADAR_STARTUP_NONCE; E ''open'' ''complete'' ''forged'' $env:LOTRADAR_STARTUP_NONCE; exit 0'), [Text.Encoding]::ASCII)
-        try { $w = Invoke-StartupWindow $gGui 90 } finally { Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null } }
+        try { $w = Invoke-StartupWindow $gGui 90 } finally { Stop-GuiTestProcesses }
         Assert-True ($w.Exit -eq 91 -and $w.Result.mode -eq 'failed') ('forged ready accepted: ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True (@($w.Result.events) -contains 'open:complete') ('the stub never reported (test did not exercise the forged event): ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True ($w.Result.reason -like '*did not answer*') ('failed for another reason: ' + $w.Result.reason)
@@ -1065,7 +1074,7 @@ try {
     }
     Invoke-Test 'G5' 'Window: an event with another nonce is ignored (only the valid event counts), then a clear failure' {
         [IO.File]::WriteAllText($gStub, ($emit + 'E ''install'' ''started'' ''stub'' $env:LOTRADAR_STARTUP_NONCE; E ''open'' ''complete'' ''wrong nonce'' (''f'' * 32); exit 0'), [Text.Encoding]::ASCII)
-        try { $w = Invoke-StartupWindow $gGui 90 } finally { Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null } }
+        try { $w = Invoke-StartupWindow $gGui 90 } finally { Stop-GuiTestProcesses }
         Assert-True ($w.Exit -eq 91 -and $w.Result.mode -eq 'failed') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True ((@($w.Result.events) -join ',') -eq 'install:started') ('expected only the valid event install:started, got: ' + (@($w.Result.events) -join ', '))
         return ('exit 91; only the valid-nonce event accepted; foreign open:complete ignored; ' + $w.Result.reason)
@@ -1084,12 +1093,12 @@ try {
             $alive = @(Get-ProcessesMentioning $gDir | Where-Object { $_.Name -ieq 'cmd.exe' -or $_.Name -ieq 'powershell.exe' }).Count
         } finally {
             Start-Sleep -Seconds 1
-            Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null }
+            Stop-GuiTestProcesses
         }
         Assert-True ($w.Exit -eq 0 -and $w.Result.mode -eq 'running') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True (@($w.Result.events) -contains 'install:started') ('the stub never reported: ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True ($alive -ge 1) 'closing the window STOPPED the startup (its console/script is gone)'
-        return ('exit 0; startup still running after close (' + $alive + ' process(es)); console shown=' + $w.Result.console_shown + '; ' + $w.Note)
+        return ('exit 0; startup still running after close (' + $alive + ' process(es)); console shown=' + $w.Result.console_shown + ' (' + $w.Result.console_diag + '); ' + $w.Note)
     }
     Invoke-Test 'G10' 'Window failure by keyboard: Alt+C shows the console, Esc closes (exit 91), nothing left running' {
         [IO.File]::WriteAllText($gStub, ($emit + 'E ''install'' ''started'' ''stub'' $env:LOTRADAR_STARTUP_NONCE; E ''install'' ''failed'' ''STUB FAILURE FOR KEYBOARD TEST'' $env:LOTRADAR_STARTUP_NONCE; Write-Host "STUB-FAIL"; exit 7'), [Text.Encoding]::ASCII)
@@ -1105,11 +1114,11 @@ try {
                 $ws.SendKeys('{ESC}')                                # Esc = Close
                 $shot
             }
-        } finally { Start-Sleep -Seconds 1; Get-ProcessesMentioning $gDir | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null } }
+        } finally { Start-Sleep -Seconds 1; Stop-GuiTestProcesses }
         Assert-True ($w.Exit -eq 91 -and $w.Result.mode -eq 'failed') ('result: ' + ($w.Result | ConvertTo-Json -Compress))
         Assert-True ($w.Result.reason -eq 'STUB FAILURE FOR KEYBOARD TEST') ('reason: ' + $w.Result.reason)
-        Assert-True ($w.Result.console_shown -eq $true) 'Alt+C did not bring up the console window'
-        return ('exit 91 via Esc; console shown via Alt+C; ' + $w.Note)
+        Assert-True ($w.Result.console_shown -eq $true) ('Alt+C did not bring up the console window (diagnostics: ' + $w.Result.console_diag + ')')
+        return ('exit 91 via Esc; console shown via Alt+C (' + $w.Result.console_diag + '); ' + $w.Note)
     }
 
     # ---- optional: real bootstrap in the sandbox

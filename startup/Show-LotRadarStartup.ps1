@@ -62,7 +62,7 @@ namespace LotRadarStartup {
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-    [DllImport("kernel32.dll")] public static extern bool AttachConsole(uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool AttachConsole(uint pid);
     [DllImport("kernel32.dll")] public static extern bool FreeConsole();
   }
 }
@@ -475,17 +475,21 @@ function Close-FailedConsole {
     & taskkill.exe /PID $script:Console.Id /T /F 2>&1 | Out-Null
     return $true
 }
+$script:ConsoleDiag = New-Object System.Collections.ArrayList   # why "Show console" did or did not work (ResultFile only)
 function Show-ConsoleWindow {
-    if (-not $native -or -not $script:Console -or (Test-ProcessExited $script:Console)) { return }
+    if (-not $native) { [void]$script:ConsoleDiag.Add('no-native'); return }
+    if (-not $script:Console) { [void]$script:ConsoleDiag.Add('no-console'); return }
+    if (Test-ProcessExited $script:Console) { [void]$script:ConsoleDiag.Add('console-exited'); return }
     # The console window belongs to the console host, not to cmd.exe: briefly attach to cmd's console to get it.
     try {
         [void][LotRadarStartup.Native]::FreeConsole()
         if ([LotRadarStartup.Native]::AttachConsole([uint32]$script:Console.Id)) {
             $h = [LotRadarStartup.Native]::GetConsoleWindow()
             [void][LotRadarStartup.Native]::FreeConsole()
-            if ($h -ne [IntPtr]::Zero) { [void][LotRadarStartup.Native]::ShowWindow($h, 9); [void][LotRadarStartup.Native]::SetForegroundWindow($h); $script:ConsoleShown = $true }
-        }
-    } catch { }
+            if ($h -ne [IntPtr]::Zero) { [void][LotRadarStartup.Native]::ShowWindow($h, 9); [void][LotRadarStartup.Native]::SetForegroundWindow($h); $script:ConsoleShown = $true; [void]$script:ConsoleDiag.Add('shown') }
+            else { [void]$script:ConsoleDiag.Add('no-console-window') }
+        } else { [void]$script:ConsoleDiag.Add('attach-failed:' + [Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
+    } catch { [void]$script:ConsoleDiag.Add('error:' + $_.Exception.GetType().Name) }
 }
 
 # ------------------------------------------------------------------ events (all on the UI thread)
@@ -600,7 +604,7 @@ try {
             $evList = @($script:Events | ForEach-Object { $_.Stage + ':' + $_.State })
             $consoleExit = $null
             try { if ($script:Console -and $script:Console.HasExited) { $consoleExit = $script:Console.ExitCode } } catch { }
-            [IO.File]::WriteAllText($ResultFile, (@{ exit = $script:ExitCode; mode = $script:Mode; reason = $script:FailReason; events = $evList; health = $script:HealthOk; tick_error = [string]$script:LastTickError; console_exit = $consoleExit; boot_pid = $script:BootPid; console_shown = [bool]$script:ConsoleShown } | ConvertTo-Json -Compress), $utf8)
+            [IO.File]::WriteAllText($ResultFile, (@{ exit = $script:ExitCode; mode = $script:Mode; reason = $script:FailReason; events = $evList; health = $script:HealthOk; tick_error = [string]$script:LastTickError; console_exit = $consoleExit; boot_pid = $script:BootPid; console_shown = [bool]$script:ConsoleShown; console_diag = (@($script:ConsoleDiag) -join ',') } | ConvertTo-Json -Compress), $utf8)
         } catch { }
     }
 }

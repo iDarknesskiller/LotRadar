@@ -95,6 +95,12 @@ class TestStartupWindow(unittest.TestCase):
         tick = c[c.index('$timer.Add_Tick({'):]
         self.assertLess(tick.index('Step-Preview'), tick.index('Read-NewEvents'))
         self.assertIn('PREVIEW (example steps, nothing is started)', c)
+    def test_show_console_records_why(self):
+        c = self.code
+        self.assertIn('[DllImport("kernel32.dll", SetLastError = true)] public static extern bool AttachConsole(uint pid);', c)
+        for d in ("'no-native'", "'console-exited'", "'shown'", "'no-console-window'", "'attach-failed:'"):
+            self.assertIn(d, c)
+        self.assertIn("console_diag = (@($script:ConsoleDiag) -join ',')", c)
 
 if __name__ == '__main__':
     unittest.main()
