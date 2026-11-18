@@ -1,0 +1,24 @@
+LOTRADAR COPILOT - MANUAL READ-ONLY ISSUE SCOUT TASK
+
+Repository: https://github.com/iDarknesskiller/LotRadar
+
+Your role is an independent issue scout, not a programmer. Do NOT change code, create branches, open implementation PRs, merge, deploy or handle live customer/dealer/Facebook data.
+
+Check the latest approved main commit SHA first and name it in your report. Inspect actual source and check open GitHub issues/PRs for duplicates. Analyze likely bugs, crashes, security/integrity hazards, missing error handling, UI regression, unsafe installer/process cleanup, and performance opportunities.
+
+Prioritize severity P0/P1 issues that could lose data, expose credentials, terminate unrelated programs or prevent startup. Then include a small number of high-value P2/P3 findings. Do not fabricate benchmarks or test execution. If you cannot read a file or execute tests, mark it NOT READ or NOT RUN.
+
+For each candidate include:
+ID and title
+Exact approved main SHA and path:line / function
+Severity P0/P1/P2/P3, confidence HIGH/MEDIUM/LOW
+Current behavior supported by source
+Expected behavior
+Reproduction steps, or HYPOTHESIS - NOT REPRODUCED
+Possible root cause and user impact
+Evidence / actual command / measured result if available
+Affected files and protected functionality
+Proposed regression/negative tests
+Existing related issue/PR or NO DUPLICATE FOUND
+
+Return a single COPILOT_FINDINGS.md report for ChatGPT Chief Architect to validate. Findings do NOT approve implementation. No automated follow-up or recurring scheduled work is implied by this chat task.
