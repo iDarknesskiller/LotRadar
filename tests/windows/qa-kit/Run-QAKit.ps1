@@ -17,12 +17,14 @@
   LOCAL folder under %LOCALAPPDATA%\LotRadar QA Results, never into OneDrive.
 #>
 [CmdletBinding()]
-param([switch]$FullLaunch, [switch]$OneDrive, [switch]$CleanupSelfTest, [switch]$Yes)
+param([switch]$FullLaunch, [switch]$OneDrive, [switch]$CleanupSelfTest, [switch]$UiPreview, [switch]$ManualUI, [switch]$Yes)
 $ErrorActionPreference = 'Stop'
 $kit = Split-Path -Parent $PSScriptRoot
 $resultsDir = Join-Path $kit 'RESULTS'
 if ($OneDrive) { $resultsDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ('LotRadar QA Results\OneDrive-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
 if ($CleanupSelfTest) { $resultsDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ('LotRadar QA Results\Cleanup-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
+if ($UiPreview) { $resultsDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ('LotRadar QA Results\UiPreview-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
+if ($ManualUI) { $resultsDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ('LotRadar QA Results\ManualUI-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
 $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $script:Redact = @()
 
@@ -96,7 +98,7 @@ function Test-ShortcutRestored {
 }
 
 Say '=== LotRadar Windows QA test kit ===' 'Cyan'
-if (@(@($FullLaunch, $OneDrive, $CleanupSelfTest) | Where-Object { $_ }).Count -gt 1) { Stop-Kit 'Only one optional test mode at a time. Run them separately.' 9 }
+if (@(@($FullLaunch, $OneDrive, $CleanupSelfTest, $UiPreview, $ManualUI) | Where-Object { $_ }).Count -gt 1) { Stop-Kit 'Only one optional test mode at a time. Run them separately.' 9 }
 
 # ---- 1. kit must be extracted to a normal folder (not opened inside the ZIP viewer)
 if ($kit -like '*\AppData\Local\Temp\*' -or $kit -like '*\Temp1_*') {
@@ -228,6 +230,7 @@ if ($hadShortcut) {
 # ---- 7. the bundled harness must parse cleanly in this PowerShell
 $toParse = @($harness)
 if ($OneDrive) { $toParse += (Join-Path $PSScriptRoot 'LotRadarQA.OneDrive.ps1') }
+if ($UiPreview -or $ManualUI) { $toParse += (Join-Path $PSScriptRoot 'LotRadarQA.ManualUI.ps1') }
 foreach ($scriptFile in $toParse) {
     $tokens = $null; $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($scriptFile, [ref]$tokens, [ref]$errors)
@@ -239,6 +242,13 @@ if ($OneDrive) {
     $script:OneDriveExit = 1   # stays 1 unless the OneDrive module finishes and reports success
     . (Join-Path $PSScriptRoot 'LotRadarQA.OneDrive.ps1')
     exit $script:OneDriveExit  # never fall through into the normal test flow
+}
+
+# ---- Manual UI modes (Stage A preview / Stage B guided real start in a sandbox): own flow, own summary, then exit
+if ($UiPreview -or $ManualUI) {
+    $script:ManualExit = 1
+    . (Join-Path $PSScriptRoot 'LotRadarQA.ManualUI.ps1')
+    exit $script:ManualExit   # never fall through into the normal test flow
 }
 
 # ---- 8. optional full launch needs explicit consent

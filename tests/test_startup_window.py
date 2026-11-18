@@ -77,6 +77,24 @@ class TestStartupWindow(unittest.TestCase):
         self.assertIn("'^startup-status-[0-9a-f]{32}\\.jsonl$'", c)
         self.assertIn('AddDays(-1)', c)
 
+    def test_preview_mode_starts_and_writes_nothing(self):
+        c = self.code
+        self.assertIn('[switch]$Preview', c)
+        sp = c[c.index('function Start-PreviewAttempt'):c.index('function Read-NewEvents')]
+        for banned in ('Start-Process', 'WriteAllText', 'New-Item', 'Remove-Item', 'Open(', 'LOTRADAR_STARTUP', '$launcher', 'HttpWebRequest'):
+            self.assertNotIn(banned, sp)
+        self.assertIn("'EXAMPLE: Port 8765 is in use", sp)
+        # no runtime folder in preview: no cleanup pass, no status file, separate mutex, early exits in the hooks
+        self.assertIn("if (-not $Preview) {\n    $userRoot = Join-Path $env:LOCALAPPDATA 'MarketplaceScanner'", c)
+        self.assertIn('if (-not $Preview) { try {\n    New-Item -ItemType Directory -Path $runtimeDir', c)
+        self.assertIn("if ($Preview) { $mutexName = 'Local\\LotRadarStartupPreview' }", c)
+        self.assertIn('if ($Preview) { Start-PreviewAttempt; $timer.Start(); return }', c)
+        self.assertIn('if ($Preview) { Start-PreviewAttempt; return }', c)
+        self.assertIn("if ($Preview) { $status.Text = 'Preview: there is no console window to show", c)
+        self.assertIn('if ($Preview) { $script:ExitCode = 0; return }', c)
+        tick = c[c.index('$timer.Add_Tick({'):]
+        self.assertLess(tick.index('Step-Preview'), tick.index('Read-NewEvents'))
+        self.assertIn('PREVIEW (example steps, nothing is started)', c)
 
 if __name__ == '__main__':
     unittest.main()

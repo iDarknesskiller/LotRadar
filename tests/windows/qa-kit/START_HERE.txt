@@ -102,6 +102,21 @@ text files and deletes it. Developer Mode ON lets it run every case (one case ne
 It takes about a minute. Send back SUMMARY.txt and SANITIZED-cleanup-selftest.json from the results
 folder it opens (on this PC, under LotRadar QA Results).
 
+STARTUP WINDOW PREVIEW (only if asked): RUN_UI_PREVIEW.cmd
+Shows the real LotRadar startup window with EXAMPLE steps (title says PREVIEW). Nothing is installed
+or started. Try the keys it lists, close the window, then press Y or N for two questions. Run it
+at your normal scaling, then set Settings > Display > Scale to 150% and run it again (set it back
+after). It saves two pictures of that window only. LOOK at them before sharing. Send back
+SUMMARY.txt, SANITIZED-manual-ui.json and the pictures from the folder it opens.
+
+MANUAL: GUIDED REAL-START TEST (only if asked): RUN_MANUAL_UI_TESTS.cmd
+Close LotRadar first. It installs LotRadar into a temporary TEST folder and adds a Desktop shortcut
+"LotRadar TEST (sandbox)". When asked, double-click that shortcut, watch, and press Y or N. The
+first start downloads packages into the TEST folder (can take 5-20 minutes, needs internet). If no
+Python is installed it stops and reports BLOCKED (it never installs Python). At the end it removes
+the TEST shortcut and folder and checks that your real LotRadar, data and shortcut did not change.
+Send back SUMMARY.txt and SANITIZED-manual-ui.json from the folder it opens.
+
 IF IT STOPS EARLY
 The window says "STOPPED:" and why (for example LotRadar still running, or the kit opened
 inside the ZIP). Nothing is changed in that case. Fix the reason and run it again.

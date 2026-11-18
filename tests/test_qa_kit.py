@@ -287,6 +287,61 @@ class QAKit(unittest.TestCase):
         self.assertNotIn('$desktopLnk', rep)
         self.assertIn("Confirm-Start 'cleanup self-test (including the OneDrive cases)'", st)
 
+    def test_manual_ui_modes(self):
+        """Architect 51fcd34: Stage A preview (nothing started) and Stage B guided real start in an owned sandbox."""
+        prev = self.read('RUN_UI_PREVIEW.cmd').decode('ascii')
+        man = self.read('RUN_MANUAL_UI_TESTS.cmd').decode('ascii')
+        self.assertIn('-UiPreview -Yes', prev)
+        self.assertIn('-ManualUI -Yes', man)
+        runner = self.read('tools/Run-QAKit.ps1').decode('ascii')
+        self.assertIn('$FullLaunch, $OneDrive, $CleanupSelfTest, $UiPreview, $ManualUI', runner)   # one mode at a time
+        i = runner.index(". (Join-Path $PSScriptRoot 'LotRadarQA.ManualUI.ps1')")
+        self.assertIn('exit $script:ManualExit', runner[i:i + 200])
+        self.assertLess(runner.index('$busy) { Stop-Kit'), i)                 # port 8765 busy -> stop first
+        self.assertLess(runner.index('$repair = Invoke-QALeftoverRepair'), i)
+        self.assertLess(i, runner.index('# ---- 8. optional full launch needs explicit consent'))
+        m = self.read('tools/LotRadarQA.ManualUI.ps1').decode('ascii')
+        code = '\n'.join(l for l in m.splitlines() if not l.lstrip().startswith('#'))
+        self.assertIsNone(EXIT_STMT.search(code), 'module must not call exit')
+        # Stage A: only the GUI script is taken out of the verified package and it runs with -Preview
+        a = m[m.index('if ($UiPreview) {'):m.index('# ===', m.index('if ($UiPreview) {'))]
+        self.assertIn("GetEntry('MarketplaceScanner/startup/Show-LotRadarStartup.ps1')", a)
+        self.assertIn("'-Preview'", a)
+        for banned in ('Install-LotRadar', 'Expand-KitPackage', 'TcpListener', 'taskkill', 'Confirm-Start'):
+            self.assertNotIn(banned, a)
+        b = m[m.index('# ---- B0'):]
+        # never WinGet/Python install; BLOCKED without an existing Python; WinGet hidden from the test start
+        self.assertNotIn('winget install', b.lower())
+        self.assertIn("'BLOCKED'", b)
+        self.assertIn('Microsoft\\WindowsApps=%', b)
+        self.assertIn('where winget.exe', b)
+        self.assertNotIn('--scope user', b)
+        # owned sandbox, removed only by the ownership-proving deleter; no recursive deletes, no name-based kills
+        self.assertIn("New-QAOwnedFolder $sandbox 'sandbox'", b)
+        self.assertIn('Test-QAOwnedFolder $sandbox', b)
+        self.assertIn('Remove-QAOwnedFolder $own', b)
+        self.assertNotIn('-Recurse -Force', b)
+        self.assertNotIn('Remove-Item -LiteralPath $sandbox', b)
+        self.assertNotIn('/IM', b)
+        self.assertNotIn('Stop-Process', b)
+        self.assertIn("$_.CommandLine -like ('*' + $sbLocal + '*')", b)    # only processes inside the sandbox
+        self.assertIn('taskkill.exe /PID $s.ProcessId', b)
+        # the E6 conflict is our own loopback listener, always stopped
+        self.assertIn('[Net.IPAddress]::Loopback, 8765', b)
+        self.assertIn('if ($listener) { try { $listener.Stop() }', b)
+        # real shortcut restored byte-identical; real program/data/runtime/OneDrive fingerprinted before and after
+        self.assertIn('Copy-Item -LiteralPath $lnkBackup -Destination $desktopLnk -Force', b)
+        self.assertIn('(Get-Sha $desktopLnk) -eq $lnkSha', b)
+        for k in ('$after.Program -eq $before.Program', '$after.Data -eq $before.Data', '$odAfter -eq $odBefore', '$lnkNow -eq $before.Shortcut'):
+            self.assertIn(k, b)
+        # install runs with sandbox LOCALAPPDATA/APPDATA and the environment is put back
+        self.assertIn('$env:LOCALAPPDATA = $sbLocal; $env:APPDATA = $sbRoam', b)
+        self.assertIn('finally { foreach ($k in $savedEnv.Keys)', b)
+        # the test shortcut is removed only when it points into this sandbox
+        self.assertIn('$t.StartsWith($sandbox, [StringComparison]::OrdinalIgnoreCase)', b)
+        self.assertIn('Confirm-Start', b)
+        for case in ("'E1'", "'E2'", "'E5'", "'E6'", "'B9'"):
+            self.assertIn(case, b)
 
 if __name__ == '__main__':
     unittest.main()

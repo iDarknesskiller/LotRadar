@@ -19,10 +19,13 @@ KIT_FILES = [  # (committed source path, path inside the kit)
     ('tests/windows/qa-kit/RUN_FULL_LAUNCH_TESTS.cmd', 'RUN_FULL_LAUNCH_TESTS.cmd'),
     ('tests/windows/qa-kit/RUN_ONEDRIVE_TESTS.cmd', 'RUN_ONEDRIVE_TESTS.cmd'),
     ('tests/windows/qa-kit/RUN_CLEANUP_SAFETY_TESTS.cmd', 'RUN_CLEANUP_SAFETY_TESTS.cmd'),
+    ('tests/windows/qa-kit/RUN_UI_PREVIEW.cmd', 'RUN_UI_PREVIEW.cmd'),
+    ('tests/windows/qa-kit/RUN_MANUAL_UI_TESTS.cmd', 'RUN_MANUAL_UI_TESTS.cmd'),
     ('tests/windows/qa-kit/Run-QAKit.ps1', 'tools/Run-QAKit.ps1'),
     ('tests/windows/qa-kit/LotRadarQA.OneDrive.ps1', 'tools/LotRadarQA.OneDrive.ps1'),
     ('tests/windows/qa-kit/LotRadarQA.Cleanup.ps1', 'tools/LotRadarQA.Cleanup.ps1'),
     ('tests/windows/qa-kit/LotRadarQA.CleanupSelfTest.ps1', 'tools/LotRadarQA.CleanupSelfTest.ps1'),
+    ('tests/windows/qa-kit/LotRadarQA.ManualUI.ps1', 'tools/LotRadarQA.ManualUI.ps1'),
     ('tests/windows/Test-LotRadarInstaller.ps1', 'tools/Test-LotRadarInstaller.ps1'),
 ]
 

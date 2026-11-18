@@ -24,22 +24,28 @@
               code (e.g. this script could not run at all) also makes the launcher fall back to the console start.
   -AutoCloseSeconds N (tests): close by itself N seconds after success or failure.
   -ResultFile path   (tests): write the outcome (exit code, result, event list) as JSON when the window closes.
+  -Preview           (manual UI QA only): the SAME window driven by built-in example steps. Nothing is started,
+                     no file or folder is written, no lock or port is touched. First run shows an example failure,
+                     Retry shows an example success.
 #>
 [CmdletBinding()]
-param([int]$AutoCloseSeconds = 0, [string]$ResultFile = '')
+param([int]$AutoCloseSeconds = 0, [string]$ResultFile = '', [switch]$Preview)
 $ErrorActionPreference = 'Stop'
 
 $programDir = Split-Path -Parent $PSScriptRoot
 $launcher = Join-Path $programDir 'Launch Marketplace Scanner.cmd'
 if ($env:LOTRADAR_STARTUP_GUI_TEST_UNAVAILABLE -eq '1') { exit 90 }   # test hook: simulate "no window possible"
 if (-not [Environment]::UserInteractive) { exit 90 }
-if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { exit 90 }
-if (-not $env:LOCALAPPDATA) { exit 90 }   # the console start reports this problem itself
+if (-not $Preview -and -not (Test-Path -LiteralPath $launcher -PathType Leaf)) { exit 90 }
+if (-not $Preview -and -not $env:LOCALAPPDATA) { exit 90 }   # the console start reports this problem itself
 
 # The window must not create anything through a link: same rule as the installer. Otherwise use the console start.
-$userRoot = Join-Path $env:LOCALAPPDATA 'MarketplaceScanner'
-$runtimeDir = Join-Path $userRoot 'runtime'
-foreach ($p in @($userRoot, $runtimeDir)) {
+$userRoot = ''; $runtimeDir = ''
+if (-not $Preview) {
+    $userRoot = Join-Path $env:LOCALAPPDATA 'MarketplaceScanner'
+    $runtimeDir = Join-Path $userRoot 'runtime'
+}
+foreach ($p in @(@($userRoot, $runtimeDir) | Where-Object { $_ })) {
     try { $a = [IO.File]::GetAttributes($p) } catch { $a = $null }
     if ($null -ne $a -and (($a -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { exit 90 }
 }
@@ -65,7 +71,9 @@ $native = $true
 try { if (-not ('LotRadarStartup.Native' -as [type])) { Add-Type -TypeDefinition $nativeSource } } catch { $native = $false }
 
 # One startup window at a time (a second double-click while this one is open just says so).
-$mutex = New-Object System.Threading.Mutex($false, 'Local\LotRadarStartupWindow')
+$mutexName = 'Local\LotRadarStartupWindow'
+if ($Preview) { $mutexName = 'Local\LotRadarStartupPreview' }
+$mutex = New-Object System.Threading.Mutex($false, $mutexName)
 $haveMutex = $false
 try { $haveMutex = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $haveMutex = $true }
 if (-not $haveMutex) {
@@ -112,7 +120,7 @@ function Format-Elapsed([TimeSpan]$t) {
 }
 
 # Bounded leftovers: status files of earlier attempts older than one day (regular files only).
-try {
+if (-not $Preview) { try {
     New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
     foreach ($old in @(Get-ChildItem -LiteralPath $runtimeDir -File -Filter 'startup-status-*.jsonl' -Force -ErrorAction SilentlyContinue)) {
         if ($old.Name -match '^startup-status-[0-9a-f]{32}\.jsonl$' -and (($old.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) -and $old.LastWriteTimeUtc -lt [DateTime]::UtcNow.AddDays(-1)) {
@@ -123,12 +131,13 @@ try {
     if ($ownConsole -ne [IntPtr]::Zero) { [void][LotRadarStartup.Native]::ShowWindow($ownConsole, 5) }
     $mutex.ReleaseMutex()
     exit 90
-}
+} }
 
 # ------------------------------------------------------------------ window
 [Windows.Forms.Application]::EnableVisualStyles()
 $form = New-Object Windows.Forms.Form
 $form.Text = 'LotRadar'
+if ($Preview) { $form.Text = 'LotRadar - PREVIEW (example steps, nothing is started)' }
 $form.AutoScaleMode = [Windows.Forms.AutoScaleMode]::Dpi
 $form.Font = New-Object Drawing.Font('Segoe UI', 9)
 $form.FormBorderStyle = [Windows.Forms.FormBorderStyle]::FixedSingle
@@ -292,6 +301,44 @@ function Start-Attempt {
     $null = $script:Console.Handle   # PS 5.1: keep the handle so HasExited/ExitCode stay readable
     Update-Details
 }
+# ---- preview: example steps only (first attempt fails, Retry succeeds). Nothing is started or written.
+$script:PreviewRun = 0
+$PreviewSteps = @(
+    @('install', 'started', 'Checking installation'), @('install', 'complete', 'Installation found'),
+    @('python', 'started', 'Checking Python and dependencies'), @('python', 'info', 'Downloading missing Python packages (example)'),
+    @('python', 'complete', 'Python and packages ready'), @('browser', 'started', 'Checking browser runtime'),
+    @('browser', 'complete', 'Browser runtime ready'), @('server', 'started', 'Starting the local LotRadar server'))
+function Start-PreviewAttempt {
+    $script:PreviewRun++
+    $script:PreviewIdx = 0; $script:PreviewAt = Get-Date
+    $script:Events.Clear()
+    $script:Mode = 'running'; $script:FailReason = ''; $script:TerminalAt = $null
+    $script:AttemptStart = Get-Date; $script:LastEventAt = Get-Date
+    foreach ($st in $Stages) { Set-Row $st.Id 'waiting' 'Waiting' ([Drawing.Color]::Gray) }
+    $title.Text = 'Starting LotRadar'
+    $status.ForeColor = [Drawing.SystemColors]::ControlText
+    $status.Text = 'Starting... (preview)'
+    $bar.Style = [Windows.Forms.ProgressBarStyle]::Marquee
+    $btnRetry.Enabled = $false
+    Update-Details
+}
+function Step-Preview {
+    if ($script:Mode -ne 'running' -or ((Get-Date) - $script:PreviewAt).TotalMilliseconds -lt 1200) { return }
+    $script:PreviewAt = Get-Date
+    if ($script:PreviewIdx -lt $PreviewSteps.Count) {
+        $s = $PreviewSteps[$script:PreviewIdx]; $script:PreviewIdx++
+        Invoke-Event $s[0] $s[1] $s[2]
+    } elseif ($script:PreviewRun -le 1) {
+        Invoke-Event 'server' 'failed' 'EXAMPLE: Port 8765 is in use. Close the application using it, then retry. (Preview: nothing was started.)'
+    } elseif ($script:PreviewIdx -eq $PreviewSteps.Count) {
+        $script:PreviewIdx++
+        Invoke-Event 'open' 'started' 'LotRadar is running; opening its window'
+    } else {
+        Invoke-Event 'open' 'complete' 'LotRadar window opened'
+        Set-Done
+        $status.Text = 'Preview finished. Nothing was started. Close this window when you are done looking.'
+    }
+}
 function Read-NewEvents {
     if (-not (Test-Path -LiteralPath $script:StatusPath -PathType Leaf)) { return }
     $fs = $null
@@ -446,6 +493,11 @@ $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 300
 $timer.Add_Tick({
     try {
+        if ($Preview) {
+            Step-Preview
+            if ($AutoCloseSeconds -gt 0 -and $script:TerminalAt -and (((Get-Date) - $script:TerminalAt).TotalSeconds -ge $AutoCloseSeconds)) { $form.Close() }
+            return
+        }
         Read-NewEvents
         $now = Get-Date
         if ($script:Mode -eq 'running') {
@@ -491,19 +543,24 @@ $btnDetails.Add_Click({
         $btnConsole.Visible = ($script:Mode -eq 'failed')
     }
 })
-$btnConsole.Add_Click({ Show-ConsoleWindow })
+$btnConsole.Add_Click({
+    if ($Preview) { $status.Text = 'Preview: there is no console window to show (nothing was started).'; return }
+    Show-ConsoleWindow
+})
 $btnRetry.Add_Click({
     if ($script:Mode -ne 'failed') { return }
     if (-not (Close-FailedConsole)) {
         $status.Text = 'The previous attempt is still finishing. Close its console window (taskbar), then press Retry.'
         return
     }
+    if ($Preview) { Start-PreviewAttempt; return }
     if ($script:StatusPath) { Remove-Item -LiteralPath $script:StatusPath -Force -ErrorAction SilentlyContinue }
     try { Start-Attempt } catch { $script:Mode = 'running'; Set-Failed 'install' ('Could not start the LotRadar startup script: ' + (Protect-Message $_.Exception.Message)) }
 })
 $btnClose.Add_Click({ $form.Close() })
 $form.Add_FormClosing({
     $timer.Stop()
+    if ($Preview) { $script:ExitCode = 0; return }   # preview: nothing was started, nothing to show or clean up
     if ($script:Mode -eq 'running') {
         # Setup continues: never stop anything. Make its console visible so progress is not hidden.
         $script:ExitCode = 0
@@ -520,6 +577,7 @@ $form.Add_FormClosing({
 })
 $form.Add_Shown({
     $form.Activate()
+    if ($Preview) { Start-PreviewAttempt; $timer.Start(); return }
     try { Start-Attempt } catch { Set-Failed 'install' ('Could not start the LotRadar startup script: ' + (Protect-Message $_.Exception.Message)) }
     $timer.Start()
 })
