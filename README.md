@@ -26,3 +26,7 @@ Never commit data directories, customer information, photos, local databases, br
 6. Human authorizes merge/release after backup, regression and rollback verification.
 
 Initial review priorities are recorded in `AUDIT_README.txt`.
+
+## AI development guide
+
+See [AI_README.md](AI_README.md) for roles, contribution history, source verification, test evidence and the Claude → Codex → Claude → Gemini → Owner workflow.
