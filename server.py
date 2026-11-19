@@ -36,7 +36,7 @@ BASE = Path(__file__).resolve().parent
 STATIC = {'/photo-selection.css':'photo-selection.css','/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/styles.css': 'styles.css'}
 MIMES = {'.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.css':'text/css; charset=utf-8'}
 # Branding: two exact allowlisted files, read from fixed paths only (no caller-controlled path).
-# They are private production assets; when absent the UI keeps the text "LR" mark.
+# They are committed Owner-approved public assets; when absent or damaged the UI keeps the text "LR" mark.
 BRAND_FILES = {'/branding/lotradar_logo.png':(Path('branding')/'lotradar_logo.png','image/png',b'\x89PNG\r\n\x1a\n'),
                '/favicon.ico':(Path('LotRadar.ico'),'image/x-icon',b'\x00\x00\x01\x00')}
 BRAND_FALLBACK = '<div class="brand-mark" data-brand-logo>L<span>R</span></div>'

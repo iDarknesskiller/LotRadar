@@ -69,6 +69,18 @@ document.addEventListener('change',e=>{
 });
 
 let exportPreview={enabled:false,vin:'',source:'',revision:'',photos:[],urls:new Map(),pending:new Set(),failed:new Map(),counts:null,loading:false,error:'',actualSource:''};
+// Plain-text reason for a failed export preview. A branding problem must never read as "photos still
+// fetching": the downloaded originals are fine, only the business card / dedication images are missing.
+function exportPreviewErrorText(error){
+ const text=String(error||'');
+ const brand=/^branding_assets_(missing|invalid)(?::\s*([^;]+))?/.exec(text);
+ if(brand){
+  const files=(brand[2]||'business_card.png, dedication.jpg').trim();
+  return `Export preview needs LotRadar's branding images: ${files} ${brand[1]==='missing'?'missing':'damaged'} in the program's branding folder. Downloaded vehicle photos are not affected. Reinstall or re-download LotRadar to restore them.`;
+ }
+ if(/^no_export_ready_photos/.test(text))return 'No export photos ready yet. Download the car photos first.';
+ return 'Export preview unavailable: '+text;
+}
 function resetExportPreview(){
  if(selectionActive())void persistPhotoSelection().catch(()=>{});
  for(const value of exportPreview.urls.values())URL.revokeObjectURL(value);
@@ -181,7 +193,7 @@ async function toggleExportPreview(){
   if(exportPreview!==p)return;
   await Promise.all([1,2,3].map(i=>loadExportPreviewFrame(i)));
   if(exportPreview===p)void fillExportPreviewThumbnails(p);
- }catch(err){if(exportPreview===p){p.loading=false;p.error=String(err.message||err);renderDetail();notify('Export preview image unavailable: '+p.error,true);}}
+ }catch(err){if(exportPreview===p){p.loading=false;p.error=String(err.message||err);renderDetail();notify(exportPreviewErrorText(p.error),true);}}
 }
 
 let globalPhotoSettings={contact_number:'',auto_replace:false};
@@ -677,7 +689,7 @@ const imageAudit=photoProgressPanel();
  const editState=captureEditState();
  $('drawer-content').innerHTML=`<div class="posting-photo-area">
   <div class="export-preview-default"><strong>Facebook photo preview</strong><span>Exact exported images · Business card + dedication #2 · ${previewReady?(exportPreview.actualSource==='mitsubishi_used'?'Mitsubishi backup':'Toyota primary'):'Toyota preferred, Mitsubishi backup'}</span></div>
- <div class="gallery-stage">${main?`<img src="${esc(main)}" alt="${esc(modelValue)} ${previewActive?'export':'source'} photo ${gallery.index+1}">`:`<span class="muted">${previewActive?(exportPreview.loading?'Preparing exact export preview…':previewReady?(exportPreview.failed.has(gallery.index)?'Photo unavailable. Select its thumbnail to retry.':'Loading exported photo…'):(exportPreview.error?'Photos are still being fetched or unavailable.':'No export photos ready yet.')):'No vehicle photos captured yet.'}</span>`}</div>
+ <div class="gallery-stage">${main?`<img src="${esc(main)}" alt="${esc(modelValue)} ${previewActive?'export':'source'} photo ${gallery.index+1}">`:`<span class="muted">${previewActive?(exportPreview.loading?'Preparing exact export preview…':previewReady?(exportPreview.failed.has(gallery.index)?'Photo unavailable. Select its thumbnail to retry.':'Loading exported photo…'):(exportPreview.error?esc(exportPreviewErrorText(exportPreview.error)):'No export photos ready yet.')):'No vehicle photos captured yet.'}</span>`}</div>
   ${previewReady?photoSelectionToolbar():''}
   <div class="photo-grid-heading"><button type="button" class="btn secondary" data-act="toggle-photo-grid" aria-expanded="${photoGridExpanded}" aria-controls="photo-thumbnail-grid">${photoGridExpanded?'▴ Collapse photos':'▾ Show all photos'} (${pictures.length})</button></div>
   <div class="posting-thumb-row ${photoGridExpanded?'photo-grid-row':''}"><div id="photo-thumbnail-grid" class="gallery-thumbs ${photoGridExpanded?'photo-grid-expanded':''}" aria-label="${previewActive?'Exported':'Vehicle'} photos">${thumbnails}</div><span class="photo-count">${pictures.length?`${gallery.index+1} / ${pictures.length}`:exportPreview.loading?'Preparing…':exportPreview.error?'Preview unavailable':'0 photos'}</span></div>

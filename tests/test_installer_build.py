@@ -3,7 +3,8 @@
     python -m unittest discover -s tests -v
 
 Builds use a throw-away clone of this repository's HEAD, never the live installation or any user data.
-Fake branding assets are generated on the fly; no private images are needed or stored.
+The four Owner-approved public branding assets are committed and packaged by default; override and
+negative cases use fake branding generated on the fly.
 """
 import io
 import json
@@ -74,8 +75,17 @@ class BuilderTestCase(unittest.TestCase):
                 with open(os.path.join(self.assets, name), 'wb') as h:
                     h.write(data)
 
-    def build(self, mode='development', asset_dir=None, out='out'):
-        return bi.build(self.repo, mode, asset_dir, os.path.join(self.tmp, out))
+    def build(self, mode='development', asset_dir=None, out='out', no_branding=False):
+        return bi.build(self.repo, mode, asset_dir, os.path.join(self.tmp, out), no_branding)
+
+    def commit_forced(self, rel, data):
+        """Commit a file even if .gitignore would normally ignore it (simulates a careless git add -f)."""
+        path = os.path.join(self.repo, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'wb') as h:
+            h.write(data)
+        run(self.repo, 'add', '-f', rel)
+        run(self.repo, 'commit', '-q', '-m', 'forced test change')
 
     def commit_change(self, rel, data=None, remove=False):
         path = os.path.join(self.repo, rel)
@@ -99,11 +109,21 @@ class BuilderTestCase(unittest.TestCase):
 
 class TestDevelopmentBuild(BuilderTestCase):
     def test_builds_and_verifies(self):
+        # Default development build packages the committed public branding.
         path, manifest, _digest, _dirty = self.build()
-        self.assertTrue(path.endswith('-DEV-NOBRANDING.zip'))
+        self.assertTrue(path.endswith('-DEV.zip'), path)
         self.assertEqual(bi.verify_bytes(rb(path)), [])
         self.assertEqual(manifest['build_type'], 'development')
+        self.assertEqual(manifest['branding_assets_missing'], [])
+        self.assertEqual(len(manifest['payload_files']), len(bi.SOURCE_ALLOWLIST) + len(bi.ASSETS))
+
+    def test_no_branding_development_build(self):
+        path, manifest, *_ = self.build(no_branding=True)
+        self.assertTrue(path.endswith('-DEV-NOBRANDING.zip'), path)
+        self.assertEqual(manifest['branding_assets_included'], [])
+        self.assertEqual(sorted(manifest['branding_assets_missing']), sorted(bi.ASSETS))
         self.assertEqual(len(manifest['payload_files']), len(bi.SOURCE_ALLOWLIST))
+        self.assertEqual(bi.verify_bytes(rb(path)), [])
 
     def test_every_payload_file_listed_exactly_once_and_matches(self):
         path, manifest, *_ = self.build()
@@ -236,27 +256,72 @@ class TestBuildGuards(BuilderTestCase):
         with self.assertRaisesRegex(bi.BuildError, 'OpenAI-style key'):
             self.build()
 
-    def test_production_requires_asset_dir(self):
-        with self.assertRaisesRegex(bi.BuildError, 'require --asset-dir'):
-            self.build('production')
+    def test_production_uses_committed_assets_without_asset_dir(self):
+        path, manifest, *_ = self.build('production')
+        self.assertEqual(manifest['branding_assets_missing'], [])
+        self.assertEqual(manifest['branding_asset_sources'], {p: 'committed' for p in sorted(bi.ASSETS)})
+        self.assertEqual(bi.verify_bytes(rb(path), require_production=True), [])
+        with zipfile.ZipFile(path) as z:
+            for payload_path, digest in bi.APPROVED_ASSET_SHA256.items():
+                self.assertEqual(bi.sha256(z.read('MarketplaceScanner/' + payload_path)), digest, payload_path)
 
-    def test_production_requires_both_branding_images(self):
-        self.write_assets(jpg=False)
-        with self.assertRaisesRegex(bi.BuildError, 'dedication.jpg'):
-            self.build('production', self.assets)
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, 'out')), 'no package may be written on failure')
+    def test_production_requires_every_branding_asset(self):
+        for rel, name in (('branding/business_card.png', 'business_card.png'), ('branding/dedication.jpg', 'dedication.jpg'),
+                          ('branding/lotradar_logo.png', 'lotradar_logo.png'), ('LotRadar.ico', 'LotRadar.ico')):
+            with self.subTest(rel=rel):
+                self.repo = os.path.join(self.tmp, 'repo-' + name)
+                subprocess.check_call(['git', 'clone', '-q', '--no-hardlinks', REPO, self.repo])
+                self.commit_change(rel, remove=True)
+                out = 'out-' + name
+                with self.assertRaisesRegex(bi.BuildError, re.escape(name)):
+                    self.build('production', out=out)
+                self.assertFalse(os.path.exists(os.path.join(self.tmp, out)), 'no package may be written on failure')
+                # a development build still works and reports exactly what is missing
+                _p, manifest, *_ = self.build('development', out=out + '-dev')
+                self.assertEqual(manifest['branding_assets_missing'], [rel])
 
-    def test_production_requires_logo_and_icon(self):
-        for kw, name in (({'logo': False}, 'lotradar_logo.png'), ({'ico': False}, 'LotRadar.ico')):
-            shutil.rmtree(self.assets); os.makedirs(self.assets)
-            self.write_assets(**kw)
-            with self.assertRaisesRegex(bi.BuildError, name):
-                self.build('production', self.assets)
+    def test_missing_committed_asset_can_be_supplied_by_asset_dir(self):
+        self.commit_change('branding/dedication.jpg', remove=True)
+        self.write_assets(png=False, ico=False, logo=False)
+        _p, manifest, *_ = self.build('production', self.assets)
+        self.assertEqual(manifest['branding_asset_sources']['branding/dedication.jpg'], 'asset-dir')
+        self.assertEqual(manifest['branding_asset_sources']['branding/business_card.png'], 'committed')
+
+    def test_asset_dir_overrides_per_file(self):
+        self.write_assets(png=False, jpg=False, ico=False)  # logo only
+        path, manifest, *_ = self.build('production', self.assets)
+        self.assertEqual(manifest['branding_asset_sources']['branding/lotradar_logo.png'], 'asset-dir')
+        for other in ('branding/business_card.png', 'branding/dedication.jpg', 'LotRadar.ico'):
+            self.assertEqual(manifest['branding_asset_sources'][other], 'committed')
+        with zipfile.ZipFile(path) as z:
+            self.assertEqual(z.read('MarketplaceScanner/branding/lotradar_logo.png'), LOGO)
+            self.assertEqual(bi.sha256(z.read('MarketplaceScanner/LotRadar.ico')), bi.APPROVED_ASSET_SHA256['LotRadar.ico'])
+
+    def test_committed_asset_must_match_approved_hash(self):
+        self.commit_change('branding/lotradar_logo.png', LOGO)  # structurally valid but not the approved bytes
+        for mode in ('production', 'development'):
+            with self.assertRaisesRegex(bi.BuildError, 'Owner-approved SHA-256'):
+                self.build(mode, out='o-' + mode)
+
+    def test_no_branding_rules(self):
+        with self.assertRaisesRegex(bi.BuildError, 'only allowed for development'):
+            self.build('production', no_branding=True)
+        self.write_assets()
+        with self.assertRaisesRegex(bi.BuildError, 'cannot be combined'):
+            self.build('development', self.assets, no_branding=True)
+
+    def test_other_files_in_branding_are_not_packaged(self):
+        # Only the approved paths are known; anything else forced into branding/ fails the build.
+        self.commit_forced('branding/other_private.png', PNG)
+        with self.assertRaisesRegex(bi.BuildError, 'branding/other_private.png'):
+            self.build()
 
     def test_development_builds_without_logo_and_icon(self):
-        self.write_assets(logo=False, ico=False)
-        path, manifest, *_ = self.build('development', self.assets)
+        self.commit_change('branding/lotradar_logo.png', remove=True)
+        self.commit_change('LotRadar.ico', remove=True)
+        path, manifest, *_ = self.build('development')
         self.assertIn('branding/lotradar_logo.png', manifest['branding_assets_missing'])
+        self.assertIn('LotRadar.ico', manifest['branding_assets_missing'])
 
     def test_logo_and_icon_must_be_structurally_valid(self):
         bad = {'lotradar_logo.png': (_png(color_type=2), _png(iend=False), _png(8, 8)),
@@ -311,14 +376,20 @@ class TestBuildGuards(BuilderTestCase):
         with self.assertRaisesRegex(bi.BuildError, 'NOT git-ignored'):
             self.build('development', inside)
 
-    def test_asset_in_ignored_branding_dir_inside_repo_is_allowed(self):
-        inside = os.path.join(self.repo, 'branding')
+    def test_asset_in_ignored_private_dir_inside_repo_is_allowed(self):
+        inside = os.path.join(self.repo, 'private-assets')
         os.makedirs(inside)
         for name, data in (('business_card.png', PNG), ('dedication.jpg', JPG), ('lotradar_logo.png', LOGO), ('LotRadar.ico', ICO)):
             with open(os.path.join(inside, name), 'wb') as h:
                 h.write(data)
         path, manifest, *_ = self.build('development', inside)
         self.assertEqual(manifest['branding_assets_missing'], [])
+        self.assertEqual(set(manifest['branding_asset_sources'].values()), {'asset-dir'})
+
+    def test_tracked_branding_dir_cannot_be_used_as_asset_dir(self):
+        # branding/ now holds tracked public files; passing it as an override folder is refused.
+        with self.assertRaisesRegex(bi.BuildError, 'NOT git-ignored'):
+            self.build('development', os.path.join(self.repo, 'branding'))
 
     def test_production_package_contents(self):
         self.write_assets()
@@ -334,8 +405,7 @@ class TestBuildGuards(BuilderTestCase):
             self.assertEqual(len(manifest['payload_files']), len(bi.SOURCE_ALLOWLIST) + 4)
 
     def test_production_package_missing_branding_fails_verify(self):
-        self.write_assets()
-        path, *_ = self.build('production', self.assets)
+        path, *_ = self.build('production')
 
         def edit(e):
             m = json.loads(e['Install-Manifest.json'])
@@ -348,18 +418,30 @@ class TestBuildGuards(BuilderTestCase):
 
 class TestRepositoryHygiene(unittest.TestCase):
     def test_allowlist_files_exist_and_no_private_files_tracked(self):
-        tracked = subprocess.check_output(['git', '-C', REPO, 'ls-files', '-z']).decode().split('\0')
+        tracked = [p for p in subprocess.check_output(['git', '-C', REPO, 'ls-files', '-z']).decode().split('\0') if p]
         for path in bi.SOURCE_ALLOWLIST:
             self.assertIn(path, tracked)
+        approved = set(bi.APPROVED_ASSET_SHA256)
+        self.assertEqual(set(bi.ASSETS), approved)
         for path in tracked:
+            if path in approved:
+                continue  # the four Owner-approved public assets (exact paths only)
             self.assertFalse(re.search(r'\.(exe|zip|sqlite3|db|png|jpg|jpeg|ico)$', path, re.I), path)
             self.assertFalse(path.startswith(('branding/', 'dist/')), path)
 
+    def test_committed_branding_matches_approved_hashes(self):
+        for path, digest in bi.APPROVED_ASSET_SHA256.items():
+            blob = subprocess.check_output(['git', '-C', REPO, 'show', 'HEAD:' + path])
+            self.assertEqual(bi.sha256(blob), digest, path)
+
     def test_gitignore_covers_private_and_generated(self):
-        for probe in ('branding/business_card.png', 'dist/x.zip', 'data/marketplace.sqlite3',
-                      'runtime/venv/a.py', 'LotRadar.exe', 'x.sqlite3', '.env'):
+        for probe in ('branding/other.png', 'branding/private/x.jpg', 'private-assets/business_card.png',
+                      'dist/x.zip', 'data/marketplace.sqlite3', 'runtime/venv/a.py', 'LotRadar.exe', 'x.sqlite3', '.env'):
             rc = subprocess.run(['git', '-C', REPO, 'check-ignore', '-q', probe]).returncode
             self.assertEqual(rc, 0, probe + ' must be git-ignored')
+        for probe in bi.APPROVED_ASSET_SHA256:
+            rc = subprocess.run(['git', '-C', REPO, 'check-ignore', '-q', '--no-index', probe]).returncode
+            self.assertEqual(rc, 1, probe + ' must NOT be git-ignored (it is a committed public asset)')
 
     def test_scan_secrets_unit(self):
         self.assertTrue(bi.scan_secrets('data/x.txt', b'hi'))
