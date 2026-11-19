@@ -4,8 +4,9 @@
     python scripts/build_qa_kit.py [--out-dir DIR]
 
 * Requires a clean working tree; every kit file comes from blobs committed at HEAD (never the working tree).
-* Builds a DEVELOPMENT installer (no --asset-dir, so no private branding) with scripts/build_installer.py,
-  verifies it, checks its manifest names HEAD, and refuses if any private branding file is inside.
+* Builds a DEVELOPMENT installer with --no-branding (so the kit keeps testing the "LR" fallback and carries
+  no branding images) with scripts/build_installer.py, verifies it, checks its manifest names HEAD, and
+  refuses if any branding file is inside.
 * Output: LotRadar-Win11-R3-QA-<shortsha>.zip (deterministic). Never commit or publish the kit: it is
   delivered privately with its SHA-256.
 """
@@ -59,7 +60,7 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp:
         r = subprocess.run([sys.executable, os.path.join(ROOT, 'scripts', 'build_installer.py'), 'build',
-                            '--mode', 'development', '--out-dir', tmp], capture_output=True, text=True)
+                            '--mode', 'development', '--no-branding', '--out-dir', tmp], capture_output=True, text=True)
         if r.returncode:
             fail('installer build failed:\n' + r.stdout + r.stderr)
         zips = glob.glob(os.path.join(tmp, 'LotRadar-Installer-*.zip'))
