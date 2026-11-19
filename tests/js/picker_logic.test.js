@@ -3,9 +3,9 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const src=fs.readFileSync(__dirname+'/../../app.js','utf8');
 function grab(name){const m=src.match(new RegExp('(?:async )?function '+name+'\\('));assert(m,'missing '+name);let i=m.index,depth=0,j=src.indexOf('{',i);for(let k=j;k<src.length;k++){const c=src[k];if(c==='{')depth++;else if(c==='}'){depth--;if(!depth){return src.slice(i,k+1);}}}}
 const efk=src.match(/const exportFrameKey=[^\n]*;/)[0];
-const names=['orderedPhotoKeys','selectionActive','togglePhotoKey','selectPhotoPreset','photoProgressPanel'];
-const notices=[];let changes=0;
-const ctx={notify:m=>notices.push(m),renderPhotoControls(){},selectionChanged(){changes++;},esc:s=>String(s),selectedVin:'V',
+const names=['orderedPhotoKeys','selectionActive','togglePhotoKey','selectPhotoPreset','photoProgressPanel','watchSortStartedByOpen'];
+const notices=[];let changes=0,watched=0;
+const ctx={notify:m=>notices.push(m),updatePhotoProgressInPlace(){},watchPhotoProgress(){watched++;},renderPhotoControls(){},selectionChanged(){changes++;},esc:s=>String(s),selectedVin:'V',
  PHOTO_STAGE_LABEL:{queued:'Queued',downloading:'Downloading',sorting:'Sorting',ready:'Ready',partial:'Partial',unavailable:'Unavailable'},PHOTO_FAIL_LABEL:{},
  photoProgress:{vin:'V',data:null},
  exportPreview:{vin:'V',actualSource:'toyota_used',photos:Array.from({length:30},(_,i)=>({kind:i===1?'dedication':'vehicle',url:i===1?null:'u'+(i+1)}))},
@@ -32,3 +32,10 @@ t('progress panel: exactly one bar, funnel line, failures disclosure',()=>{
   assert(!run('photoProgressPanel()').includes('Failures'));});
 t('old controls removed from source',()=>{for(const s of ['Select all shown','Unselect all shown','data-photo-filter','data-photo-group','Fetch missing photos','Refresh photo preview','Refresh vehicle</button>','data-photo-autosort','photo-auto-tag','Sort automatically'])assert(!src.includes(s),'still present: '+s);});
 t('kept controls present',()=>{for(const s of ['data-photo-default','download-photo-zip','open-photo-folder','toggle-photo-grid','dealerLinks'])assert(src.includes(s),'missing '+s);});
+t('sort queued by the first open flips a Ready panel to Sorting and is watched',()=>{
+  const p={vin:'V',actualSource:'toyota_used'};
+  run('photoProgress={vin:"V",data:{stage:"ready",found:5,unique:5,downloaded:5,usable:5,failed:0,failure_reasons:{},sorting:{}}}');
+  run('watchSortStartedByOpen('+JSON.stringify(p)+',{running:false})');assert.strictEqual(run('photoProgress.data.stage'),'ready');assert.strictEqual(watched,0);
+  run('watchSortStartedByOpen('+JSON.stringify(p)+',{running:true,classified:1,total:4})');
+  assert.strictEqual(run('photoProgress.data.stage'),'sorting');assert.strictEqual(run('photoProgress.data.sorting.total'),4);assert.strictEqual(watched,1);
+  run('watchSortStartedByOpen('+JSON.stringify(p)+',{running:true})');assert.strictEqual(watched,1);});

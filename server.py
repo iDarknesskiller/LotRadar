@@ -99,6 +99,9 @@ def missing_photo_targets(store, cache):
     return targets
 
 
+AUTO_SORT_RETRY_SECONDS=30     # minimum gap before the menu retries a sort that just failed
+
+
 def default_data_dir():
     if os.name == 'nt':
         return Path(os.getenv('LOCALAPPDATA') or Path.home()) / 'MarketplaceScanner' / 'data'
@@ -117,13 +120,13 @@ def create_handler(store, port, token):
         try:
             _rev,frames,_used=export_for_preferred_dealer(vin,source,for_preview=True)
         except ValueError as exc:
-            return {'classified':0,'total':0,'error':''}     # photos not ready yet: nothing to sort
+            return {'classified':0,'total':0,'error':'','complete':False}     # photos not ready yet: stay pending, never stamp
         candidates=classifiable(frames)
         auto_sorter.progress(vin,source,len(photo_categories.known(candidates)),len(candidates))
-        result=photo_categories.classify(candidates,progress=lambda n:auto_sorter.progress(vin,source,n,len(candidates)))
+        result=photo_categories.classify_gallery(vin,source,candidates,progress=lambda n:auto_sorter.progress(vin,source,n,len(candidates)))
         counts={}
         for category in result['categories'].values():counts[category]=counts.get(category,0)+1
-        return {'classified':len(result['categories']),'total':len(candidates),'counts':counts,'error':result['error']}
+        return {'classified':len(result['categories']),'total':len(candidates),'counts':counts,'error':result['error'],'complete':result['complete']}
     auto_sorter=AutoSorter(auto_sort_job,enabled=photo_selections.auto_sort_enabled)
     def classify_status(vin,source):
         return {**auto_sorter.state(vin,source),'enabled':photo_selections.auto_sort_enabled(),
@@ -898,10 +901,12 @@ def create_handler(store, port, token):
                     current_photo_record(vin,source)
                     _rev,frames,used_source=export_for_preferred_dealer(vin,source,for_preview=True)
                     candidates=classifiable(frames);known=photo_categories.known(candidates)
-                    if len(known)<len(candidates):auto_sorter.request(vin,used_source)   # never sorted (e.g. downloaded before 1.9.13)
+                    needs_sort=photo_categories.needs_sort(vin,used_source,candidates)
+                    # First open, or a retry of a missed/failed sort. Cached photos cost nothing; the sorter dedupes and honours OFF.
+                    if needs_sort:auto_sorter.request(vin,used_source,cooldown=AUTO_SORT_RETRY_SECONDS)
                     return self._json(200,{'ok':True,**photo_selections.get(vin,used_source,frames),'auto_groups':known,
                                            'classify_available':bool(os.environ.get('OPENAI_API_KEY','').strip()),
-                                           'auto_sort':classify_status(vin,used_source)})
+                                           'auto_sort':{**classify_status(vin,used_source),'complete':bool(candidates) and not needs_sort}})
                 except ValueError as exc:return self._json(400,{'error':str(exc)})
             if path == '/api/photos/export-preview':
                 # Private per-user local data. Explicit same-origin session
@@ -1650,6 +1655,8 @@ def create_handler(store, port, token):
             except Exception:
                 return self._json(500, {'ok':False,'error':'internal_error; see server console'})
     Handler.photo_cache = photo_cache
+    Handler.photo_categories = photo_categories
+    Handler.auto_sorter = auto_sorter
     Handler.headless_dealer = headless_dealer
     return Handler
 
