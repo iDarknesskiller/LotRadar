@@ -31,6 +31,14 @@ async function loadPhotoSelection(p){
  if(exportPreview!==p)return;
  if(saved.source!==p.actualSource)throw Error('Photo source changed; refresh preview');
  photoSelection={vin:p.vin,source:p.actualSource,keys:[...saved.keys],groups:saved.groups||{},autoGroups:saved.auto_groups||{},classifyAvailable:!!saved.classify_available,autoSort:saved.auto_sort||{},saved:saved.saved?[...saved.keys]:null,limit:saved.limit,ready:true,missing:saved.missing_keys||[],dirty:false,error:''};
+ watchSortStartedByOpen(p,saved.auto_sort);
+}
+// The open request can queue a sort AFTER the progress panel already read "Ready"; show it and follow it to the end.
+function watchSortStartedByOpen(p,sort){
+ const d=photoProgress.data;
+ if(!sort?.running||!d||photoProgress.vin!==p.vin||['queued','downloading','sorting'].includes(d.stage))return;
+ photoProgress={...photoProgress,data:{...d,stage:'sorting',sorting:{running:true,classified:sort.classified||0,total:sort.total||0,error:''}}};
+ updatePhotoProgressInPlace();void watchPhotoProgress(p.vin,p.actualSource);
 }
 function persistPhotoSelection(){
  clearTimeout(photoSaveTimer);

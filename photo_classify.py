@@ -9,12 +9,14 @@ uses for AI listings. LotRadar 1.9.13.
 - A category the user chose by hand always wins over an automatic one.
 - Anything unexpected (no key, network, odd answer) changes nothing."""
 import base64, hashlib, json, os, threading, time, urllib.error, urllib.request
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
 CATEGORIES = ('exterior', 'interior', 'other')
 BATCH = 20
 VERSION = 1
+STAMPS = '_gallery_stamps'      # per-(VIN, source) completion stamps live beside the hash cache (one atomic file)
 MODEL = os.environ.get('LOTRADAR_PHOTO_MODEL', 'gpt-6-luna')
 
 INSTRUCTIONS = (
@@ -74,11 +76,70 @@ class PhotoCategories:
                     out[key] = hit['c']
         return out
 
+    @staticmethod
+    def _hashes(frames):
+        return {hashlib.sha256(blob).hexdigest() for _key, blob in frames}
+
+    def _covered(self, digest):
+        hit = self.cache.get(digest)
+        return isinstance(hit, dict) and hit.get('v') == VERSION and hit.get('c') in CATEGORIES
+
+    def _stamp(self, vin, source):
+        stamps = self.cache.get(STAMPS)
+        stamp = stamps.get(f'{vin}|{source}') if isinstance(stamps, dict) else None
+        return stamp if isinstance(stamp, dict) and stamp.get('v') == VERSION else None
+
+    def _pending(self, vin, source, frames):
+        """Content hashes with no valid category (photos recorded as unreadable for this version are not retried)."""
+        stamp = self._stamp(vin, source)
+        skip = set(stamp.get('skip') or []) if stamp else set()
+        return {h for h in self._hashes(frames) if not self._covered(h) and h not in skip}
+
+    def fingerprint(self, frames):
+        return hashlib.sha256('\n'.join(sorted(self._hashes(frames))).encode('ascii')).hexdigest()
+
+    def needs_sort(self, vin, source, frames):
+        """True unless this exact photo set is stamped complete AND the cache still covers it.
+        An empty gallery is never stamped, so it never reads as sorted."""
+        with self.lock:
+            if not self._hashes(frames): return False
+            if self._pending(vin, source, frames): return True
+            stamp = self._stamp(vin, source)
+            return not (stamp and stamp.get('fp') == self.fingerprint(frames))
+
+    def classify_gallery(self, vin, source, frames, *, opener=None, progress=None):
+        """classify() plus a completion stamp, written only when every photo is covered.
+        Returns classify()'s result with 'complete' added. Already-covered galleries make no API call."""
+        with self.lock: pending = self._pending(vin, source, frames)
+        if pending:
+            result = self.classify(frames, opener=opener, progress=progress)
+        else:
+            result = {'categories': self.known(frames), 'classified': 0, 'error': '', 'skipped': []}
+        result['complete'] = False
+        if result['error'] or not frames: return result
+        with self.lock:
+            hashes = self._hashes(frames)
+            prior = self._stamp(vin, source)
+            skip = {h for h in set(result.get('skipped') or []) | set(prior.get('skip') or [] if prior else []) if h in hashes and not self._covered(h)}
+            if any(not self._covered(h) and h not in skip for h in hashes): return result
+            previous = self.cache
+            stamps = dict(previous.get(STAMPS) if isinstance(previous.get(STAMPS), dict) else {})
+            stamps[f'{vin}|{source}'] = {'v': VERSION, 'at': datetime.now(timezone.utc).isoformat(), 'fp': self.fingerprint(frames),
+                                         'n': len(hashes), 'skip': sorted(skip)}
+            self.cache = {**previous, STAMPS: stamps}
+            try: self._write()
+            except OSError:
+                self.cache = previous
+                result['error'] = 'Unable to save photo categories; sorting is not marked complete.'
+                return result
+        result['complete'] = True
+        return result
+
     def classify(self, frames, *, opener=None, progress=None):
         """frames: [(frame_key, image_bytes)] for gallery photos 03+ only.
-        Returns {'categories': {key: category}, 'classified': n_new, 'error': ''}."""
+        Returns {'categories': {key: category}, 'classified': n_new, 'error': '', 'skipped': [hashes of unreadable photos]}."""
         key = os.environ.get('OPENAI_API_KEY', '').strip()
-        result = {'categories': self.known(frames), 'classified': 0, 'error': ''}
+        result = {'categories': self.known(frames), 'classified': 0, 'error': '', 'skipped': []}
         if not key:
             result['error'] = 'Needs the OpenAI API key used by AI listing.'; return result
         if progress:progress(len(result['categories']))
@@ -89,7 +150,8 @@ class PhotoCategories:
             content, ids = [], {}
             for n, (frame, blob) in enumerate(batch, start=1):
                 try: b64 = _thumb(blob)
-                except Exception: continue          # unreadable image: leave unclassified
+                except Exception:                   # unreadable image: leave unclassified
+                    result['skipped'].append(hashlib.sha256(blob).hexdigest()); continue
                 ids[n] = (frame, blob)
                 content.append({'type': 'input_text', 'text': f'Photo {n}'})
                 content.append({'type': 'input_image', 'image_url': 'data:image/jpeg;base64,' + b64, 'detail': 'low'})
@@ -168,24 +230,31 @@ class AutoSorter:
         self.thread = threading.Thread(target=self._loop, name='photo-auto-sort', daemon=True)
         self.thread.start()
 
-    def request(self, vin, source):
+    def request(self, vin, source, cooldown=0):
+        """Queue one job per (VIN, source). `cooldown` (seconds) holds back an automatic retry of a job that just
+        failed or ended incomplete, so opening/refreshing the menu cannot loop paid calls."""
         key = (vin, source)
         with self.lock:
             if self.paused or not self.enabled() or not self.has_key() or key in self.waiting:
                 return False
+            prev = self.status.get(key) or {}
+            if cooldown and not prev.get('running') and (prev.get('error') or (prev.get('total') and not prev.get('complete'))) \
+                    and time.monotonic() - prev.get('finished', 0) < cooldown:
+                return False
             self.waiting.add(key)
-            self.status[key] = {'running': True, 'classified': 0, 'error': '', 'queued': True}
+            self.status[key] = {'running': True, 'classified': 0, 'error': '', 'queued': True, 'complete': False}
         try:
             self.jobs.put_nowait(key)
         except queue.Full:
             with self.lock:
-                self.waiting.discard(key); self.status[key] = {'running': False, 'classified': 0, 'error': 'Sorting queue full', 'queued': False}
+                self.waiting.discard(key); self.status[key] = {'running': False, 'classified': 0, 'error': 'Sorting queue full', 'queued': False, 'complete': False, 'finished': time.monotonic()}
             return False
         return True
 
     def state(self, vin, source):
         with self.lock:
-            s = dict(self.status.get((vin, source), {'running': False, 'classified': 0, 'error': '', 'queued': False}))
+            s = dict(self.status.get((vin, source), {'running': False, 'classified': 0, 'error': '', 'queued': False, 'complete': False}))
+            s.pop('finished', None)
             s['paused'] = self.paused
             return s
 
@@ -215,7 +284,8 @@ class AutoSorter:
                 self.waiting.discard(key)
                 self.status[key] = {'running': False, 'classified': int(result.get('classified') or 0),
                                     'total': int(result.get('total') or 0), 'counts': result.get('counts') or {},
-                                    'error': error, 'queued': False}
+                                    'error': error, 'queued': False, 'complete': bool(result.get('complete')) and not error,
+                                    'finished': time.monotonic()}
                 if error in PAUSE_ERRORS:
                     self.paused = error + '. Automatic photo sorting paused.'
             self.jobs.task_done()
