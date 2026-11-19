@@ -1,0 +1,130 @@
+LotRadar - Windows 11 / R3 test kit
+====================================
+Kit commit : {{COMMIT}}
+Installer  : {{PACKAGE_FILE}}  (DEVELOPMENT build, no private branding)
+Installer SHA-256 : {{PACKAGE_SHA256}}
+
+WHAT THIS IS
+This kit checks that the LotRadar installer works safely on this PC and that it refuses a
+booby-trapped package (the "R3 symlink" security test). It is a TEST ONLY. It does NOT install
+LotRadar for real, does NOT read or change any real LotRadar data, and does NOT post anything.
+It also tests the new LotRadar startup window (small windows appear and close by themselves).
+
+YOU DO NOT NEED TO INSTALL ANYTHING
+Everything it needs is already part of Windows (Windows PowerShell). No Python, Git, Node or
+Chrome is needed for the main test. No internet is needed for the main test.
+
+BEFORE YOU START
+1. If LotRadar is open on this PC, close it (and its black server window). If LotRadar was never
+   installed here, there is nothing to close.
+2. Make sure the kit is EXTRACTED: right-click the kit ZIP > "Extract All..." > Extract.
+   Do not run it from inside the ZIP.
+3. Use your normal Windows account. Do NOT choose "Run as administrator".
+
+RUN THE TEST
+1. Open the extracted folder and double-click  RUN_WINDOWS11_TESTS.cmd
+2. Windows may show a security prompt because the file came from the internet:
+   - "Open File - Security Warning": click Run.
+   - "Windows protected your PC": click "More info", then "Run anyway".
+3. A window opens and runs the tests (usually 3-10 minutes). Do not close it.
+4. When it says "Finished", press any key.
+
+ABOUT YOUR DESKTOP SHORTCUT (please read)
+During the test, a temporary "LotRadar" shortcut appears on your Desktop, because the installer
+always creates one. If you already had a LotRadar shortcut, it is backed up first and put back
+at the end. The kit checks this and keeps its own extra copy in RESULTS\shortcut-backup.
+If you had none, the test shortcut is removed at the end.
+
+WHAT IT CHANGES
+Only temporary files in a test folder
+(%LOCALAPPDATA%\Temp\LotRadar Test Sandbox ...), which are deleted at the end, plus the
+RESULTS folder inside this kit. Your real %LOCALAPPDATA%\MarketplaceScanner is never touched.
+
+WHAT TO SEND BACK
+Send ONLY the files in the RESULTS folder:
+   SUMMARY.txt
+   SANITIZED-LotRadar-WindowsTest-....log
+   SANITIZED-LotRadar-WindowsTest-....json
+These copies have your Windows user name, PC name and profile path removed.
+Do NOT send the "shortcut-backup" folder or the un-sanitized files in the "package" folder.
+
+SMALL LOTRADAR WINDOWS DURING THE TEST
+The tests now also check the new LotRadar startup window. A few small "LotRadar" windows (and minimized
+console windows in the taskbar) appear and close by themselves during the run. Do not click them.
+
+IF THE R3 LINE SAYS "SKIP"
+That means Windows did not allow a normal account to create the special test link. It is NOT a
+failure and NOT a pass. If you want R3 tested fully (optional):
+   Settings > System > For developers > turn ON "Developer Mode"
+   (Windows may ask for your password), then run RUN_WINDOWS11_TESTS.cmd again.
+   You can turn Developer Mode off again afterwards. Never run the kit "as administrator".
+
+OPTIONAL SECOND TEST (only if asked): RUN_FULL_LAUNCH_TESTS.cmd
+This also starts LotRadar for real inside the temporary test folder. It needs internet and
+downloads Python packages and a browser (several hundred MB, 10-30 minutes). Double-clicking it is
+your OK: it explains what it will do and starts after 10 seconds (close the window to cancel). If Python is not on this PC, LotRadar's own startup script installs Python 3.13 for
+your Windows user, and Python stays installed afterwards (you can remove it in Settings > Apps).
+
+OPTIONAL ONEDRIVE TEST (only if asked): RUN_ONEDRIVE_TESTS.cmd
+LotRadar vehicle photos and Facebook photo exports stay local; only the disposable
+installer-compatibility test fixture is placed in OneDrive.
+What it does:
+  1. Checks (read only, nothing opened or moved) where your real LotRadar keeps vehicle photos,
+     Facebook photo exports, the photo selection file and the database, and reports whether any
+     of them are inside OneDrive ("LOCAL_PHOTO_STORAGE").
+  2. Runs the normal test once with the package unpacked on this PC (local control).
+  3. After a 10-second countdown (close the window to cancel): creates ONE temporary folder "LotRadar QA TEST ONLY ..." in your
+     OneDrive with the synthetic test installer only (no real data, no photos), runs the test with
+     the package unpacked there, then deletes that folder. OneDrive may upload those test files
+     while it runs and keep the deleted folder in its online recycle bin for a while.
+It never changes OneDrive settings and never moves your Desktop or Documents. Your Desktop
+LotRadar shortcut is handled exactly like in the main test. Results go to a folder ON THIS PC
+(%LOCALAPPDATA%\LotRadar QA Results\...), which opens automatically at the end. Send back only
+SUMMARY.txt and the SANITIZED-... files from that folder.
+
+IF YOU CLOSED A TEST WINDOW BEFORE IT FINISHED
+Closing the window skips the test's own cleanup, so a temporary test shortcut or test folder can be
+left behind. The next time you run any of the kit's .cmd files, it checks for that first:
+- A leftover TEST shortcut on your Desktop is replaced by your real LotRadar shortcut, but only from a
+  saved copy that is checked to be the real one. If no such copy exists, it asks you (type D to delete
+  the test shortcut, or press Enter to stop) and changes nothing unless you type D.
+- A leftover test folder is offered for deletion ONLY if the kit can prove it made it (a secret code in
+  the folder that matches its own record on this PC, the exact expected place, and no shortcuts/links
+  inside). It shows the folder name, number of files and size, then asks: type D and press Enter to
+  delete it, or just press Enter to keep it. Nothing is deleted without your D.
+- Any folder it cannot prove is its own is listed and left alone. Check it and delete it yourself
+  (in File Explorer) only if you are sure it is a LotRadar test folder.
+
+OPTIONAL CLEANUP SAFETY TEST (only if asked): RUN_CLEANUP_SAFETY_TESTS.cmd
+Checks the rules above on SYNTHETIC test folders and a pretend Desktop, never your real ones.
+Double-clicking it is your OK for these LOCAL checks only. If you have OneDrive, it then asks you a
+SEPARATE question: whether to include two extra OneDrive cases, which create one temporary
+"LotRadar QA TEST ONLY <random>" folder there with a few text files and delete it again (OneDrive may
+keep it in its online recycle bin for a while). At that question press Enter to SKIP them
+(recommended). Type Y only if you were asked to include them. The local checks run either way.
+Developer Mode ON lets it run every case (one case needs a special link).
+It takes about a minute. Send back SUMMARY.txt and SANITIZED-cleanup-selftest.json from the results
+folder it opens (on this PC, under LotRadar QA Results).
+
+STARTUP WINDOW PREVIEW (only if asked): RUN_UI_PREVIEW.cmd
+Shows the real LotRadar startup window with EXAMPLE steps (title says PREVIEW). Nothing is installed
+or started. Try the keys it lists, close the window, then press Y or N for two questions. Run it
+at your normal scaling, then set Settings > Display > Scale to 150% and run it again (set it back
+after). It saves two pictures of that window only. LOOK at them before sharing. Send back
+SUMMARY.txt, SANITIZED-manual-ui.json and the pictures from the folder it opens.
+
+MANUAL: GUIDED REAL-START TEST (only if asked): RUN_MANUAL_UI_TESTS.cmd
+Close LotRadar first. It installs LotRadar into a temporary TEST folder and adds a Desktop shortcut
+"LotRadar TEST (sandbox)". When asked, double-click that shortcut, watch, and press Y or N. The
+first start downloads packages into the TEST folder (can take 5-20 minutes, needs internet). If no
+Python is installed it stops and reports BLOCKED (it never installs Python). At the end it removes
+the TEST shortcut and folder and checks that your real LotRadar, data and shortcut did not change.
+Send back SUMMARY.txt and SANITIZED-manual-ui.json from the folder it opens.
+
+IF IT STOPS EARLY
+The window says "STOPPED:" and why (for example LotRadar still running, or the kit opened
+inside the ZIP). Nothing is changed in that case. Fix the reason and run it again.
+
+CHECKING THE KIT FILES (optional)
+KIT_SHA256SUMS.txt lists a checksum for every kit file. The kit checks them automatically before
+running and refuses to run if anything was changed.

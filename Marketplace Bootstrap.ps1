@@ -66,16 +66,42 @@ function Start-ExistingMarketplace {
         $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/health' -TimeoutSec 2
     } catch { return $false }
     if ($health.ok -eq $true -and $health.local_only -eq $true -and $health.service -eq 'Marketplace Scanner') {
+        Write-StartupStage 'open' 'started' 'LotRadar is running; opening its window' # startup-gui
         Write-Host 'LotRadar is already running.'
         Open-LotRadarWindow
+        Write-StartupStage 'open' 'complete' 'LotRadar window opened' # startup-gui
         return $true
     }
     return $false
 }
 
+# Optional stage reporting for the startup window (startup\Show-LotRadarStartup.ps1). Active ONLY when the window # startup-gui
+# passes a 32-hex LOTRADAR_STARTUP_NONCE; writes one JSON line per event to runtime\startup-status-<nonce>.jsonl. # startup-gui
+# Never changes what the bootstrap does: no new decisions, best effort, errors ignored, no secrets or user paths. # startup-gui
+$script:StartupNonce = [string]$env:LOTRADAR_STARTUP_NONCE # startup-gui
+$script:StartupStage = '' # startup-gui
+function Write-StartupStage([string]$Stage, [string]$State, [string]$Message) { # startup-gui
+    if ($script:StartupNonce -notmatch '^[0-9a-f]{32}$' -or -not $env:LOCALAPPDATA) { return } # startup-gui
+    if ($Stage) { $script:StartupStage = $Stage } else { $Stage = $script:StartupStage } # startup-gui
+    try { # startup-gui
+        $dir = Join-Path $env:LOCALAPPDATA 'MarketplaceScanner\runtime' # startup-gui
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return } # startup-gui
+        $text = [string]$Message # startup-gui
+        foreach ($pair in @(@($env:LOCALAPPDATA, '%LOCALAPPDATA%'), @($env:USERPROFILE, '%USERPROFILE%'), @($env:COMPUTERNAME, '<computer>'), @($env:USERNAME, '<user>'))) { # startup-gui
+            if ($pair[0] -and ([string]$pair[0]).Length -ge 3) { $text = [regex]::Replace($text, [regex]::Escape([string]$pair[0]), [string]$pair[1], 'IgnoreCase') } # startup-gui
+        } # startup-gui
+        if ($text.Length -gt 300) { $text = $text.Substring(0, 300) } # startup-gui
+        $line = (@{ nonce = $script:StartupNonce; pid = $PID; stage = $Stage; state = $State; message = $text; time = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress) + "`n" # startup-gui
+        $path = Join-Path $dir ('startup-status-' + $script:StartupNonce + '.jsonl') # startup-gui
+        for ($try = 0; $try -lt 3; $try++) { # startup-gui
+            try { [IO.File]::AppendAllText($path, $line, (New-Object System.Text.UTF8Encoding $false)); break } catch { Start-Sleep -Milliseconds 50 } # startup-gui
+        } # startup-gui
+    } catch { } # startup-gui
+} # startup-gui
 $launchLock = $null
 $exitCode = 1
 try {
+    Write-StartupStage 'install' 'started' 'Checking installation' # startup-gui
     $server = Join-Path $PSScriptRoot 'server.py'
     $requirements = Join-Path $PSScriptRoot 'requirements.txt'
     if (-not (Test-Path -LiteralPath $server -PathType Leaf) -or
@@ -83,6 +109,7 @@ try {
         throw 'Marketplace Manager source is missing. Install Marketplace Manager first, then launch it again.'
     }
 
+    Write-StartupStage 'install' 'complete' 'Installation found' # startup-gui
     if (Start-ExistingMarketplace) { exit 0 }
     if (-not $env:LOCALAPPDATA) { throw 'Windows LOCALAPPDATA is missing.' }
     $dataDir = Join-Path $env:LOCALAPPDATA 'MarketplaceScanner\data'
@@ -105,6 +132,7 @@ try {
         }
     } finally { $portProbe.Dispose() }
 
+    Write-StartupStage 'python' 'started' 'Checking Python and dependencies' # startup-gui
     $legacy = Join-Path $runtimeDir 'venv\Scripts\python.exe'
     $managed = Join-Path $runtimeDir 'setup-venv'
     $managedPython = Join-Path $managed 'Scripts\python.exe'
@@ -117,6 +145,7 @@ try {
             if (-not $winget) {
                 throw 'Python 3.10+ is missing and Windows Package Manager (WinGet) is unavailable. Install App Installer or get Python at https://www.python.org/downloads/windows/ and relaunch.'
             }
+            Write-StartupStage 'python' 'info' 'Downloading Python 3.13 for this Windows user (first run only)' # startup-gui
             Write-Host 'Downloading Python 3.13 for this Windows user...'
             & $winget.Source install --id Python.Python.3.13 --exact --source winget --scope user --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
             $installCode = $LASTEXITCODE
@@ -125,6 +154,7 @@ try {
                 throw "Python setup failed (WinGet exit $installCode). Check internet access or install Python 3.10+ from python.org, then relaunch."
             }
         }
+        Write-StartupStage 'python' 'info' 'Creating the private LotRadar Python environment' # startup-gui
         Write-Host 'Creating the private Marketplace Python environment...'
         $pythonArgs = $basePython.Args
         & $basePython.Exe @pythonArgs -m venv $managed
@@ -140,6 +170,7 @@ try {
             & $runtime -m ensurepip --upgrade
             if ($LASTEXITCODE -ne 0) { throw 'Could not repair pip in the Marketplace Python environment.' }
         }
+        Write-StartupStage 'python' 'info' 'Downloading missing Python packages' # startup-gui
         Write-Host 'Downloading missing Marketplace Python packages...'
         & $runtime -m pip install --disable-pip-version-check --no-input -r $requirements
         if ($LASTEXITCODE -ne 0 -or -not (Test-PythonCode $runtime @() $modules)) {
@@ -147,6 +178,8 @@ try {
         }
     }
 
+    Write-StartupStage 'python' 'complete' 'Python and packages ready' # startup-gui
+    Write-StartupStage 'browser' 'started' 'Checking browser runtime' # startup-gui
     $chromium = @'
 from playwright.sync_api import sync_playwright
 with sync_playwright() as playwright:
@@ -154,6 +187,7 @@ with sync_playwright() as playwright:
     browser.close()
 '@
     if (-not (Test-PythonCode $runtime @() $chromium)) {
+        Write-StartupStage 'browser' 'info' 'Downloading the browser runtime (Playwright Chromium)' # startup-gui
         Write-Host 'Checking or downloading Playwright Chromium...'
         & $runtime -m playwright install chromium
         if ($LASTEXITCODE -ne 0) { throw 'Chromium download failed. Check the output above and retry.' }
@@ -161,6 +195,8 @@ with sync_playwright() as playwright:
         if ($LASTEXITCODE -ne 0) { throw 'Playwright Chromium could not start. Check the output above.' }
     }
 
+    Write-StartupStage 'browser' 'complete' 'Browser runtime ready' # startup-gui
+    Write-StartupStage 'server' 'started' 'Starting the local LotRadar server' # startup-gui
     # One-time copy of legacy data before first independent start. Never overwrite an existing scanner database.
     $legacyData = Join-Path $env:LOCALAPPDATA 'SalesmanHub\MarketplaceManager'
     if ((Test-Path -LiteralPath (Join-Path $legacyData 'marketplace.sqlite3') -PathType Leaf) -and
@@ -192,6 +228,7 @@ with sync_playwright() as playwright:
     $serverProcess.WaitForExit()
     $exitCode = $serverProcess.ExitCode
 } catch {
+    Write-StartupStage '' 'failed' $_.Exception.Message # startup-gui
     Write-Host ('LOTRADAR STARTUP ERROR: ' + $_.Exception.Message) -ForegroundColor Red
     if ($env:LOTRADAR_EXE) {
         Add-Type -AssemblyName System.Windows.Forms

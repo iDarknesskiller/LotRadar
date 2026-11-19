@@ -68,6 +68,7 @@ SOURCE_ALLOWLIST = [
     'refresh_policy.py',
     'requirements.txt',
     'server.py',
+    'startup/Show-LotRadarStartup.ps1',
     'styles.css',
     'system_load.py',
     'trade_ready.py',
