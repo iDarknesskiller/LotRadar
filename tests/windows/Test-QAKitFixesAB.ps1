@@ -207,16 +207,39 @@ try {
         Assert-AB ($r.Out -match 'CHOICE=SKIPPED') ('child said: ' + $r.Out.Trim())
         return ('exit ' + $r.Code + '; ' + ($r.Out.Trim() -split "`r?`n" | Select-Object -Last 1))
     }
-    Invoke-AB 'AB-B6' 'Self-test source: the only OneDrive folder creation is behind the separate choice; no Confirm-Start' {
+    Invoke-AB 'AB-B6' 'Self-test source: OneDrive creation only behind the separate choice; Confirm-Start used once, for the LOCAL start only' {
         $st = [IO.File]::ReadAllText($SelfTestPath)
         $code = (($st -split "`r?`n") | Where-Object { -not $_.TrimStart().StartsWith('#') }) -join "`n"
-        Assert-AB ($code.Contains('$useOneDrive = Get-QAOneDriveChoice { Read-QAAnswer ')) 'decision does not use the separate question'
-        Assert-AB (-not $code.Contains('Confirm-Start')) 'Confirm-Start (which honours -Yes) is still used'
+        $decision = $code.IndexOf('$useOneDrive = Get-QAOneDriveChoice { Read-QAAnswer ')
+        Assert-AB ($decision -gt 0) 'decision does not use the separate question'
+        # Confirm-Start honours -Yes, so it must never decide the OneDrive cases; it only starts the local run (B3)
+        Assert-AB (([regex]::Matches($code, 'Confirm-Start')).Count -eq 1) 'Confirm-Start is not used exactly once'
+        $local = $code.IndexOf("Confirm-Start 'cleanup self-test (local synthetic checks only)'")
+        Assert-AB ($local -gt $decision) 'local start confirmation missing or before the OneDrive question'
+        Assert-AB ($local -lt $code.IndexOf("New-QAOwnedFolder `$script:ClCtr 'sandbox'")) 'fixtures created before the local start confirmation'
+        Assert-AB (@(($code -split "`n") | Where-Object { $_ -match 'useOneDrive' -and $_ -match 'Confirm-Start' }).Count -eq 0) 'OneDrive decision tied to Confirm-Start'
+        Assert-AB ($code.Contains('$script:CleanupExit = 9')) 'cancel path does not report exit 9'
         Assert-AB (([regex]::Matches($code, [regex]::Escape("New-QAOwnedFolder `$odCtr 'onedrive'"))).Count -eq 1) 'OneDrive folder created in more than one place'
         $gate = $code.IndexOf('if (-not $useOneDrive) {')
         Assert-AB ($gate -gt 0 -and $gate -lt $code.IndexOf("New-QAOwnedFolder `$odCtr 'onedrive'")) 'OneDrive folder creation is not behind the choice'
         Assert-AB ($code.Contains("Add-CL 'CL21' 'OneDrive owned leftover (cloud placeholders), answer D: deleted' 'SKIP'")) 'CL21 SKIP path missing'
-        return 'single gated creation path; no Confirm-Start'
+        return 'single gated OneDrive creation; Confirm-Start only for the local start, before fixtures'
+    }
+    Invoke-AB 'AB-B7' 'Runner Confirm-Start with -Yes really waits about 10 seconds (the cancel window the launcher promises)' {
+        $runner = Join-Path (Split-Path -Parent $SelfTestPath) 'Run-QAKit.ps1'
+        $body = (Get-FunctionText $runner 'Say') + "`r`n" + (Get-FunctionText $runner 'Confirm-Start') + "`r`n" +
+            '$Yes = $true; $sw = [Diagnostics.Stopwatch]::StartNew(); $ok = Confirm-Start ''cleanup self-test (local synthetic checks only)''; ' +
+            '''RESULT='' + $ok + '' ELAPSED_MS='' + $sw.ElapsedMilliseconds'
+        $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
+        $outFile = Join-Path $fixRoot 'countdown.out'
+        $p = Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc) `
+            -RedirectStandardOutput $outFile -NoNewWindow -Wait -PassThru
+        $o = [IO.File]::ReadAllText($outFile)
+        $m = [regex]::Match($o, 'RESULT=(\w+) ELAPSED_MS=(\d+)')
+        Assert-AB ($m.Success) ('no result from child (exit ' + $p.ExitCode + ')')
+        Assert-AB ($m.Groups[1].Value -eq 'True') 'Confirm-Start with -Yes did not return true'
+        Assert-AB ([int]$m.Groups[2].Value -ge 9500) ('countdown too short: ' + $m.Groups[2].Value + ' ms')
+        return ('returned True after ' + $m.Groups[2].Value + ' ms')
     }
 } finally {
     # remove only the fixture folder this script created (it never contains links)

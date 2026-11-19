@@ -329,7 +329,14 @@ class QAKit(unittest.TestCase):
         self.assertNotIn('$desktopLnk', rep)
         # PR #5 fix B: OneDrive cases are a SEPARATE, default-No question that the launcher's -Yes cannot answer
         code = '\n'.join(l for l in st.splitlines() if not l.lstrip().startswith('#'))
-        self.assertNotIn('Confirm-Start', code)
+        # B3: Confirm-Start (which honours -Yes) is used exactly once, only to START the local run (10 s countdown),
+        # after the OneDrive question and before the first fixture; it never decides the OneDrive cases
+        self.assertEqual(code.count('Confirm-Start'), 1)
+        local = code.index("Confirm-Start 'cleanup self-test (local synthetic checks only)'")
+        self.assertLess(code.index('$useOneDrive = Get-QAOneDriveChoice'), local)
+        self.assertLess(local, code.index("New-QAOwnedFolder $script:ClCtr 'sandbox'"))
+        self.assertFalse([l for l in code.splitlines() if 'useOneDrive' in l and 'Confirm-Start' in l])
+        self.assertIn('$script:CleanupExit = 9', code)                         # cancelled -> runner exit 9
         self.assertIn('function Get-QAOneDriveChoice([scriptblock]$Ask)', st)
         self.assertIn("-cmatch '^\\s*[Yy]\\s*$'", st)                          # only Y / y includes them
         self.assertIn('catch { $answer = \'\' }', st)                           # no console / error -> skip

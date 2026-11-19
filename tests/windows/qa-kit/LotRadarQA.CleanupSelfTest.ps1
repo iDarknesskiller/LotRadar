@@ -1,9 +1,9 @@
 # LotRadar QA kit: Windows self-test of the leftover-cleanup safety rules (TEST-ONLY).
 # Dot-sourced by Run-QAKit.ps1 -CleanupSelfTest after its preflight. Uses from Run-QAKit.ps1: Say, Protect-Text,
-# Get-Sha, $info, $os, $isWin11, $isAdmin, $resultsDir, $desktopLnk, $qaHome, $localAppData,
-# $odParents, $psExe, and the functions of LotRadarQA.Cleanup.ps1 (including Read-QAAnswer).
+# Get-Sha, Confirm-Start (local start only), $info, $os, $isWin11, $isAdmin, $resultsDir, $desktopLnk, $qaHome,
+# $localAppData, $odParents, $psExe, and the functions of LotRadarQA.Cleanup.ps1 (including Read-QAAnswer).
 # The OneDrive cases are a SEPARATE question (default: skip). The general -Yes of the launcher only starts the
-# local self-test; it never includes the OneDrive cases.
+# local self-test (10-second countdown); it never includes the OneDrive cases.
 #
 # Every case runs on SYNTHETIC fixtures: a fake Temp folder, fake Desktop, fake shortcut store and fake ledger, all
 # inside one disposable folder "%LOCALAPPDATA%\Temp\LotRadar Test Sandbox <id>" (plus, after consent, one
@@ -151,6 +151,14 @@ if (@($odParents).Count -gt 0) {
     $useOneDrive = Get-QAOneDriveChoice { Read-QAAnswer 'OneDrive cases: press Enter to SKIP them (recommended). Type Y only if you were asked to include them' }
     if ($useOneDrive) { Say 'OneDrive cases will run (you typed Y).' 'Yellow' }
     else { Say 'OneDrive cases will be skipped; the local cases still run.' 'Yellow' }
+}
+
+# Start of the LOCAL self-test (the launcher's double-click consent): with -Yes a 10-second countdown in which closing
+# the window cancels; without -Yes a typed YES. This is ONLY the local start - it never decides the OneDrive cases.
+if (-not (Confirm-Start 'cleanup self-test (local synthetic checks only)')) {
+    Say 'Cancelled. Nothing was run.' 'Yellow'
+    $script:CleanupExit = 9
+    return
 }
 
 $script:ClCtr = Join-Path $localAppData ('Temp\LotRadar Test Sandbox ' + (New-Hex8))
