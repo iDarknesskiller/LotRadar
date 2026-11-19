@@ -1,223 +1,156 @@
-COPILOT_FINDINGS.md
+# Scan improvements and stability
 
-Source: approved main SHA bf61207a21999c8ff256b08c0d17650193e3835f
-Inspected scope: all LotRadar scan buttons, server scan routes, Chrome bridge state, Full Scan coordinator, and existing GitHub issues/PRs
-Date: 2026-11-18
+Source: `main` at `a5d1754bec01a5bf11d492bbc8f7c585237404dc`
 
-Candidate LR-SCAN-01: Basic and Chrome scans do not mutually exclude each other
-Category: scanner reliability
-Proposed severity: P1
-Confidence: HIGH
-Verification status: VERIFIED FROM SOURCE
-Exact path and function:
-- server.py:1282-1305, /api/start-site-scan
-- app.js:1461-1470, beginInventoryScan()
-- app.js:1815-1824, beginSiteScan()
+Audit date: 2026-11-19
 
-Current behavior:
-Chrome inventory scans check chrome_bridge state, while basic historical scans check only scan_info.running. The basic scan route can start separately from Quick/Rescan, verification, Full Scan, or Facebook/link workflows.
+Scope: scan controls, scan admission, dealer and photo queues, verification, listing-link checks, and related performance.
 
-Expected behavior:
-LotRadar should allow only one mutually exclusive dealer discovery or verification workflow at a time and return a clear conflicting-scan response.
+## Audit verdict
 
-Reproduction or NOT RUN:
-NOT RUN. Source trace indicates that the basic and Chrome scan paths use separate state checks.
+| Finding | Audit verdict |
+| --- | --- |
+| Historical scan Stop | **Reproduced synthetically:** the worker continued after Stop reported it inactive. The test did not use a real browser. |
+| Concurrent scan starts | **Reproduced with the actual route logic**, mocked dependencies, and controlled thread timing. Sequential starts are normally blocked; this is a race, not unrestricted overlap. |
+| Quick Scan cross-dealer skip | **Reproduced synthetically** when both dealers use the same URL path. Whether that path collision occurs in current live inventory is unverified. |
+| Rescan Everything cooldown | **Reproduced synthetically.** The button's wording promises more than the cooldown policy does. Whether an explicit rescan should override cooldown needs a product decision. |
+| Missing-photo source selection | **Reproduced synthetically:** a complete first dealer can exclude an incomplete second dealer. |
+| Verification timeout | **Reproduced with an accelerated mock:** Facebook checking can start afterward, and the final result is marked **partial**, not an unqualified success. Whether to stop or deliberately continue needs a product decision. |
+| Unreadable-page early abort | **Reproduced synthetically:** queued pages remained after four timeouts. The separate headless 403 safeguard is not affected by this finding. |
+| Photo worker persistence failure | **Reproduced with an injected disk error:** one worker exited. Real-world frequency and recovery impact are unmeasured. |
 
-Impact:
-Overlapping catalog reads/writes, duplicate browser activity, misleading progress, and potentially inconsistent import state.
+These are investigation findings, not implemented fixes. Priorities are proposed, not final; no data corruption has been demonstrated.
 
-Affected files:
-- app.js
-- server.py
+## Findings
 
-Protected files or behavior:
-Do not alter inventory records, Chrome Reader pairing, VIN/stock provenance, or scan stop semantics outside the implementation task.
+### LR-SCAN-01: Concurrent historical and Chrome scan admission
 
-Required tests:
-- Basic historical scan plus Quick Scan
-- Basic historical scan plus Rescan Everything
-- Basic historical scan plus live verification
-- Basic historical scan plus Full Scan
-- Duplicate scan-button clicks
-- Start, reload, and page-refresh state recovery
+**Proposed priority:** P1, subject to triage. **Evidence:** synthetic route-level interleaving.
 
-Existing issue/PR duplicate check:
-No matching existing issue or PR found.
+The historical route calls `chrome_bridge.verify_status()` and later sets `scan_info.running` under `scan_lock`. `ChromeBridge.start()` checks that flag under its own lock, then later acquires `scan_lock` to update it. If the historical request has completed its verification check before the Chrome request enters `start()`, the historical request can set its running state after Chrome has checked the flag but before Chrome sets its own state. Both requests returned `started` in the controlled test, and the Chrome mode replaced the historical mode while the historical worker was active.
 
-Recommended investigation or fix direction:
-Introduce one server-owned active-operation state or a shared eligibility guard covering basic, Chrome, verification, Full Scan, photo-fetch, and Facebook batch operations. Mirror that state accurately in the UI.
+Sequential starts are normally rejected. The earlier report's claim of generally separate running-state checks was overstated; the observed defect is a race between the check and state update.
 
-Candidate LR-SCAN-02: Fetch Missing Photos ignores the second dealer source
-Category: photo/scanner reliability
-Proposed severity: P2
-Confidence: HIGH
-Verification status: VERIFIED FROM SOURCE
-Exact path and function:
-- server.py:89-96, missing_photo_targets()
-- server.py:1534-1544, /api/fetch-missing-photos
-- chrome_bridge.py:302-318, start_missing_photos()
+- Source: `server.py:1282-1307`, `chrome_bridge.py:143-149,176-185`; UI entry points `app.js:1461-1474,1815-1825`.
+- Impact: overlapping work and misleading shared status; the historical worker's finalization can change shared running state. Data corruption was not demonstrated.
+- Direction: coordinate admission and state changes atomically without weakening existing lifecycle protections.
+- Required tests: simultaneous basic/Quick, basic/Rescan, basic/verification, and duplicate requests; sequential rejection; partial results and state after either worker finishes.
 
-Current behavior:
-Eligibility selects only the first used source present on a vehicle. start_missing_photos then processes eligible VIN/source pairs, but a shared VIN may be excluded if the first dealer source already has ten usable photos even when the second source has fewer.
+### LR-SCAN-02: Missing-photo eligibility uses only the first dealer source
 
-Expected behavior:
-Fetch targets should include each eligible vehicle/source pair with fewer than ten usable photos.
+**Proposed priority:** P2. **Evidence:** synthetic cache responses.
 
-Reproduction or NOT RUN:
-NOT RUN. Safe synthetic reproduction would use a shared VIN with Toyota at ten photos and Mitsubishi below ten.
+`missing_photo_targets()` selects the first used source for each VIN. In the test, Toyota had 10 usable photos and Mitsubishi had 2; the VIN was omitted. The downstream VIN-based job builder queues all valid used dealer links for a selected VIN, rather than only the deficient source.
 
-Impact:
-The Fetch Missing Photos button can report completion while one dealer gallery remains incomplete.
+- Source: `server.py:89-98,1534-1544`; `chrome_bridge.py:305-318`.
+- Impact: a second dealer gallery may remain incomplete, while an already complete source may also be revisited.
+- Direction: consider source-specific eligibility and jobs, preserving exact VIN/source checks, originals, cache integrity, and the ten-photo eligibility threshold.
+- Required tests: both source orders, one/both incomplete, one/both complete, invalid links, cached photos, and single-source vehicles.
 
-Affected files:
-- server.py
-- chrome_bridge.py
+### LR-SCAN-03: Historical scan Stop reports inactive while work continues
 
-Protected files or behavior:
-Preserve original photos, source isolation, the ten-photo threshold, VIN/source matching, and existing cache safeguards.
+**Proposed priority:** P1, subject to triage. **Evidence:** synthetic blocked historical worker and actual bridge control.
 
-Required tests:
-- Shared VIN with Toyota complete and Mitsubishi incomplete
-- Shared VIN with Mitsubishi complete and Toyota incomplete
-- Both sources complete
-- No valid dealer link
-- Toyota-only and Mitsubishi-only vehicles
-- Cached, partial, failed, and unavailable gallery cases
+The controls call `ChromeBridge.control()`, but `website_scan_worker()` has no corresponding cancellation signal. With the bridge in scan mode, Stop set `scan_info.running` false while the synthetic historical worker remained alive; after release it wrote its catalog. Depending on the bridge's previous mode, control behavior can differ, but neither path gives the worker a cancellation signal.
 
-Existing issue/PR duplicate check:
-No matching existing issue or PR found.
+- Source: `app.js:1404-1455,1815-1825`; `server.py:597-688,1270-1281`; `chrome_bridge.py:425-468`.
+- Impact: Stop can be misleading and may allow another scan to start while historical work continues. No real browser or dealer request was used in the test.
+- Direction: add truthful cancellation and status for historical work, checking safe boundaries without losing completed results.
+- Required tests: pause/stop during discovery and between sources, reload, repeated Stop, concurrent start after Stop, and preservation of completed catalog entries.
 
-Recommended investigation or fix direction:
-Return source-specific photo targets instead of VIN-only targets, while retaining existing source and VIN validation.
+### LR-SCAN-04: Multi-stage coordinator state after restart
 
-Candidate LR-SCAN-03: Basic historical scans have no pause or stop control
-Category: startup/scanner process safety
-Proposed severity: P2
-Confidence: HIGH
-Verification status: VERIFIED FROM SOURCE
-Exact path and function:
-- server.py:597-688, website_scan_worker()
-- server.py:1282-1308, /api/start-site-scan
-- app.js:1404-1455, installDealerScanControls()
-- app.js:1815-1824, beginSiteScan()
+**Proposed priority:** P1 pending lifecycle reproduction. **Evidence:** source trace only; restart NOT RUN.
 
-Current behavior:
-The page Pause/Stop controls call chrome_scan_control and chrome_bridge.control. Basic historical scans run in a separate server thread and do not update chrome_bridge scan or verification state, so the controls do not stop them.
+Dealer jobs may restore paused from `pending_dealer_scan.json`, while `full_job` and its phase are initialized in memory. An interruption may therefore leave a restored dealer queue without its associated Full Scan or listing-check coordinator.
 
-Expected behavior:
-Every scan mode should support pause/stop, or the UI should explicitly prevent it from being described as pausable/stoppable and provide a supported cancellation status.
+- Source: `server.py:357-445`; `chrome_bridge.py:99-130,1134-1141`.
+- Impact: possible lost phase and incomplete subsequent stages; exact user-visible behavior needs a disposable restart test.
+- Direction: investigate durable interrupted-state reporting and explicit recovery; never automatically advance later stages without an approved policy.
+- Required tests: restart during discovery, verification, Facebook checking, and after Stop; verify partial work, controls, and no implicit subsequent stage.
+- Duplicate: overlaps [issue #6](https://github.com/iDarknesskiller/LotRadar/issues/6), instability item INST-02.
 
-Reproduction or NOT RUN:
-NOT RUN. UI and route tracing show that a basic scan does not activate the Chrome bridge controls.
+### LR-SCAN-05: Verification timeout advances to Facebook checking
 
-Impact:
-Users cannot cancel unwanted public-site discovery work after it starts.
+**Proposed priority:** P2. **Evidence:** extracted coordinator with an accelerated synthetic clock and mocked dependencies.
 
-Affected files:
-- app.js
-- server.py
+When verification times out, the worker records `verify.error` and `partial=True`, then can enter Facebook checking and finish with phase `completed`. The UI displays “Some checks incomplete”; this is not an unqualified success. The test confirmed the Facebook stage was invoked without waiting two real hours and did not contact Facebook.
 
-Protected files or behavior:
-Preserve historical-link-only semantics, no-Facebook behavior, partial catalog results, and existing Chrome stop behavior.
+- Source: `server.py:364-445,1545-1590`; `app.js:1374-1400`.
+- Impact: the later stage can run despite incomplete dealer verification, and the timeout is not necessarily the main final error.
+- Decision needed: stop on failed verification or continue with an explicit, prominent partial-result policy.
+- Required tests: timeout, reader disconnect, stop, no saved links, partial coverage, later-stage failure, and accurate final status.
 
-Required tests:
-- Start and stop basic scan
-- Pause and stop basic scan from the dock and console
-- Close/reopen the console
-- Reload during basic scan
-- Stop near source handoff
-- Verify completed partial catalog candidates remain intact
+### LR-SCAN-06: Quick Scan skips another dealer's matching URL path
 
-Existing issue/PR duplicate check:
-No matching existing issue or PR found.
+**Proposed priority:** P2. **Evidence:** synthetic saved Toyota URL and Mitsubishi discovery URL with identical paths.
 
-Recommended investigation or fix direction:
-Add a basic-scan cancellation signal checked between sources and pages, plus truthful UI state.
+Quick Scan stores existing paths without their source and tests discovered paths against that shared set. The test skipped the Mitsubishi candidate even though only Toyota was saved.
 
-Candidate LR-SCAN-04: Full Scan state is not restored after restart
-Category: scanner lifecycle/recovery
-Proposed severity: P1
-Confidence: HIGH
-Verification status: VERIFIED FROM SOURCE
-Exact path and function:
-- server.py:361-445, full_scan_worker()
-- chrome_bridge.py:99-128,1133-1141, scan restoration and checkpointing
+- Source: `chrome_bridge.py:150-160,678-685`.
+- Impact: a source-specific inventory record may not be discovered; real-world path-collision frequency is NOT MEASURED.
+- Direction: match an existing record by dealer source and normalized path, preserving distinct source records for shared VINs.
+- Required tests: same path across different dealers, same dealer duplicate, shared VIN, changed URLs, and new vehicles.
 
-Current behavior:
-Dealer and verification checkpoint state can be restored, but the in-memory full_job coordinator is not persisted or reconstructed. Restart can leave the dealer queue paused while no active Full Scan state is exposed.
+### LR-SCAN-07: Rescan Everything obeys refresh cooldown
 
-Expected behavior:
-Restart should restore the Full Scan coordinator or mark every interrupted stage incomplete and prevent subsequent stages from starting implicitly.
+**Proposed priority:** P2. **Evidence:** synthetic recent successful refresh.
 
-Reproduction or NOT RUN:
-NOT RUN. This is a restart lifecycle hypothesis supported by source. It was not service-restart reproduced.
+The Rescan Everything UI requests a full discovery with `skip_existing=False`, but vehicle jobs pass through `RefreshPolicy.skip()`. A synthetic recent success was skipped for 24 hours; failures are subject to a 30-minute cooldown.
 
-Impact:
-Missed verification or Facebook stages, stale progress, false idle state, or no usable stop/resume control.
+- Source: `index.html:60`; `app.js:1461-1474,1899`; `chrome_bridge.py:568-576,686-689`; `refresh_policy.py:10-16`.
+- Impact: the button's promise to rescan existing vehicles can differ from actual behavior. No live scan was run.
+- Decision needed: retain cooldown with clear disclosure, or define a safe explicit-rescan override. Preserve cooldown and rate safeguards where applicable.
+- Required tests: recent success, recent failure, cooldown expiry, Quick versus Rescan, and clear skipped counts.
 
-Affected files:
-- server.py
-- chrome_bridge.py
+### LR-SCAN-08: Early abort waits until the source queue is empty
 
-Protected files or behavior:
-Preserve paused restored work, partial results, dealer inventory, saved Facebook drafts, and the rule that availability is never invented.
+**Proposed priority:** P2. **Evidence:** synthetic timeouts and mocked store.
 
-Required tests:
-- Restart during dealer discovery
-- Restart during dealer verification
-- Restart during Facebook checking
-- Restart after user stop
-- Reload while no scan is active
-- Verify no implicit subsequent stage starts
+The unreadable-section branch checks `not self._source_pending(source)` before removing queued jobs for that source. After four synthetic page timeouts, four jobs were still queued and the scan remained active. Headless mode separately stops after three consecutive access-denied outcomes; this test concerned page timeouts.
 
-Existing issue/PR duplicate check:
-Matches issue #6 instability item INST-02; no separate issue or PR for this scan-specific finding.
+- Source: `chrome_bridge.py:869-878`; `headless_dealer.py:146-154`.
+- Impact: a largely unreadable section can continue opening and timing out pages before it is flagged.
+- Direction: evaluate an early-abort policy that handles queued and inflight work safely, distinguishes transient failures, and preserves completed imports and dealer access protections.
+- Required tests: repeated timeouts, access denials, transient recovery, inflight work, other source continuing, and truthful partial status.
 
-Recommended investigation or fix direction:
-Persist a minimal durable Full Scan phase/status snapshot and restore it explicitly as interrupted until the user chooses resume or stop.
+### LR-SCAN-09: Photo worker exits on persistence failure
 
-Candidate LR-SCAN-05: Verification timeout can advance to Facebook checking
-Category: scanner state integrity
-Proposed severity: P2
-Confidence: HIGH
-Verification status: VERIFIED FROM SOURCE
-Exact path and function:
-- server.py:364-421, full_scan_worker(), wait_stage()
-- server.py:422-445, stage finalization
+**Proposed priority:** P2. **Evidence:** synthetic `_persist_queue()` failure.
 
-Current behavior:
-If verification times out, full_scan_worker records verify.error, but the subsequent Facebook stage is not guarded by a verification-success check. The timeout can remain secondary to a later Facebook phase or final completed state.
+An exception in the worker's `finally` block can escape before `task_done()` and terminate that worker. The injected `OSError` left one unfinished queue task. The displayed worker count derives from the worker list, not a liveness check.
 
-Expected behavior:
-A verification timeout should stop the workflow or preserve a clearly reported partial verification stage and must not be silently advanced as a successful verification.
+- Source: `photo_cache.py:459-463,775-784,833-855`.
+- Impact: repeated disk or persistence failures can reduce worker capacity; actual frequency and recovery impact are NOT MEASURED.
+- Direction: surface the failure, preserve recoverable queue state, and explicitly handle worker liveness without claiming successful persistence.
+- Required tests: write and replace failures, queue-full during reschedule, unfinished task accounting, worker liveness, restart recovery, and user-visible errors.
 
-Reproduction or NOT RUN:
-NOT RUN. Source trace indicates the timeout path, but no live two-hour timeout was run.
+## Performance investigation
 
-Impact:
-Facebook checking can begin after incomplete verification, while final status does not make the timeout the primary result.
+### PERF-01: Queue dispatch and checkpoints
 
-Affected files:
-- server.py
+`ChromeBridge.next()` scans the remaining queue for refresh eligibility; durable wrappers checkpoint queue state under the bridge lock. A no-network synthetic dispatcher benchmark with mocked completion gave:
 
-Protected files or behavior:
-Preserve partial verification records, truthful Facebook status, and explicit availability verification rules.
+| Synthetic jobs | Eligibility checks | Checkpoint bytes written | Median of 3 runs |
+| ---: | ---: | ---: | ---: |
+| 50 | 1,275 | 317,673 | 0.130 s |
+| 200 | 20,100 | 4,181,953 | 0.524 s |
+| 500 | 125,250 | 25,035,521 | 1.633 s |
 
-Required tests:
-- Verification timeout
-- Verification reader disconnect
-- Verification stop/cancel
-- Verification limit/partial coverage
-- Restart during verification timeout handling
-- Full Scan final status for timeout, partial coverage, stop, and success
+Source: `chrome_bridge.py:99-108,551-606,1134-1141`. These numbers describe the artificial dispatcher and its simulated completions only. Checkpoint-write counts and elapsed time are **not production scan measurements** and must not be extrapolated to user throughput. Profile realistic synthetic workloads before changing durability or synchronization.
 
-Existing issue/PR duplicate check:
-No matching existing issue or PR found.
+### Further hypotheses: NOT MEASURED
 
-Recommended investigation or fix direction:
-Guard the Facebook transition on verification completion state and surface timeout/partial-coverage in full_job.error and phase.
+- Verification writes its growing report after results (`chrome_bridge.py:894-901,1108-1122`); measure write size and lock time.
+- Console/status polling copies state, and inventory refresh compares complete state (`server.py:804-827`, `app.js:1559-1575,1578-1637`); measure API latency, payload size, and UI long tasks.
+- Headless jobs create browser contexts and perform page and lag checks (`headless_dealer.py:88-128`); measure setup separately from remote network waits before changing isolation or worker counts.
 
-Global limitations and missing access:
-- No live scans, browser actions, Facebook actions, private user data, or external network requests were used.
-- No benchmarks or performance measurements are claimed.
-- Verification of restart and timeout behavior requires synthetic or disposable local test execution.
+Suggested benchmark: disposable 50/200/500-vehicle synthetic fixtures, at least three runs per workload; record wall time, queue operations, bytes written, CPU/RSS, API latency, and UI long tasks. Report distributions and environment, retain failed runs, and compare before/after without real dealer or Facebook requests.
+
+## Scope, safety, and follow-up
+
+- No live dealer scans, Facebook actions, browser profiles, private data, or external network requests were used. Tests used synthetic data, mocks, controlled timing, and disposable temporary directories; no product changes were made.
+- The race reproduction executed the extracted actual route body, not an end-to-end HTTP/browser test. Other reproduced findings are similarly bounded synthetic checks, not production incident measurements.
+- Preserve VIN/source identity, truthful availability and partial status, original photos, draft text, queue recovery, browser ownership, existing safeguards, and completed partial results.
+- The report supersedes the earlier `bf61207` findings wording; the current audit used `a5d1754`. Issue/PR check on 2026-11-19 found related [issue #6](https://github.com/iDarknesskiller/LotRadar/issues/6) and this report PR #11.
+- Suggested order: historical Stop and atomic admission; source-specific Quick Scan and photo targeting; timeout/early-abort/worker reliability; then profile and optimize. Implement only after Owner prioritization and scoped authorization; independent QA and separate Owner merge/release decisions remain required.
