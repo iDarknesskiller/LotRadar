@@ -65,6 +65,40 @@ class Removal(Base):
         with self.assertRaises(sqlite3.Error):self.store.remove_out_of_stock(VINS[0],True)
         self.assertIsNone(self.row(VINS[0]));self.assertFalse(self.store.db.in_transaction)
 
+class BackupPolicy(Base):
+    def fail_backup(self):
+        def boom():raise OSError('synthetic backup failure')
+        self.store.backup=boom
+    def test_state_changes_take_a_backup_first(self):
+        self.track(VINS[0],URLS[0]);calls=[]
+        real=self.store.backup;self.store.backup=lambda:(calls.append(1),real())[1]
+        self.store.remove_out_of_stock(VINS[0],True);self.assertEqual(len(calls),1)
+        self.store.remove_out_of_stock(VINS[0],True);self.assertEqual(len(calls),1)   # duplicate click: no write, no backup
+        self.store.restore_removed(VINS[0],True);self.assertEqual(len(calls),2)
+        self.store.remove_out_of_stock(VINS[0],True);self.store.confirm_facebook_deleted(VINS[0],True,URLS[0]);self.assertEqual(len(calls),4)
+        self.assertGreaterEqual(len(list(self.store.backup_dir.glob('backup-*.sqlite3'))),1)
+    def test_backup_failure_aborts_removal_without_changes(self):
+        self.track(VINS[0],URLS[0]);self.fail_backup()
+        with self.assertRaises(OSError):self.store.remove_out_of_stock(VINS[0],True)
+        self.assertIsNone(self.row(VINS[0]));self.assertIn(VINS[0],self.vins());self.assertFalse(self.store.db.in_transaction)
+    def test_backup_failure_aborts_restore_without_changes(self):
+        self.track(VINS[0],URLS[0]);self.store.remove_out_of_stock(VINS[0],True);self.fail_backup()
+        with self.assertRaises(OSError):self.store.restore_removed(VINS[0],True)
+        self.assertEqual(self.row(VINS[0])['status'],'PENDING_FB_DELETE');self.assertFalse(self.store.db.in_transaction)
+    def test_backup_failure_aborts_completion_without_changes(self):
+        self.track(VINS[0],URLS[0]);self.store.remove_out_of_stock(VINS[0],True);self.fail_backup()
+        with self.assertRaises(OSError):self.store.confirm_facebook_deleted(VINS[0],True,URLS[0])
+        self.assertEqual(self.row(VINS[0])['status'],'PENDING_FB_DELETE');self.assertEqual(self.store.listing_trash()['items'],[])
+        self.assertIsNotNone(self.store.db.execute('SELECT 1 FROM drafts WHERE vin=?',(VINS[0],)).fetchone())
+    def test_restore_rollback_on_sql_failure(self):
+        self.track(VINS[0],URLS[0]);self.store.remove_out_of_stock(VINS[0],True)
+        self.store.db.execute('DROP TABLE audit');self.store.db.execute('CREATE TABLE audit(id INTEGER PRIMARY KEY, event TEXT NOT NULL CHECK(0))')
+        with self.assertRaises(sqlite3.Error):self.store.restore_removed(VINS[0],True)
+        self.assertEqual(self.row(VINS[0])['status'],'PENDING_FB_DELETE');self.assertFalse(self.store.db.in_transaction)
+    def test_integrity_check_after_operations(self):
+        self.track(VINS[0],URLS[0]);self.store.remove_out_of_stock(VINS[0],True);self.store.confirm_facebook_deleted(VINS[0],True,URLS[0])
+        self.assertEqual(self.store.verify_integrity(),'ok')
+
 class Persistence(Base):
     def test_pending_survives_restart_rescan_and_partial_scan_and_site_failure(self):
         self.track(VINS[0],URLS[0]);self.store.remove_out_of_stock(VINS[0],True)
@@ -97,12 +131,38 @@ class Completion(Base):
     def test_untracked_vehicle_cannot_be_confirmed(self):
         self.store.remove_out_of_stock(VINS[0],True)
         with self.assertRaises(ValueError):self.store.confirm_facebook_deleted(VINS[0],True,'')
-    def test_changed_draft_url_is_not_archived_by_stale_confirmation(self):
+    def assert_pending_intact(self,vin,url,draft_status='USER_CONFIRMED_PUBLISHED'):
+        self.assertEqual(self.row(vin)['status'],'PENDING_FB_DELETE');self.assertEqual(self.pending(),1)
+        self.assertEqual(self.row(vin)['listing_url'],url);self.assertEqual(self.store.listing_trash()['items'],[])
+    def test_changed_tracked_listing_blocks_completion(self):
         self.track(VINS[0],URLS[0]);self.store.remove_out_of_stock(VINS[0],True)
         self.store.db.execute("UPDATE drafts SET published_url=? WHERE vin=?",(URLS[1],VINS[0]))
-        self.store.confirm_facebook_deleted(VINS[0],True,URLS[0])
-        self.assertEqual(self.store.db.execute('SELECT published_url FROM drafts WHERE vin=?',(VINS[0],)).fetchone()[0],URLS[1])
-        self.assertEqual(self.store.listing_trash()['items'],[])
+        for expected in (URLS[0],URLS[1]):  # stale reminder URL and the new active URL are both refused
+            with self.assertRaises(ValueError) as cm:self.store.confirm_facebook_deleted(VINS[0],True,expected)
+            self.assertIn('facebook_listing_changed_since_review' if expected==URLS[1] else 'reconciliation_required',str(cm.exception))
+        self.assert_pending_intact(VINS[0],URLS[0])
+        d=self.store.db.execute('SELECT status,published_url FROM drafts WHERE vin=?',(VINS[0],)).fetchone()
+        self.assertEqual((d['status'],d['published_url']),('USER_CONFIRMED_PUBLISHED',URLS[1]))
+    def test_missing_or_archived_tracking_blocks_completion(self):
+        self.track(VINS[0],URLS[0]);self.track(VINS[1],URLS[1])
+        self.store.remove_out_of_stock(VINS[0],True);self.store.remove_out_of_stock(VINS[1],True)
+        self.store.trash_listing(VINS[0],True)                                 # archived externally to local Trash
+        self.store.db.execute('DELETE FROM drafts WHERE vin=?',(VINS[1],))      # record missing altogether
+        for v,u in ((VINS[0],URLS[0]),(VINS[1],URLS[1])):
+            with self.assertRaises(ValueError) as cm:self.store.confirm_facebook_deleted(v,True,u)
+            self.assertIn('reconciliation_required',str(cm.exception));self.assertEqual(self.row(v)['status'],'PENDING_FB_DELETE')
+        self.assertEqual(self.pending(),2);self.assertEqual(len(self.store.listing_trash()['items']),1)  # only the external archive
+    def test_draft_no_longer_published_blocks_completion(self):
+        self.track(VINS[0],URLS[0]);self.store.remove_out_of_stock(VINS[0],True)
+        self.store.db.execute("UPDATE drafts SET status='USER_CONFIRMED_REMOVED' WHERE vin=?",(VINS[0],))
+        with self.assertRaises(ValueError):self.store.confirm_facebook_deleted(VINS[0],True,URLS[0])
+        self.assert_pending_intact(VINS[0],URLS[0])
+    def test_rejected_completion_does_not_rotate_backups(self):
+        self.track(VINS[0],URLS[0]);self.store.remove_out_of_stock(VINS[0],True)
+        self.store.db.execute('DELETE FROM drafts WHERE vin=?',(VINS[0],))
+        n=len(list(self.store.backup_dir.glob('backup-*.sqlite3')))
+        with self.assertRaises(ValueError):self.store.confirm_facebook_deleted(VINS[0],True,URLS[0])
+        self.assertEqual(len(list(self.store.backup_dir.glob('backup-*.sqlite3'))),n)
     def test_rollback_keeps_reminder_and_draft(self):
         self.track(VINS[0],URLS[0]);self.store.remove_out_of_stock(VINS[0],True)
         self.store.db.execute('DROP TABLE audit');self.store.db.execute('CREATE TABLE audit(id INTEGER PRIMARY KEY, event TEXT NOT NULL CHECK(0))')

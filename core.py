@@ -1314,6 +1314,7 @@ class MarketplaceStore:
             url=draft['published_url'] if tracked else ''
             lid=facebook_listing_id(url) if tracked else ''
             status='PENDING_FB_DELETE' if tracked else 'REMOVED'
+            self.backup()
             self.db.execute('BEGIN IMMEDIATE')
             try:
                 self.db.execute('INSERT OR REPLACE INTO inventory_removals(vin,status,removed_at,identity_json,listing_url,listing_id,fb_confirmed_at,restored_at) VALUES(?,?,?,?,?,?,NULL,NULL)',
@@ -1337,23 +1338,28 @@ class MarketplaceStore:
             if (facebook_listing_id(expected_listing_url) or expected_listing_url)!=(row['listing_id'] or row['listing_url']):
                 raise ValueError('facebook_listing_changed_since_review')
             self._purge_expired_listing_trash()
-            draft=self.db.execute('SELECT * FROM drafts WHERE vin=?',(vin,)).fetchone()
-            same=bool(draft and draft['status']=='USER_CONFIRMED_PUBLISHED' and
-                      (facebook_listing_id(draft['published_url'])==row['listing_id'] if row['listing_id'] else draft['published_url']==row['listing_url']))
-            copied=self.db.execute('SELECT saved_at FROM draft_copy_locks WHERE vin=?',(vin,)).fetchone()
+            def active_matches():
+                d=self.db.execute('SELECT * FROM drafts WHERE vin=?',(vin,)).fetchone()
+                ok=bool(d and d['status']=='USER_CONFIRMED_PUBLISHED' and
+                    (facebook_listing_id(d['published_url'])==row['listing_id'] if row['listing_id'] else d['published_url']==row['listing_url']))
+                return d if ok else None
+            mismatch='facebook_tracking_mismatch_reconciliation_required: the active tracked listing is missing or differs from the pending reminder; nothing was changed'
+            if not active_matches():raise ValueError(mismatch)  # rejected before any backup or write
             now=datetime.now(timezone.utc)
             self.backup()
             self.db.execute('BEGIN IMMEDIATE')
             try:
-                if same:
-                    self.db.execute('INSERT INTO listing_trash(vin,draft_json,copy_saved_at,deleted_at,expires_at) VALUES(?,?,?,?,?)',
-                        (vin,compact_json(dict(draft)),copied['saved_at'] if copied else None,
-                         now.isoformat(timespec='seconds'),(now+timedelta(days=30)).isoformat(timespec='seconds')))
-                    self.db.execute('DELETE FROM drafts WHERE vin=?',(vin,))
-                    self.db.execute('DELETE FROM draft_copy_locks WHERE vin=?',(vin,))
+                draft=active_matches()
+                if not draft:raise ValueError(mismatch)
+                copied=self.db.execute('SELECT saved_at FROM draft_copy_locks WHERE vin=?',(vin,)).fetchone()
+                self.db.execute('INSERT INTO listing_trash(vin,draft_json,copy_saved_at,deleted_at,expires_at) VALUES(?,?,?,?,?)',
+                    (vin,compact_json(dict(draft)),copied['saved_at'] if copied else None,
+                     now.isoformat(timespec='seconds'),(now+timedelta(days=30)).isoformat(timespec='seconds')))
+                self.db.execute('DELETE FROM drafts WHERE vin=?',(vin,))
+                self.db.execute('DELETE FROM draft_copy_locks WHERE vin=?',(vin,))
                 self.db.execute("UPDATE inventory_removals SET status='FB_DELETE_CONFIRMED',fb_confirmed_at=? WHERE vin=? AND status='PENDING_FB_DELETE'",(utc(),vin))
                 self._event('user_attested_facebook_post_deleted_manually',vin,listing_id=row['listing_id'],
-                    local_tracking_archived=same,facebook_deletion_performed_by_app=False)
+                    local_tracking_archived=True,facebook_deletion_performed_by_app=False)
                 self.db.execute('COMMIT')
             except Exception:
                 self.db.execute('ROLLBACK');raise
@@ -1367,6 +1373,7 @@ class MarketplaceStore:
             row=self.db.execute('SELECT status FROM inventory_removals WHERE vin=?',(vin,)).fetchone()
             if not row:raise ValueError('vehicle_not_removed')
             if row['status']=='RESTORED':return self.state()
+            self.backup()
             self.db.execute('BEGIN IMMEDIATE')
             try:
                 self.db.execute("UPDATE inventory_removals SET status='RESTORED',restored_at=? WHERE vin=?",(utc(),vin))
