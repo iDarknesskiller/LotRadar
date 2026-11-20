@@ -336,6 +336,11 @@ class MarketplaceStore:
                 expires_at TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS ix_listing_trash_expiry
                 ON listing_trash(expires_at);
+            CREATE TABLE IF NOT EXISTS inventory_removals(
+                vin TEXT PRIMARY KEY, status TEXT NOT NULL,
+                removed_at TEXT NOT NULL, identity_json TEXT NOT NULL,
+                listing_url TEXT NOT NULL DEFAULT '', listing_id TEXT NOT NULL DEFAULT '',
+                fb_confirmed_at TEXT, restored_at TEXT);
             CREATE TABLE IF NOT EXISTS audit(
                 id INTEGER PRIMARY KEY, event TEXT NOT NULL, vin TEXT,
                 details_json TEXT NOT NULL, at TEXT NOT NULL);
@@ -654,8 +659,11 @@ class MarketplaceStore:
             copy_locked = {r['vin'] for r in self.db.execute('SELECT vin FROM draft_copy_locks')}
             first_seen={r['vin']:r['first_seen'] for r in self.db.execute(
                 'SELECT vin,first_seen FROM vehicle_first_seen')}
+            removals = self.removals()
+            removed_vins = {r['vin'] for r in removals}
             items = []
             for vin, recs in sorted(groups.items()):
+                if vin in removed_vins:continue
                 rec = next(iter(recs.values()))
                 draft = draft_rows.get(vin)
                 if draft:
@@ -684,8 +692,9 @@ class MarketplaceStore:
             qcount = self.db.execute('SELECT COUNT(*) FROM quarantined').fetchone()[0]
             alerts = sum(1 for item in items if item['holds'] or (item['draft'] is not None and
                          (item['draft']['changed_since_draft'] or item['draft'].get('review_state'))))
-            return {'schema': SCHEMA, 'vehicles': items, 'feeds': feeds,
+            return {'schema': SCHEMA, 'vehicles': items, 'feeds': feeds, 'removals': removals,
                     'summary': {'vehicles': len(items),
+                                'pending_fb_deletions': sum(r['status'] == 'PENDING_FB_DELETE' for r in removals),
                                 'shared_used': sum(item['condition'] == 'used' and len(item['sources']) > 1 for item in items),
                                 'needs_attention': alerts, 'drafts': sum(bool(item['draft']) and item['draft']['status'] not in ('USER_CONFIRMED_PUBLISHED','USER_CONFIRMED_REMOVED') for item in items),
                                 'published_confirmed': sum(item['listed'] for item in items),
@@ -1246,7 +1255,9 @@ class MarketplaceStore:
             tracked={r['vin']:r['published_url'] for r in self.db.execute(
                 "SELECT vin,published_url FROM drafts WHERE status='USER_CONFIRMED_PUBLISHED'")}
             issues={}
+            removed={r['vin'] for r in self.removals()}
             for key,records in groups.items():
+                if key in removed:continue
                 dealer=[(source,rec,checks.get((source,rec.get('url')))) for source,rec in records.items()
                         if source in ('toyota_used','mitsubishi_used')]
                 if not dealer:continue
@@ -1268,6 +1279,109 @@ class MarketplaceStore:
                 issues[key]={'dealer':dealer_issues,'facebook':fb_issue,'probable_out_of_stock':out_of_stock,
                              'can_trash':both,'listing_id':fb_id}
             return issues
+
+    def removals(self):
+        """Vehicles removed from active inventory (excludes restored). Caller may hold self.lock."""
+        out=[]
+        for r in self.db.execute("SELECT * FROM inventory_removals WHERE status!='RESTORED' ORDER BY removed_at,vin"):
+            row=dict(r);row['identity']=json.loads(row.pop('identity_json'))
+            # Only a canonical marketplace item URL derived from a validated ID is ever offered for opening.
+            row['open_url']=('https://www.facebook.com/marketplace/item/'+row['listing_id']+'/') if row['listing_id'] else ''
+            out.append(row)
+        return out
+
+    def remove_out_of_stock(self, vin, explicit):
+        """Owner-confirmed removal from active inventory. Source records and drafts are never deleted.
+
+        A tracked Facebook listing creates exactly one durable pending-deletion reminder.
+        """
+        if explicit is not True:raise ValueError('explicit_out_of_stock_confirmation_required')
+        vin=str(vin or '').strip().upper()
+        if not VIN_RE.fullmatch(vin):raise ValueError('invalid_vin')
+        with self.lock:
+            existing=self.db.execute('SELECT status FROM inventory_removals WHERE vin=?',(vin,)).fetchone()
+            if existing and existing['status']!='RESTORED':return self.state()  # duplicate click
+            groups=self._group({vin})
+            if vin not in groups:raise ValueError('unknown_vehicle')
+            rec=next((r for s,r in sorted(groups[vin].items()) if s in ('toyota_used','mitsubishi_used')),next(iter(groups[vin].values())))
+            stocks={s:r.get('stock') for s,r in groups[vin].items() if r.get('stock')}
+            identity={'vin':vin,'year':rec.get('year'),'make':rec.get('make'),'model':rec.get('model'),
+                      'trim':rec.get('trim'),'stock':rec.get('stock') or next(iter(stocks.values()),''),
+                      'stocks':stocks,'sources':sorted(groups[vin]),'price_cents':rec.get('price_cents'),
+                      'title':dealer_vehicle_title(rec)}
+            draft=self.db.execute('SELECT status,published_url FROM drafts WHERE vin=?',(vin,)).fetchone()
+            tracked=bool(draft and draft['status']=='USER_CONFIRMED_PUBLISHED')
+            url=draft['published_url'] if tracked else ''
+            lid=facebook_listing_id(url) if tracked else ''
+            status='PENDING_FB_DELETE' if tracked else 'REMOVED'
+            self.backup()
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                self.db.execute('INSERT OR REPLACE INTO inventory_removals(vin,status,removed_at,identity_json,listing_url,listing_id,fb_confirmed_at,restored_at) VALUES(?,?,?,?,?,?,NULL,NULL)',
+                    (vin,status,utc(),compact_json(identity),url,lid))
+                self._event('owner_confirmed_out_of_stock_removed',vin,pending_facebook_deletion=tracked,listing_id=lid,facebook_post_unchanged=True)
+                self.db.execute('COMMIT')
+            except Exception:
+                self.db.execute('ROLLBACK');raise
+            return self.state()
+
+    def confirm_facebook_deleted(self, vin, explicit, expected_listing_url):
+        """Owner attests the Marketplace post was deleted manually; only then clear the reminder and archive tracking."""
+        if explicit is not True:raise ValueError('explicit_manual_facebook_deletion_confirmation_required')
+        if not isinstance(expected_listing_url,str):raise ValueError('expected_listing_url_required')
+        vin=str(vin or '').strip().upper()
+        with self.lock:
+            row=self.db.execute('SELECT * FROM inventory_removals WHERE vin=?',(vin,)).fetchone()
+            if not row or row['status'] not in ('PENDING_FB_DELETE','FB_DELETE_CONFIRMED'):
+                raise ValueError('no_pending_facebook_deletion')
+            if row['status']=='FB_DELETE_CONFIRMED':return self.state()  # duplicate click
+            if (facebook_listing_id(expected_listing_url) or expected_listing_url)!=(row['listing_id'] or row['listing_url']):
+                raise ValueError('facebook_listing_changed_since_review')
+            self._purge_expired_listing_trash()
+            def active_matches():
+                d=self.db.execute('SELECT * FROM drafts WHERE vin=?',(vin,)).fetchone()
+                ok=bool(d and d['status']=='USER_CONFIRMED_PUBLISHED' and
+                    (facebook_listing_id(d['published_url'])==row['listing_id'] if row['listing_id'] else d['published_url']==row['listing_url']))
+                return d if ok else None
+            mismatch='facebook_tracking_mismatch_reconciliation_required: the active tracked listing is missing or differs from the pending reminder; nothing was changed'
+            if not active_matches():raise ValueError(mismatch)  # rejected before any backup or write
+            now=datetime.now(timezone.utc)
+            self.backup()
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                draft=active_matches()
+                if not draft:raise ValueError(mismatch)
+                copied=self.db.execute('SELECT saved_at FROM draft_copy_locks WHERE vin=?',(vin,)).fetchone()
+                self.db.execute('INSERT INTO listing_trash(vin,draft_json,copy_saved_at,deleted_at,expires_at) VALUES(?,?,?,?,?)',
+                    (vin,compact_json(dict(draft)),copied['saved_at'] if copied else None,
+                     now.isoformat(timespec='seconds'),(now+timedelta(days=30)).isoformat(timespec='seconds')))
+                self.db.execute('DELETE FROM drafts WHERE vin=?',(vin,))
+                self.db.execute('DELETE FROM draft_copy_locks WHERE vin=?',(vin,))
+                self.db.execute("UPDATE inventory_removals SET status='FB_DELETE_CONFIRMED',fb_confirmed_at=? WHERE vin=? AND status='PENDING_FB_DELETE'",(utc(),vin))
+                self._event('user_attested_facebook_post_deleted_manually',vin,listing_id=row['listing_id'],
+                    local_tracking_archived=True,facebook_deletion_performed_by_app=False)
+                self.db.execute('COMMIT')
+            except Exception:
+                self.db.execute('ROLLBACK');raise
+            return self.state()
+
+    def restore_removed(self, vin, explicit):
+        """Recovery for a mistaken removal. Source records and Facebook tracking were never altered."""
+        if explicit is not True:raise ValueError('explicit_restore_confirmation_required')
+        vin=str(vin or '').strip().upper()
+        with self.lock:
+            row=self.db.execute('SELECT status FROM inventory_removals WHERE vin=?',(vin,)).fetchone()
+            if not row:raise ValueError('vehicle_not_removed')
+            if row['status']=='RESTORED':return self.state()
+            self.backup()
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                self.db.execute("UPDATE inventory_removals SET status='RESTORED',restored_at=? WHERE vin=?",(utc(),vin))
+                self._event('removed_vehicle_restored_to_active_inventory',vin,previous_status=row['status'])
+                self.db.execute('COMMIT')
+            except Exception:
+                self.db.execute('ROLLBACK');raise
+            return self.state()
 
     def trash_listing(self,vin,explicit,*,cleanup_listing_id=None):
         """Archive and unlink a tracked Facebook listing for 30 days; never touch Facebook."""
