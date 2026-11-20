@@ -530,3 +530,9 @@
 .brand-mark.has-logo{margin:0 auto 18px}
 .brand-mark.has-logo+.brand-title{position:absolute;width:1px;height:1px;margin:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}   /* name stays for screen readers; the logo already shows it */
 .sidebar:has(.brand-mark.has-logo){overflow-y:auto;padding-top:14px;padding-bottom:14px}
+
+.nav-badge{margin-left:auto;font-size:10px;font-weight:800;opacity:.7;white-space:nowrap}
+.nav-badge.attention{opacity:1;color:var(--warn)}
+.removed-recovery{margin-top:14px;font-size:12px}
+.removed-recovery .removed-row{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line)}
+.delete-listing-card{display:block}

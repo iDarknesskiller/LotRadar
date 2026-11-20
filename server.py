@@ -1639,6 +1639,12 @@ def create_handler(store, port, token):
                     elif action == 'complete_facebook_cleanup':
                         state = store.complete_facebook_cleanup(vin,
                             data.get('explicit_manual_removal'),data.get('explicit_local_trash'),data.get('expected_listing_url'))
+                    elif action == 'remove_out_of_stock':
+                        state = store.remove_out_of_stock(vin,data.get('explicit_out_of_stock_confirmation'))
+                    elif action == 'confirm_facebook_deleted':
+                        state = store.confirm_facebook_deleted(vin,data.get('explicit_manual_facebook_deletion'),data.get('expected_listing_url'))
+                    elif action == 'restore_removed':
+                        state = store.restore_removed(vin,data.get('explicit_confirmation'))
                     elif action == 'trash_cleanup_listing':
                         state = store.trash_listing(vin,data.get('explicit_confirmation'),
                                                     cleanup_listing_id=str(data.get('listing_id') or ''))
