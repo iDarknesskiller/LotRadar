@@ -497,10 +497,17 @@ try {
             $before = Get-AttemptTotal
             [void](Set-RIForeground $f.Hwnd $f.Pid (Find-RIClickablePoint $f.Win $f.Pid))
             if ($How -eq 'F5') { Send-RIKeys $f.Pid @($RIVK.F5) } else { Send-RIClick $f.Pid (Find-RIKid $f.Win 'Retry (F5)') }
-            $script:Taps = 0
+            $script:Taps = 0; $script:TapNote = @()
             for ($t = 0; $t -lt $Taps; $t++) {
-                if ((Get-RIForegroundPid) -eq $f.Pid -and (Get-FormMode $f) -eq 'running') { Send-RIKeys $f.Pid @($RIVK.F5); $script:Taps++ }
-                Start-Sleep -Milliseconds 100
+                $mode = Get-FormMode $f
+                if ($mode -ne 'running') { $script:TapNote += "mode=$mode"; break }
+                if ((Get-RIForegroundPid) -ne $f.Pid) {
+                    # the new attempt's console may take the foreground; bring the LotRadar window back like a person would
+                    $script:TapNote += ('foreground pid ' + (Get-RIForegroundPid) + ' ' + (Get-Process -Id (Get-RIForegroundPid) -ErrorAction SilentlyContinue).ProcessName)
+                    try { [void](Set-RIForeground $f.Hwnd $f.Pid (Find-RIClickablePoint $f.Win $f.Pid)) } catch { $script:TapNote += 'refocus failed'; continue }
+                }
+                Send-RIKeys $f.Pid @($RIVK.F5); $script:Taps++
+                Start-Sleep -Milliseconds 200
             }
             Start-Sleep -Seconds 2
             if (Find-RIKid $f.Win 'The previous attempt is still finishing*') {
@@ -548,7 +555,7 @@ try {
             Press-Retry $f 'F5' 4
             $taps = $script:Taps
             $ok = Wait-Healthy 5; Start-Sleep -Seconds 3
-            Add-AutoRow 'R-F5-OK' 'F5 once, then F5 taps while it starts: one attempt, healthy, one server, lock held' $first 1 $true ("F5 once + $taps tap(s) while starting; healthy=$ok; app windows closed=" + (Close-NewAppWindows $snap)) $ok $(if ($taps -eq 0) { 'no tap landed while it was starting' } else { '' })
+            Add-AutoRow 'R-F5-OK' 'F5 once, then F5 taps while it starts: one attempt, healthy, one server, lock held' $first 1 $true ("F5 once + $taps tap(s) while starting (" + ($script:TapNote -join '; ') + "); healthy=$ok; app windows closed=" + (Close-NewAppWindows $snap)) $ok $(if ($taps -eq 0) { 'no tap landed while it was starting' } else { '' })
         } else {
             Press-Retry $f 'click'
             $ok = Wait-Healthy 5; Start-Sleep -Seconds 3
