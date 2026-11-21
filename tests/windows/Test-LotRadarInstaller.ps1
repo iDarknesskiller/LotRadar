@@ -287,7 +287,7 @@ function Save-WindowShot($Proc, [string]$Name) {
         return ('screenshot ' + (Split-Path -Leaf $path) + ' ' + $w + 'x' + $hh)
     } catch { return ('screenshot failed: ' + $_.Exception.Message) }
 }
-function Send-StartupTestKey($Proc, [uint32]$Message, [int]$Key) {
+function Send-StartupTestKey($Proc, [uint32]$Message, [int]$Key, [int]$KeyData = 0) {
     # Target the owned window's message queue. Tests mnemonic/dialog handling, not physical focus (E3).
     # Never send global keys to an unrelated foreground application.
     if (-not ('LotRadarQA.Win' -as [type])) { Add-Type -TypeDefinition $qaWinSource }
@@ -297,17 +297,19 @@ function Send-StartupTestKey($Proc, [uint32]$Message, [int]$Key) {
     [uint32]$windowPid = 0
     [void][LotRadarQA.Win]::GetWindowThreadProcessId($h, [ref]$windowPid)
     if ($windowPid -ne $Proc.Id) { throw 'startup test window ownership changed' }
-    if (-not [LotRadarQA.Win]::PostMessage($h, $Message, [IntPtr]$Key, [IntPtr]::Zero)) {
+    if (-not [LotRadarQA.Win]::PostMessage($h, $Message, [IntPtr]$Key, [IntPtr]$KeyData)) {
         throw 'could not queue keyboard message to the owned startup test window'
     }
 }
-function Invoke-StartupWindow([string]$Gui, [int]$TimeoutSec, [int]$AutoClose = 2, [scriptblock]$During = $null) {
+function Invoke-StartupWindow([string]$Gui, [int]$TimeoutSec, [int]$AutoClose = 2, [scriptblock]$During = $null, [switch]$Preview) {
     $res = Join-Path $root ('gui-result-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
     $saved = $env:LOTRADAR_NO_PAUSE
     Remove-Item Env:\LOTRADAR_NO_PAUSE -ErrorAction SilentlyContinue
     try {
         $t0 = Get-Date
-        $p = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"' + $Gui + '"'), '-AutoCloseSeconds', [string]$AutoClose, '-ResultFile', ('"' + $res + '"')) -PassThru
+        $windowArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"' + $Gui + '"'), '-AutoCloseSeconds', [string]$AutoClose, '-ResultFile', ('"' + $res + '"'))
+        if ($Preview) { $windowArgs += '-Preview' }
+        $p = Start-Process -FilePath powershell.exe -ArgumentList $windowArgs -PassThru
         $null = $p.Handle
         $script:DuringNote = ''
         if ($During) { $script:DuringNote = [string](@(& $During $p) -join '; ') }
@@ -1206,6 +1208,71 @@ try {
         Assert-True ($w.Result.console_shown -eq $true) ('mnemonic pressed Show console but the console did not come up (diagnostics: ' + $w.Result.console_diag + ')')
         return ('exit 91 via targeted Escape; console shown via targeted mnemonic (' + $w.Result.console_diag + '); ' + $w.Note)
     }
+
+    Invoke-Test 'G11' 'Plain F5 repeat and eligibility (targeted messages, physical keys NOT tested)' {
+        $w = Invoke-StartupWindow $gGui 75 0 {
+            param($p)
+            Start-Sleep -Seconds 18
+            Send-StartupTestKey $p 0x100 0x74 1
+            Send-StartupTestKey $p 0x100 0x74 0x40000001
+            Send-StartupTestKey $p 0x100 0x74 0x40000001
+            Send-StartupTestKey $p 0x101 0x74 -1073741823
+            Send-StartupTestKey $p 0x100 0x74 1
+            Start-Sleep -Seconds 18
+            Send-StartupTestKey $p 0x101 0x74 -1073741823
+            Send-StartupTestKey $p 0x100 0x74 1
+            Send-StartupTestKey $p 0x100 0x1B
+        } -Preview
+        Assert-True ($w.Exit -eq 0 -and $w.Result.mode -eq 'done' -and $w.Result.attempts -eq 2 -and $w.Result.retry_log -eq 'f5:started,f5:repeat,f5:repeat,f5:not-eligible,f5:not-eligible') ($w.Result | ConvertTo-Json -Compress)
+        return ('attempts=2 ' + $w.Result.retry_log)
+    }
+    Invoke-Test 'G12' 'Old mnemonic ignored (targeted messages, physical keys NOT tested)' {
+        [IO.File]::WriteAllText($gStub, ($emit + 'E ''install'' ''failed'' ''STUB ALT R'' $env:LOTRADAR_STARTUP_NONCE; exit 7'), [Text.Encoding]::ASCII)
+        try {
+            $w = Invoke-StartupWindow $gGui 45 0 {
+                param($p)
+                Start-Sleep -Seconds 6
+                Send-StartupTestKey $p 0x106 0x72
+                Start-Sleep -Seconds 1
+                Send-StartupTestKey $p 0x100 0x1B
+            }
+        } finally { Stop-GuiTestProcesses }
+        Assert-True ($w.Exit -eq 91 -and $w.Result.reason -eq 'STUB ALT R' -and $w.Result.attempts -eq 1 -and -not $w.Result.retry_log) ($w.Result | ConvertTo-Json -Compress)
+        return 'failed, attempts=1, retry_log empty'
+    }
+    Invoke-Test 'G13' 'Previous console guard (targeted messages, physical keys NOT tested)' {
+        $trace = Join-Path (Split-Path -Parent $gStub) 'owned-stub-attempts.txt'
+        $body = @'
+Add-Content -LiteralPath (Join-Path $PSScriptRoot 'owned-stub-attempts.txt') -Value ("$PID " + $env:LOTRADAR_STARTUP_NONCE)
+E 'install' 'failed' 'STUB FINISHING' $env:LOTRADAR_STARTUP_NONCE
+Start-Sleep -Seconds 15
+exit 7
+'@
+        [IO.File]::WriteAllText($gStub, ($emit + $body), [Text.Encoding]::ASCII)
+        try {
+            $w = Invoke-StartupWindow $gGui 90 0 {
+                param($p)
+                Start-Sleep -Seconds 6
+                Send-StartupTestKey $p 0x100 0x74
+                Start-Sleep -Seconds 1
+                Add-Type -AssemblyName UIAutomationClient
+                $window = [Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+                $controls = $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+                $script:GuardSeen = @($controls | Where-Object { $_.Current.Name -like 'The previous attempt is still finishing*' }).Count -gt 0
+                Start-Sleep -Seconds 14
+                Send-StartupTestKey $p 0x101 0x74 -1073741823
+                Send-StartupTestKey $p 0x100 0x74
+                Start-Sleep -Seconds 19
+                Send-StartupTestKey $p 0x100 0x1B
+            }
+            Start-Sleep -Seconds 1
+            $remaining = @(Get-ProcessesMentioning $gDir).Count
+        } finally { Stop-GuiTestProcesses }
+        $starts = @(Get-Content -LiteralPath $trace | Select-Object -Unique)
+        Assert-True ($script:GuardSeen -and $w.Exit -eq 91 -and $w.Result.attempts -eq 2 -and $w.Result.reason -eq 'STUB FINISHING' -and $w.Result.retry_log -eq 'f5:finishing,f5:started' -and $starts.Count -eq 2 -and $remaining -eq 0) ('message=' + $script:GuardSeen + ' starts=' + $starts.Count + ' remaining=' + $remaining + ' ' + ($w.Result | ConvertTo-Json -Compress))
+        return 'still-finishing message, two distinct stub attempts, no remaining console'
+    }
+
 
     # ---- optional: real bootstrap in the sandbox
     if (-not $FullLaunch) {

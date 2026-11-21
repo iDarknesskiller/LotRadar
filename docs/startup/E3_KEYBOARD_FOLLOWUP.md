@@ -1,4 +1,4 @@
-# ARCHITECT_HANDOFF: E3 physical-keyboard acceptance
+# LR-010-02 (LR-010, following LR-010-01): E3 physical-keyboard acceptance
 
 To: Claude, Lead Programmer and Test Designer
 From: LotRadar Chief Architect
@@ -12,7 +12,7 @@ Current E3 status: INCONCLUSIVE in Codex evidence; Owner attestation D-4 accepte
 
 ## Required behavior and architecture
 
-Physical keys must route to the focused startup form and controls reliably: Tab navigation, Shift+Tab, Alt+S for Show details, contextual Alt+D for Hide details, Alt+C for Show console, Alt+R for Retry, Alt+L for Close and Escape. Confirm actual accelerators in startup/Show-LotRadarStartup.ps1; test only those present and record context/enabled state. UI is display-only: launch/bootstrap retain server and lock ownership.
+Physical keys must route to the focused startup form and controls reliably: Tab navigation, Shift+Tab, Alt+S for Show details, contextual Alt+D for Hide details, Alt+C for Show console, plain F5 for Retry (Alt+R ignored by LotRadar), Alt+L for Close and Escape. Confirm actual accelerators in startup/Show-LotRadarStartup.ps1; test only those present and record context/enabled state. UI is display-only: launch/bootstrap retain server and lock ownership.
 
 ## Ordered assignment
 
@@ -25,7 +25,7 @@ Physical keys must route to the focused startup form and controls reliably: Tab 
 
 ## Allowed and excluded edits
 
-Allowed: E3 test plan, report, evidence manifests and narrowly scoped test-only cases in an isolated test workspace. Do not change startup UI, launcher/bootstrap, installer, server/core, photo modules, drafts, SQLite, Chrome Reader, private assets or user settings. A discovered product defect requires a separate source-grounded proposal and Owner implementation approval.
+LR-010-02 authorizes Codex to change only startup/Show-LotRadarStartup.ps1 in production and update the tests and guides. Owner consents P and R separately at execution. Original scope before LR-010-02: E3 test plan, report, evidence manifests and narrowly scoped test-only cases in an isolated test workspace. Do not change startup UI, launcher/bootstrap, installer, server/core, photo modules, drafts, SQLite, Chrome Reader, private assets or user settings. A discovered product defect requires a separate source-grounded proposal and Owner implementation approval.
 
 ## Acceptance criteria
 

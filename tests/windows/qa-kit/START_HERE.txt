@@ -108,9 +108,8 @@ folder it opens (on this PC, under LotRadar QA Results).
 
 STARTUP WINDOW PREVIEW (only if asked): RUN_UI_PREVIEW.cmd
 Shows the real LotRadar startup window with EXAMPLE steps (title says PREVIEW). Nothing is installed
-or started. Try the keys it lists, close the window, then press Y or N for two questions. Run it
-at your normal scaling, then set Settings > Display > Scale to 150% and run it again (set it back
-after). It saves two pictures of that window only. LOOK at them before sharing. Send back
+or started. Use five previews. Follow each action and answer 16 P rows individually (Y/N/S plus an observation), then E4 and E0.
+Keep your normal scaling for LR-010. It saves two pictures of that window only. LOOK at them before sharing. Send back
 SUMMARY.txt, SANITIZED-manual-ui.json and the pictures from the folder it opens.
 
 MANUAL: GUIDED REAL-START TEST (only if asked): RUN_MANUAL_UI_TESTS.cmd
@@ -119,6 +118,8 @@ Close LotRadar first. It installs LotRadar into a temporary TEST folder and adds
 first start downloads packages into the TEST folder (can take 5-20 minutes, needs internet). If no
 Python is installed it stops and reports BLOCKED (it never installs Python). At the end it removes
 the TEST shortcut and folder and checks that your real LotRadar, data and shortcut did not change.
+For LR-010 consent R, the coordinator sets LOTRADAR_QA_LR010_R=1 for this run. Follow each
+F5 and mouse action separately. The kit samples sandbox startup attempts into startup-attempts.csv.
 Send back SUMMARY.txt and SANITIZED-manual-ui.json from the folder it opens.
 
 IF IT STOPS EARLY

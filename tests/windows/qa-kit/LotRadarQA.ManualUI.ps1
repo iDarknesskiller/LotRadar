@@ -105,8 +105,8 @@ if ($UiPreview) {
     Say 'This shows the real LotRadar startup window with EXAMPLE steps. Nothing is started, installed or written.' 'Green'
     $dpi = Get-Dpi
     $pct = 0; if ($dpi -gt 0) { $pct = [int][math]::Round($dpi * 100 / 96) }
-    Say ('Display scaling now: ' + $pct + '% (' + $dpi + ' dpi). For E4 run this preview once at 150% (Settings > Display > Scale).') 'Yellow'
-    Say 'After changing Scale, SIGN OUT of Windows and back in before running this; until then the window is only stretched and this test still measures the old value.' 'Yellow'
+    Say ('Display scaling now: ' + $pct + '% (' + $dpi + ' dpi). Keep current display settings for LR-010.') 'Yellow'
+    Say 'Keep display settings unchanged for LR-010. For a separately scheduled E4 scale change, SIGN OUT of Windows and back in before measuring.' 'Gray'
     # Only the startup window script is taken from the verified package (no other program files are unpacked).
     $gui = Join-Path $resultsDir 'preview\startup\Show-LotRadarStartup.ps1'
     New-Item -ItemType Directory -Path (Split-Path -Parent $gui) -Force | Out-Null
@@ -117,30 +117,72 @@ if ($UiPreview) {
         if (-not $ge) { throw 'the startup window is not in this package' }
         [IO.Compression.ZipFileExtensions]::ExtractToFile($ge, $gui, $true)
     } finally { $z.Dispose() }
-    $pvResult = Join-Path $resultsDir 'preview-window-result.json'
-    $p = Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"' + $gui + '"'), '-Preview', '-ResultFile', ('"' + $pvResult + '"')) -PassThru
-    $null = $p.Handle
-    Start-Sleep -Seconds 4
-    $s1 = Save-Shot $p ('preview-progress-' + $pct + 'pct')
-    Start-Sleep -Seconds 9
-    $s2 = Save-Shot $p ('preview-failure-' + $pct + 'pct')
-    Add-M 'A0' 'Preview window captured' 'INFO' ($s1 + '; ' + $s2)
-    Say ''
-    Say 'Now try the window yourself (it shows an example failure):' 'Cyan'
-    Say '  1. Press Tab a few times: the focus moves Show details > Show console > Retry > Close.' 'Gray'
-    Say '  2. Press Alt+S (details open), Alt+D (details close), Alt+C (says there is no console in the preview).' 'Gray'
-    Say '  3. Press Alt+R (Retry): the example runs again and ends with "LotRadar is open".' 'Gray'
-    Say '  4. Press Esc (or Alt+L) to close it.' 'Gray'
-    Say '  While looking: is any text cut off or a button partly hidden, also with details open?' 'Gray'
-    $null = $p.WaitForExit(600000)
-    # Automatic display check by the window itself (every label/button text measured against its control).
-    $auto = $null
-    try { if (Test-Path -LiteralPath $pvResult) { $auto = [IO.File]::ReadAllText($pvResult) | ConvertFrom-Json } } catch { }
+    $steps = @(
+        @(1,'P-TAB','At failure press Tab four times. Focus cycles Details, Console, Retry (F5), Close.')
+        @(1,'P-STAB','Press Shift+Tab four times. Focus cycles in reverse.')
+        @(1,'P-ALTS','Press Alt+S. Details open and Hide details appears.')
+        @(1,'P-ALTD','Press Alt+D. Details close.')
+        @(1,'P-ALTC','Press Alt+C. Read the preview message about no console.')
+        @(1,'P-F5-RETRY','Tab to Retry and press plain F5 once. Observe the focused control after Retry disables.')
+        @(1,'P-F5-RUNNING','While starting tap F5 repeatedly and hold it for two seconds. Startup continues once.')
+        @(1,'P-F5-DONE','After LotRadar is open press F5. No new attempt.')
+        @(1,'P-ESC','Press Escape. The window closes.')
+        @(2,'P-F5-FOCUS-BTN','At failure focus Show details using Tab, press F5 once. Watch focus and wait for success, then close with X.')
+        @(3,'P-F5-FOCUS-DETAILS','At failure open details, click in the details text and press F5. No keystroke edits the text. Wait for success, then close with X.')
+        @(4,'P-CLICK-PARITY','At failure click Retry (F5) once. Observe resulting focus, wait for success, then close with X.')
+        @(5,'P-ALTR-NONE','At failure focus the form and press Alt+R. LotRadar stays failed. Observe any other application response.')
+        @(5,'P-F5-OTHER-WINDOW','Focus the QA console and press F5. LotRadar stays failed. Observe the console response.')
+        @(5,'P-LABEL','Before closing, inspect Retry (F5). The whole label must fit.')
+        @(5,'P-ALTL','Refocus the failed LotRadar window and press Alt+L. It closes.')
+    )
+    for ($run = 1; $run -le 5; $run++) {
+        $rows = @($steps | Where-Object { $_[0] -eq $run })
+        Say ("Preview run $run. Read these actions in advance. Wait for the example failure before starting.") 'Cyan'
+        foreach ($row in $rows) { Say ($row[1] + ' ' + $row[2]) 'Gray' }
+        Wait-Key 'Press Enter when ready to open this preview'
+        $pvResult = Join-Path $resultsDir ("preview-result-$run.json")
+        $p = Start-Process -FilePath $psExe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-STA','-File',('"' + $gui + '"'),'-Preview','-ResultFile',('"' + $pvResult + '"')) -PassThru
+        $null = $p.Handle
+        if ($run -eq 1) {
+            Start-Sleep -Seconds 4
+            $s1 = Save-Shot $p 'preview-progress'
+            Start-Sleep -Seconds 9
+            $s2 = Save-Shot $p 'preview-failure'
+            Add-M 'A0' 'Preview window captured' 'INFO' ($s1 + '; ' + $s2)
+        }
+        $p.WaitForExit()
+        $auto = $null
+        if (Test-Path -LiteralPath $pvResult) { $auto = Get-Content -Raw -LiteralPath $pvResult | ConvertFrom-Json }
+        $expected = if ($run -eq 5) { 1 } else { 2 }
+        if ($auto -and $auto.attempts -gt $expected) { throw "Stop: preview $run exceeded $expected attempts" }
+        foreach ($row in $rows) {
+            $id = $row[1]
+            $answer = Read-YesNo ($id + ' Did you observe this exact result? ' + $row[2])
+            $observation = Read-Host 'Record actual focused control, mode, Retry enabled/disabled and observed result (include focus after retry)'
+            $state = switch ($answer) { 'Y' { 'PASS' } 'N' { 'FAIL' } default { 'SKIP' } }
+            if ($state -eq 'PASS') {
+                if ($null -eq $auto) { $state = 'INCONCLUSIVE' }
+                elseif ($auto.attempts -ne $expected -or $p.ExitCode -ne 0) { $state = 'FAIL' }
+                elseif ($run -lt 5 -and $auto.mode -ne 'done') { $state = 'FAIL' }
+                elseif ($run -eq 5 -and ($auto.mode -ne 'failed' -or $auto.retry_log)) { $state = 'FAIL' }
+                elseif ($run -in 1,2,3 -and $auto.retry_log -notmatch '(^|,)f5:started(,|$)') { $state = 'FAIL' }
+                elseif ($run -eq 4 -and $auto.retry_log -ne 'click:started') { $state = 'FAIL' }
+                elseif ($id -eq 'P-F5-RUNNING' -and ($auto.retry_log -notmatch 'f5:repeat' -or $auto.retry_log -notmatch 'f5:not-eligible')) { $state = 'FAIL' }
+                elseif ($id -eq 'P-F5-DONE' -and @($auto.retry_log.Split(',') | Where-Object { $_ -eq 'f5:not-eligible' }).Count -lt 2) { $state = 'INCONCLUSIVE' }
+                elseif ($id -eq 'P-LABEL' -and $auto.clipped) { $state = 'FAIL' }
+            }
+            Add-M $id $row[2] $state (Protect-Text ("Windows " + [Environment]::OSVersion.Version + " PS " + $PSVersionTable.PSVersion + " DPI $dpi scale $pct% run $run attempts=" + $auto.attempts + " log=" + $auto.retry_log + " observed=" + $observation))
+        }
+    }
+    $incomplete = @($mRows | Where-Object { $_.Id -like 'P-*' -and $_.Status -ne 'PASS' })
+    $e3Status = 'PASS'
+    foreach ($status in 'SKIP','INCONCLUSIVE','BLOCKED','FAIL') { if ($incomplete.Status -contains $status) { $e3Status = $status } }
+    Add-M 'E3' 'Physical keyboard results' $e3Status ('Rows requiring review: ' + ($incomplete.Id -join ', '))
+
+
     if ($null -eq $auto -or [string]$auto.clipped -eq 'not checked') { Add-M 'E4a' 'Automatic check: no text cut off' 'SKIP' 'the window did not report a measurement' }
     elseif ([string]$auto.clipped) { Add-M 'E4a' 'Automatic check: no text cut off' 'FAIL' ('cut off at ' + $pct + '%: ' + $auto.clipped) }
     else { Add-M 'E4a' 'Automatic check: no text cut off' 'PASS' ('every label and button fits at ' + $pct + '% (layout scale ' + $auto.scale + ')') }
-    $e3 = Read-YesNo 'E3 keyboard: did Tab, Alt+S/D/C/R and Esc (or Alt+L) all work?'
-    Add-M 'E3' 'Keyboard: Tab order, Alt+S/C/R/L, Esc' $(switch ($e3) { 'Y' { 'PASS' } 'N' { 'FAIL' } default { 'SKIP' } }) ('answered by the person at ' + $pct + '% scaling')
     $e4 = Read-YesNo ('E4 display at ' + $pct + '%: was ALL text and every button fully visible (also with details open)?')
     $e4Status = switch ($e4) { 'Y' { 'PASS' } 'N' { 'FAIL' } default { 'SKIP' } }
     $e4Detail = ('scaling ' + $pct + '%')
@@ -304,6 +346,9 @@ try {
     Wait-Key 'Close the LotRadar app window that opened (not this window). I will stop the test server next'
     Stop-SandboxServer
 
+    Add-M 'R-E5' 'Close during first start' $s5 ('Owner ' + $q5 + '; ' + $a5.Text)
+    if ($a5.Roots -gt 1) { throw 'Stop: second server tree' }
+    if ($env:LOTRADAR_QA_LR010_R -ne '1') {
     # ---- E1 normal start (provisioned)
     Wait-Key 'E1: Double-click "LotRadar TEST (sandbox)" again and just WATCH (do not click). Then come back here'
     $ok1 = Wait-Healthy 5
@@ -323,19 +368,80 @@ try {
     Wait-Key 'Close the LotRadar app window(s). I will stop the test server next'
     Stop-SandboxServer
 
-    # ---- E6 port conflict made by THIS script, Show console, Retry
-    $listener = New-Object System.Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 8765)
-    $listener.Start()
-    Wait-Key 'E6: Double-click "LotRadar TEST (sandbox)". The window should say port 8765 is in use. Click "Show console" (the black window shows the message), then come back here'
-    $listener.Stop(); $listener = $null
-    Say 'My test listener on port 8765 is stopped now.' 'Gray'
-    Wait-Key 'Now click "Retry" in the LotRadar window. Wait until LotRadar opens, then come back here'
-    $ok6 = Wait-Healthy 5
-    $a6 = Get-AutoCheck
-    $q6 = Read-YesNo 'E6: did you see the port message, did Show console show the black window, and did Retry then start LotRadar?'
-    $s6 = 'FAIL'; if ($q6 -eq 'Y' -and $ok6 -and $a6.Roots -eq 1) { $s6 = 'PASS' } elseif ($q6 -eq 'S') { $s6 = 'SKIP' }
-    Add-M 'E6' 'Port conflict: actionable message, Show console, Retry recovers, one server' $s6 ('person: ' + $q6 + '; ' + $a6.Text)
-    Wait-Key 'Close the LotRadar app window(s). I will stop the test server and clean up'
+    }
+    # Sample only cmd children of the startup form in this owned sandbox.
+    $trace = Join-Path $resultsDir 'startup-attempts.csv'
+    $sampler = Start-Job -ArgumentList $sbProgram,$trace -ScriptBlock {
+        param($program,$trace)
+        $seen = @{}
+        while ($true) {
+            $forms = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object {
+                $_.CommandLine -like ('*' + $program + '*Show-LotRadarStartup.ps1*')
+            })
+            foreach ($formProcess in $forms) {
+                foreach ($child in @(Get-CimInstance Win32_Process -Filter ("Name='cmd.exe' AND ParentProcessId=" + $formProcess.ProcessId))) {
+                    $key = "$($formProcess.ProcessId)/$($child.ProcessId)/$($child.CreationDate.Ticks)"
+                    if (-not $seen.ContainsKey($key)) {
+                        $seen[$key] = $true
+                        [pscustomobject]@{ utc=[DateTime]::UtcNow.ToString('o'); form=$formProcess.ProcessId; console=$child.ProcessId } | Export-Csv -LiteralPath $trace -NoTypeInformation -Append
+                    }
+                }
+            }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    function Get-AttemptTotal {
+        if ($sampler.State -ne 'Running') { throw 'Attempt sampler stopped' }
+        if (Test-Path -LiteralPath $trace) { return @(Import-Csv -LiteralPath $trace).Count }
+        return 0
+    }
+    function Read-RealRow($id,$action,$beforeCount,$delta,$wantHealthy) {
+        Wait-Key $action
+        $check = Get-AutoCheck
+        $afterCount = Get-AttemptTotal
+        $observed = $afterCount - $beforeCount
+        if ($check.Roots -gt 1 -or $observed -gt $delta) { throw ("Stop at $id - " + $check.Text + " new attempts=$observed") }
+        $answer = Read-YesNo ($id + ' Did the specified action give the expected result?')
+        $detail = Read-Host 'Record actual focused control, Retry state, mode and result'
+        $state = 'PASS'
+        if ($answer -eq 'S') { $state = 'SKIP' }
+        elseif ($answer -eq 'N' -or $check.Roots -ne [int]$wantHealthy -or ($wantHealthy -and (-not $check.Lock -or -not $check.Health))) { $state = 'FAIL' }
+        elseif ($observed -lt $delta) { $state = 'INCONCLUSIVE' }
+        Add-M $id $action $state (Protect-Text ("new attempts $observed/$delta, " + $check.Text + ", observation: " + $detail))
+    }
+    try {
+        foreach ($method in 'F5','click') {
+            $beforeStart = Get-AttemptTotal
+            $listener = New-Object System.Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 8765)
+            $listener.Start()
+            Wait-Key 'Double-click the TEST shortcut. Wait for its port failure and enabled Retry. Leave the startup window open.'
+            $first = Get-AttemptTotal
+            if ($first -ne ($beforeStart + 1)) { throw "Expected exactly one observed initial attempt, observed $($first-$beforeStart)" }
+            if ($method -eq 'F5') {
+                Read-RealRow 'R-F5-FAIL' 'With the test listener active, press F5 once. Wait for another port failure. Expect one attempt and zero servers.' $first 1 $false
+                $first = Get-AttemptTotal
+                Read-RealRow 'R-ALTC-RETURN' 'Press Alt+C, click back into the form and press Tab. Confirm the real console appeared and focus moves within the form.' $first 0 $false
+            }
+            $listener.Stop(); $listener = $null
+            $first = Get-AttemptTotal
+            if ($method -eq 'F5') {
+                Read-RealRow 'R-F5-OK' 'Press F5 once then tap F5 while starting. Wait for LotRadar to open. Expect one new attempt and one healthy server.' $first 1 $true
+            } else {
+                Read-RealRow 'R-CLICK-PARITY' 'Click Retry once. Wait for LotRadar to open. Expect one new attempt and one healthy server.' $first 1 $true
+            }
+            Wait-Key 'Close only the new TEST app window. Press Enter so the kit can stop its test server.'
+            Stop-SandboxServer
+        }
+    } finally { Stop-Job $sampler; Remove-Job $sampler }
+    $guard = Read-YesNo 'Did you naturally see the previous attempt is still finishing message after pressing F5? Y to record, N or S if unobserved.'
+    if ($guard -eq 'Y') {
+        $note = Read-Host 'Record focus, time and actual result so the attempt trace can be correlated'
+        Add-M 'R-GUARD' 'Previous console still finishing' 'INCONCLUSIVE' (Protect-Text ("Observed: " + $note + ". Compare sampled console identities before assigning PASS."))
+    } else { Add-M 'R-GUARD' 'Previous console still finishing' 'NOT RUN' 'Did not occur during physical session' }
+    $errorsR = @($mRows | Where-Object { $_.Id -in 'R-F5-FAIL','R-ALTC-RETURN','R-F5-OK','R-CLICK-PARITY' -and $_.Status -ne 'PASS' })
+    Add-M 'E6' 'Real port conflict and Retry parity' $(if ($errorsR.Count) { 'INCOMPLETE' } else { 'PASS' }) ($errorsR.Id -join ', ')
+
+
 } catch {
     Add-M 'BX' 'Guided test stopped' 'FAIL' (Protect-Text $_.Exception.Message)
 } finally {
@@ -358,6 +464,8 @@ try {
     $safe = @(); if ($hadLnk -and (Test-Path -LiteralPath $desktopLnk) -and (Get-Sha $desktopLnk) -eq $lnkSha) { $safe = @($lnkSha) }
     $own = Test-QAOwnedFolder $sandbox 'sandbox' (Join-Path $realLocal 'Temp') @(Read-QALedger (Join-Path $qaHome 'owned')) $safe
     if ($own.Owned) { $res = Remove-QAOwnedFolder $own (Join-Path $realLocal 'Temp') } else { $res = 'left in place: ' + $own.Reason }
+    $cleanup = @($mRows | Where-Object { $_.Id -eq 'B9' })[-1]
+    Add-M 'R-CLEAN' 'Protected resources and sandbox cleanup' $(if ($cleanup.Status -eq 'PASS' -and ($res -eq 'deleted' -or $own.Owned)) { 'PASS' } else { 'FAIL' }) ($cleanup.Detail + '; ' + $res)
     Add-M 'B10' 'Test folder removed' $(if ($res -eq 'deleted') { 'PASS' } else { 'INFO' }) $res
 }
 Write-ManualSummary 'LotRadar manual UI acceptance - Stage B (real start in a test folder)' @(('Python          : existing (' + (Protect-Text $basePy) + '); nothing installed globally'))
