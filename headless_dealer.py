@@ -81,9 +81,14 @@ class HeadlessDealer:
         except Exception as exc:
             self.error = type(exc).__name__
             self.bridge.events('', 'HEADLESS_ERROR', 'Headless browser stopped: '+self.error)
-            self.bridge.control('stop')
-            with self.bridge.scan_lock:
-                self.bridge.scan_info.setdefault('errors', []).append({'source':'', 'reason':'Headless browser failed: '+self.error})
+            with self.bridge.lock:
+                # LR-009: a Reader failure ends Reader work only; historical
+                # discovery has its own browser and its own owner.
+                if getattr(self.bridge, 'basic_run', None) is not None:
+                    return
+                self.bridge.control('stop')
+                with self.bridge.scan_lock:
+                    self.bridge.scan_info.setdefault('errors', []).append({'source':'', 'reason':'Headless browser failed: '+self.error})
 
     async def _read(self, browser, job):
         if not allowed_job(job):

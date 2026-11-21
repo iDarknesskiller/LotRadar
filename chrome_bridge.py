@@ -24,7 +24,25 @@ MAX_INDEX_PAGES=35
 WORKER_LIMITS=(2,4,6,8,10,12,16,20)
 READER_REVISION='R59'
 
-from dealer_site_scraper import allowed_vehicle_url, parse_vehicle_page, parse_basic_vehicle_url
+from dealer_site_scraper import allowed_vehicle_url, parse_vehicle_page, parse_basic_vehicle_url, ScanControl
+
+
+class BasicRun(ScanControl):
+    """LR-009: the single owner of a historical (Basic) discovery run.
+
+    It holds the dealer-scan slot from admission until its worker has made its
+    last write and closed its browser. Stop asks it to end; it does not release it.
+    """
+    def __init__(self, run_id, sources, mode):
+        super().__init__()
+        self.id = run_id
+        self.sources = list(sources)
+        self.mode = mode
+        self.thread = None
+
+    @property
+    def state(self):
+        return 'stopping' if self.stopping else 'paused' if self.paused else 'running'
 
 
 from dealer_features import extract_dealer_equipment, has_explicit_carfax_one_owner
@@ -47,6 +65,7 @@ class ChromeBridge:
         self.completed_samples = deque(maxlen=12)
         self.sample_run_id = None
         self.inflight = {}  # job ID -> assigned dealer task, disjoint from pending queue
+        self.basic_run = None  # LR-009: active historical discovery owner, if any
         self.paused = False
         self.max_workers = 10
         self._reset_worker_budget()
@@ -140,12 +159,119 @@ class ChromeBridge:
         return (time.monotonic() - self.headless_seen < 85 if self.dealer_engine == 'headless'
                 else self.connected())
 
+    # ---- LR-009: one owner for the dealer-scan slot -------------------------
+    def _dealer_slot_busy(self):
+        """Caller holds self.lock. True while any incompatible dealer run owns the slot.
+
+        A queued, paused, resuming or stopping run still owns its work.
+        """
+        return bool(self.basic_run is not None or self.scan_info.get('running') or self.inflight
+                    or self.queue or self.verify.get('running'))
+
+    def reserve_basic(self, sources, mode='basic'):
+        """Atomically admit one historical discovery run, or refuse it."""
+        from core import utc
+        with self.lock:
+            if self.verify.get('running'):
+                raise ValueError('live_verification_running; wait for Chrome Reader to finish')
+            if self._dealer_slot_busy():
+                raise ValueError('another_scan_already_running')
+            run = BasicRun(secrets.token_hex(8), sources, mode)
+            self.basic_run = run
+            with self.scan_lock:
+                self.scan_info.update(running=True, current='', completed=[], errors=[], results={},
+                    progress={}, events=[], samples={}, sources=list(sources), started_at=utc(),
+                    eta_seconds=None, section_durations={}, mode=mode, stopped=False, stopping=False,
+                    failed=False, run_id=run.id, committed=[], stopped_sources=[])
+            return run
+
+    def basic_owner(self, run):
+        """True while ``run`` still owns the slot (checked before every catalog commit)."""
+        with self.lock:
+            return self.basic_run is run
+
+    def release_basic(self, run, elapsed_seconds=None, failed=None):
+        """Release the slot. Only the owning worker, or a failed launch, may do this.
+
+        The final event and diagnostics are written before release, under the
+        same lock that admission uses, so a new run can never be overwritten.
+        """
+        with self.lock:
+            if self.basic_run is not run:
+                return False
+            stopped = run.stopping
+            with self.scan_lock:
+                self.scan_info.update(running=False, current='', eta_seconds=None, stopping=False,
+                                      stopped=stopped, failed=bool(failed))
+                if elapsed_seconds is not None:
+                    self.scan_info['elapsed_seconds'] = elapsed_seconds
+                if failed:
+                    self.scan_info['errors'].append({'source': '', 'reason': str(failed)[:300]})
+                if stopped:
+                    self.scan_info['errors'].append({'source': '', 'reason': 'USER_STOPPED_SCAN; previously saved catalog preserved'})
+                committed = len(self.scan_info.get('committed', []))
+                errors = len(self.scan_info.get('errors', []))
+            if stopped:
+                self.events('', 'FINISH', f'Historical discovery stopped by user: {committed} section(s) saved; nothing else written')
+            elif failed:
+                self.events('', 'FINISH', 'Historical discovery failed: '+str(failed)[:160])
+            else:
+                self.events('', 'FINISH', f'Scan ended: {committed} sections saved, {errors} failed')
+            self._write_diagnostics()
+            self.basic_run = None
+            return True
+
+    def _write_diagnostics(self):
+        try:
+            with self.scan_lock:
+                snapshot = json.loads(json.dumps(self.scan_info))
+            dest = self.root/'last_website_scan_diagnostics.json'
+            stage = dest.with_suffix('.new')
+            stage.write_text(json.dumps(snapshot, indent=2), encoding='utf-8')
+            stage.replace(dest)
+        except OSError:
+            pass
+
+    def _control_basic(self, run, action):
+        """Caller holds self.lock. Route Pause/Resume/Stop to the historical worker."""
+        if action == 'stop':
+            if not run.stopping:  # A repeated Stop is harmless.
+                run.stop()
+                with self.scan_lock:
+                    self.scan_info.update(stopping=True)
+                self.events('', 'BASIC_STOPPING', 'Stopping: the current dealer request may finish; nothing new starts and no unsaved section is written')
+        elif action == 'pause':
+            if not run.stopping and not run.paused:
+                run.pause()
+                self.events('', 'BASIC_PAUSE', 'Paused historical discovery at the next safe point')
+        elif action == 'resume':
+            if run.paused:
+                run.resume()
+                self.events('', 'BASIC_RESUME', 'Resumed historical discovery')
+        return self.control_status()
+
+    def scan_state(self):
+        """Truthful public state: running, paused, stopping, verifying, stopped, failed, finished, idle."""
+        with self.lock:
+            run = self.basic_run
+            if run is not None:
+                return run.state
+            if self.mode == 'verify' and self.verify.get('running'):
+                return 'paused' if self.paused else 'verifying'
+            if self.scan_info.get('running'):
+                return 'paused' if self.paused else 'running'
+            if self.scan_info.get('stopped'):
+                return 'stopped'
+            if self.scan_info.get('mode') == 'basic' and self.scan_info.get('failed'):
+                return 'failed'
+            return 'finished' if self.scan_info.get('completed') else 'idle'
+
     def start(self, catalog, sources, limit, skip_existing=False, discover_live=False):
         if not 1 <= limit <= MAX_LIVE_SCAN: raise ValueError('invalid_chrome_scan_limit')
         if not sources or any(src not in USED_SOURCES for src in sources):
             raise ValueError('invalid_chrome_sources')
         with self.lock:
-            if self.scan_info.get('running') or self.inflight or self.queue or self.verify.get('running'):
+            if self._dealer_slot_busy():
                 raise ValueError('another_scan_already_running')
             self.quick_scan=bool(skip_existing and discover_live)
             self.quick_existing_paths=set()
@@ -256,6 +382,9 @@ class ChromeBridge:
         with self.lock:
             if self.verify.get('running'):
                 raise ValueError('verification_running; pause/finish verification before vehicle refresh')
+            if self.basic_run is not None:
+                # LR-009: priority work joins only a compatible Chrome scan, never Basic.
+                raise ValueError('historical_discovery_running; refresh this vehicle after it finishes or stops')
             vehicle=next((v for v in self.store.state()['vehicles'] if v['vin']==vin and any(src in USED_SOURCES for src in v['sources'])),None)
             if not vehicle:raise ValueError('unknown_used_vehicle')
             # A shared used VIN needs both dealership pages checked, not just the
@@ -306,7 +435,7 @@ class ChromeBridge:
         """Photo-only jobs for a server-selected snapshot of under-ten vehicles."""
         from core import utc
         with self.lock:
-            if self.scan_info.get('running') or self.queue or self.inflight or self.verify.get('running'):
+            if self._dealer_slot_busy():
                 raise ValueError('another_scan_already_running')
             jobs=[]
             for vehicle in self.store.state()['vehicles']:
@@ -426,6 +555,9 @@ class ChromeBridge:
         """Token-authorized user controls; never retroactively imports canceled work."""
         from core import utc
         with self.lock:
+            run = self.basic_run
+            if run is not None and action in ('pause', 'resume', 'stop'):
+                return self._control_basic(run, action)
             if action == 'workers':
                 if type(workers) is not int or workers not in WORKER_LIMITS:
                     raise ValueError('Choose 2, 4, 6, 8, 10, 12, 16, or 20 dealer workers.')
@@ -471,16 +603,26 @@ class ChromeBridge:
                 raise ValueError('unknown_scan_control_action')
             return self.control_status()
 
+    def _paused_view(self):
+        run = self.basic_run
+        return run.paused if run is not None else self.paused
+
     def control_status(self):
         with self.lock:
-            return {'ok': True, 'running':bool(self.scan_info.get('running') or self.verify.get('running')),
-                    'paused':self.paused,'workers':self.max_workers,'effective_workers':self.effective_workers,
+            run = self.basic_run
+            return {'ok': True, 'running':bool(run is not None or self.scan_info.get('running') or self.verify.get('running')),
+                    'paused':self._paused_view(),'stopping':bool(run is not None and run.stopping),
+                    'state':self.scan_state(),'historical':run is not None,
+                    'workers':self.max_workers,'effective_workers':self.effective_workers,
                     'throttled':self.worker_throttled,'inflight':len(self.inflight),
                     'queued':len(self.queue),'mode':self.mode,'connected':self.dealer_connected()}
 
     def scan_timing(self):
         """Estimate only outstanding dealer detail jobs from observed throughput."""
         with self.lock:
+            run = self.basic_run
+            if run is not None:
+                return {'state':run.state if run.state != 'running' else 'discovering','seconds':None}
             if not (self.verify.get('running') if self.mode=='verify' else self.scan_info.get('running')):
                 return {'state':'idle','seconds':None}
             if self.paused:
@@ -509,9 +651,9 @@ class ChromeBridge:
                 return {'source':src,'vin':vin,'kind':kind,'vehicle':tail}
             return {'system_load':getattr(self,'system_load',{}),'performance_reason':getattr(self,'performance_reason',''),
                 'worker_limit':self.max_workers,'effective_workers':self.effective_workers,
-                'throttled':self.worker_throttled,'paused':self.paused,
-                'connected':self.dealer_connected(),'mode':self.mode,
-                'running':bool(self.scan_info.get('running') or self.verify.get('running')),
+                'throttled':self.worker_throttled,'paused':self._paused_view(),
+                'connected':self.dealer_connected(),'mode':self.mode,'state':self.scan_state(),
+                'running':bool(self.basic_run is not None or self.scan_info.get('running') or self.verify.get('running')),
                 'active':[summarize(j) for j in list(self.inflight.values())[:10]],
                 'waiting':[summarize(j) for j in self.queue[:12]],
                 'active_count':len(self.inflight),'waiting_count':len(self.queue)}
@@ -520,6 +662,8 @@ class ChromeBridge:
         """Recover abandoned Chrome jobs even when the reader stops polling."""
         from core import utc
         with self.lock:
+            if self.basic_run is not None:
+                return  # LR-009: Basic has no Reader jobs; nothing to recover or finalize.
             now=time.monotonic()
             for job_id,job in list(self.inflight.items()):
                 if now-job.get('_lease_at',now)<=120:
@@ -557,6 +701,10 @@ class ChromeBridge:
                 self.last_seen=time.monotonic()
             else:
                 self.headless_seen=time.monotonic()
+            if self.basic_run is not None:
+                # LR-009: historical discovery owns the slot. An idle Reader poll
+                # is not evidence that it finished; never finalize it here.
+                return {'job':None,'waiting':True,**self.control_status()}
             running = self.verify.get('running') if self.mode == 'verify' else self.scan_info.get('running')
             if not running:
                 return {'job':None,'running':False,'connected':True, **self.control_status()}
@@ -631,21 +779,15 @@ class ChromeBridge:
                     ('access denied' if aborted else 'finished'))
 
     def _finalize(self):
+        if self.basic_run is not None:
+            return  # LR-009: a Chrome path never finalizes a historical run it does not own.
         with self.scan_lock:
             self.scan_info['running'] = False
             self.scan_info['current'] = ''
             self.scan_info['eta_seconds'] = None
             self.scan_info['elapsed_seconds'] = round(time.monotonic()-self.started)
         self.events('', 'FINISH', 'Chrome scan finished; manually verify vehicle availability before posting')
-        try:
-            with self.scan_lock:
-                snapshot=json.loads(json.dumps(self.scan_info))
-            dest=self.root/'last_website_scan_diagnostics.json'
-            stage=dest.with_suffix('.new')
-            stage.write_text(json.dumps(snapshot,indent=2),encoding='utf-8')
-            stage.replace(dest)
-        except OSError:
-            pass
+        self._write_diagnostics()
 
     def _submit_index(self, payload, job):
         """Accept inventory links from the rendered *current* dealer index.
@@ -905,7 +1047,7 @@ class ChromeBridge:
         if not isinstance(limit, int) or not 1 <= limit <= 1200:
             raise ValueError('invalid_verify_limit')
         with self.lock:
-            if self.scan_info.get('running') or self.queue or self.inflight or self.verify.get('running'):
+            if self._dealer_slot_busy():
                 raise ValueError('scan_or_verification_already_running')
             if probe_counterparts is None:probe_counterparts=repair_missing
             jobs, bad = [], []
@@ -1125,9 +1267,11 @@ class ChromeBridge:
         with self.lock:
             return {'dealer_engine':self.dealer_engine,'dealer_connected':self.dealer_connected(),
                     'connected':self.connected(),'queued':len(self.queue),'inflight':len(self.inflight),
-                    'paused':self.paused,'workers':self.max_workers,'effective_workers':self.effective_workers,
+                    'paused':self._paused_view(),'workers':self.max_workers,'effective_workers':self.effective_workers,
                     'throttled':self.worker_throttled,
-                    'running':bool(self.scan_info.get('running') or self.verify.get('running')),
+                    'running':bool(self.basic_run is not None or self.scan_info.get('running') or self.verify.get('running')),
+                    'stopping':bool(self.basic_run is not None and self.basic_run.stopping),
+                    'state':self.scan_state(),'historical':self.basic_run is not None,
                     'key_present':bool(self.key)}
 
 # Snapshot queue mutations under the same reentrant lock. Completed jobs are absent.

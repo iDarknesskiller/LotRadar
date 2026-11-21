@@ -1337,7 +1337,7 @@ function scanEta(timing,queue="Dealer queue"){
   const minutes=Math.floor(timing.seconds/60),seconds=timing.seconds%60;
   return `${queue} ETA ~${minutes?minutes+'m ':''}${seconds}s`;
  }
- return {paused:`${queue} ETA paused`,disconnected:`${queue} ETA unavailable · Reader offline`,
+ return {paused:`${queue} ETA paused`,stopping:'Stopping · finishing the current request',disconnected:`${queue} ETA unavailable · Reader offline`,
   discovering:`${queue} ETA pending · Discovering pages`,measuring:`${queue} ETA pending · Measuring completed work`}[state]||'';
 }
 function renderScanConsole(job){
@@ -1358,7 +1358,8 @@ function renderScanConsole(job){
  $('scan-progress-fill').parentElement.setAttribute('aria-valuenow',String(displayPct));
  $('scan-progress-fill').parentElement.setAttribute('aria-label','Dealership scan stages processed; not a successful inventory import count');
  $('scan-console-dealer').textContent=job.running?(sourceLabels[job.current]||'Connecting to dealership'):'Dealer scan '+(finished?'finished':'idle');
- $('scan-console-status').textContent=job.running?`${(p.phase||'connecting').replaceAll('_',' ')} · ${displayPct}% processed`:(finished?`${(job.errors||[]).length} failed section(s)`:'Idle');
+ $('scan-console-status').textContent=job.state==='stopping'?'Stopping… the current dealer request may finish':job.state==='paused'?`Paused · ${displayPct}% processed`:
+   job.running?`${(p.phase||'connecting').replaceAll('_',' ')} · ${displayPct}% processed`:job.state==='stopped'?'Stopped by user':(finished?`${(job.errors||[]).length} failed section(s)`:'Idle');
  const siteTotals=Object.values(job.progress||{}).reduce((t,x)=>t+Number(x?.website_total||0),0);
  $('scan-console-counts').textContent=`${job.completed?.length||0}/${sources.length} sections · ${totals.visited}/${totals.discovered} vehicle pages · ${totals.parsed} valid VINs · ${totals.failed} failed`+
    (job.mode==='chrome_inventory_full'&&siteTotals?` · Dealer site shows ${siteTotals} vehicles; ${totals.discovered} links discovered${totals.discovered<siteTotals?' (INCOMPLETE)':''}`:'');
@@ -1451,7 +1452,9 @@ function installDealerScanControls(){
   try {const res=await api('/api/chrome-scan-control',{action:'stop'});
     window.dispatchEvent(new CustomEvent('salesmanhub:scan-control',{detail:{action:'stop'}}));
     updateDealerScanControls(res.control);
-    notify('Scanner stopped. Partial results preserved; no sold status inferred.');
+    // LR-009: say "stopped" only once the server has released the scan.
+    notify(res.control?.stopping?'Stopping… The current dealer request may finish; nothing new will start.':'Scanner stopped. Partial results preserved; no sold status inferred.');
+    if(res.control?.stopping&&!siteScanTimer)siteScanTimer=setInterval(()=>{if(!document.hidden)void refreshSiteScanStatus()},1700);
     await refreshSiteScanStatus();void refreshFullScanStatus();}
   catch(error){notify('Stop failed: '+error.message,true);}
  });
@@ -1468,6 +1471,11 @@ function updateDealerScanControls(control){
  budget.hidden=!running;
  budget.textContent=`${effective} of ${n} tabs${control.throttled?' · Slowed down':''}`;
  pause.hidden=!running;stop.hidden=!running;
+ // LR-009: while the old run drains, keep the controls busy and say so.
+ const stopping=Boolean(control.stopping);
+ pause.disabled=stopping;stop.disabled=stopping;
+ stop.textContent=stopping?'Stopping…':'■ Stop';
+ if(stopping)pause.hidden=true;
  pause.dataset.paused=control.paused?'1':'0';
  pause.textContent=control.paused?'▶ Resume':'Ⅱ Pause';
  pause.title=control.paused?'Continue queued dealer pages':'Let open tabs finish; stop opening new ones';
@@ -1671,10 +1679,15 @@ async function refreshSiteScanStatus(){
      `${sourceLabels[src]||src}: ${r.catalog_candidates||0} unverified Y/M/model links (not inventory)`:
      job.mode?.startsWith('chrome')?`${sourceLabels[src]||src}: ${r.accepted||0} imported from ${r.live_discovered??'discovered'} links, ${r.failed||0} failed${r.coverage?` · Price ${r.coverage.price||0}, mileage ${r.coverage.mileage||0}, stock ${r.coverage.stock||0}, equipment ${r.coverage.equipment||0}, specs ${r.coverage.specifications||0}, photo links ${r.coverage.photo_links||0} · Galleries matched ${r.coverage.gallery_complete||0}, known short ${r.coverage.gallery_incomplete||0}`:''}${r.coverage_incomplete?' · SITE COVERAGE INCOMPLETE':''} · availability unverified`:`${sourceLabels[src]||src}: ${r.parsed||0} parsed, ${r.accepted||0} imported, ${r.complete_details??'not measured'} detail-complete${r.pending?' ('+r.pending+' sitemap-only, review availability)':''}`);
   const errors=(job.errors||[]).map(e=>`${sourceLabels[e.source]||e.source} FAILED: ${e.reason}`);
-  if(job.running){
+  if(job.running&&job.state==='stopping'){
+   $('site-scan-status').textContent='Stopping… waiting for the current dealer request to finish. A new scan can start once this says Stopped.';
+  }else if(job.running){
    const p=job.progress?.[job.current];
-   $('site-scan-status').textContent=`Scanning ${sourceLabels[job.current]||'starting'} • ${job.completed.length}/${job.sources?.length||2} sources finished`+
+   $('site-scan-status').textContent=(job.state==='paused'?'Paused · ':'')+`Scanning ${sourceLabels[job.current]||'starting'} • ${job.completed.length}/${job.sources?.length||2} sources finished`+
        (p?` • ${p.phase}: ${p.discovered||0} links, ${job.mode==='basic'?'basic names':'VINs'} ${p.parsed||0}, ${p.failed||0} errors`:'');
+  }else if(job.state==='stopped'){
+   const realErrors=(job.errors||[]).filter(e=>!/^USER_STOPPED_SCAN/.test(String(e.reason||''))).map(e=>`${sourceLabels[e.source]||e.source} FAILED: ${e.reason}`);
+   $('site-scan-status').textContent=[`Scan stopped by user: ${job.completed.length}/${job.sources?.length||2} sections finished`,...outcomes,...realErrors].join(' | ');
   }else if(job.completed.length){
    $('site-scan-status').textContent=[`Scan finished: ${job.completed.length}/${job.sources?.length||2} sections, ${errors.length} failed`,...outcomes,...errors].join(' | ');
   }else{
@@ -1682,8 +1695,8 @@ async function refreshSiteScanStatus(){
   }
   $('btn-scan-console').hidden=!job.completed.length&&!job.running;
   if(!job.running&&siteScanTimer){clearInterval(siteScanTimer);siteScanTimer=null;await reload();await refreshCleanupStatus();await loadBasicCatalog();
-   notify(errors.length?`Dealer scan failed for ${errors.length} section(s). Download the diagnostic report.`:
-    job.mode==='basic'?'Basic catalog ready. Year/make/model entries remain unverified and are not Facebook-ready.':'Full detail scan finished. Review imports and photos.',!!errors.length);}
+   notify(job.state==='stopped'?'Scanner stopped. Saved sections kept; a new scan can start now.':errors.length?`Dealer scan failed for ${errors.length} section(s). Download the diagnostic report.`:
+    job.mode==='basic'?'Basic catalog ready. Year/make/model entries remain unverified and are not Facebook-ready.':'Full detail scan finished. Review imports and photos.',!!errors.length&&job.state!=='stopped');}
  }catch(e){notify('Unable to read website scan status: '+e.message,true);}
  finally{siteScanStatusPending=false;}
 }
