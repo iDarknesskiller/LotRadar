@@ -27,6 +27,8 @@ KIT_FILES = [  # (committed source path, path inside the kit)
     ('tests/windows/qa-kit/LotRadarQA.Cleanup.ps1', 'tools/LotRadarQA.Cleanup.ps1'),
     ('tests/windows/qa-kit/LotRadarQA.CleanupSelfTest.ps1', 'tools/LotRadarQA.CleanupSelfTest.ps1'),
     ('tests/windows/qa-kit/LotRadarQA.ManualUI.ps1', 'tools/LotRadarQA.ManualUI.ps1'),
+    ('tests/windows/qa-kit/LotRadarQA.RealInput.ps1', 'tools/LotRadarQA.RealInput.ps1'),
+    ('tests/windows/qa-kit/RUN_AUTOMATED_REAL_TESTS.cmd', 'RUN_AUTOMATED_REAL_TESTS.cmd'),
     ('tests/windows/Test-LotRadarInstaller.ps1', 'tools/Test-LotRadarInstaller.ps1'),
 ]
 

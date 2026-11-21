@@ -269,7 +269,8 @@ Say 'This test installs LotRadar into a TEMPORARY test folder and lets YOU start
 Say 'shortcut called "LotRadar TEST (sandbox)". The first start downloads Python packages and a browser runtime' 'Yellow'
 Say '(several hundred MB) INTO THE TEST FOLDER only. Your real LotRadar program, data, photos, drafts and your' 'Yellow'
 Say 'real Desktop shortcut are not changed (they are fingerprinted before and after). OneDrive is not used.' 'Yellow'
-Say 'Takes about 15-30 minutes, you will be asked to double-click and answer Y/N a few times.' 'Yellow'
+if ($AutoInput) { Say 'AUTOMATIC: takes about 10-30 minutes. Keys and clicks are sent by the kit; do NOT use the keyboard or mouse meanwhile.' 'Yellow' }
+else { Say 'Takes about 15-30 minutes, you will be asked to double-click and answer Y/N a few times.' 'Yellow' }
 if (-not (Confirm-Start 'guided real-start test')) { Add-M 'B2' 'Consent' 'SKIP' 'cancelled'; Write-ManualSummary 'LotRadar manual UI acceptance - Stage B (cancelled)' @(); return }
 
 $sandbox = Join-Path $realLocal ('Temp\LotRadar Test Sandbox ' + (New-QAOwnerToken).Substring(0, 8))
@@ -302,6 +303,57 @@ function Wait-Healthy([int]$Minutes) {
     $dl = (Get-Date).AddMinutes($Minutes)
     while ((Get-Date) -lt $dl) { if (Test-Health) { return $true }; Start-Sleep -Seconds 3 }
     return $false
+}
+if ($AutoInput) {
+    # ---- -AutoInput (LR-010, Owner direction 2026-11-21): the person's double-clicks, key presses and Y/N answers are
+    # replaced by real system input (LotRadarQA.RealInput.ps1) and automatic observations. Same sandbox, same checks.
+    . (Join-Path $PSScriptRoot 'LotRadarQA.RealInput.ps1')
+    $script:AppWindowsClosed = 0
+    function Start-TestShortcut {
+        # Shell-execute the TEST shortcut, as Explorer does on a double-click. Returns the visible windows before it.
+        $snap = @(Get-RITopWindows | ForEach-Object { [int64]$_.Hwnd })
+        Start-Process -FilePath $testLnk
+        return $snap
+    }
+    function Get-SandboxForm {
+        foreach ($x in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like ('*' + $sbProgram + '*Show-LotRadarStartup.ps1*') })) {
+            $p = Get-Process -Id $x.ProcessId -ErrorAction SilentlyContinue
+            if ($p -and $p.MainWindowHandle -ne [IntPtr]::Zero) { return $p }
+        }
+        return $null
+    }
+    function Wait-SandboxForm([int]$Seconds) {
+        $dl = (Get-Date).AddSeconds($Seconds)
+        while ((Get-Date) -lt $dl) { $p = Get-SandboxForm; if ($p) { return [pscustomobject]@{ Proc = $p; Pid = $p.Id; Hwnd = $p.MainWindowHandle; Win = [Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle) } }; Start-Sleep -Milliseconds 500 }
+        throw 'BLOCKED: the LotRadar startup window did not appear'
+    }
+    function Get-FormMode($f) {
+        try {
+            $r = Find-RIKid $f.Win 'Retry (F5)'
+            if ($r -and $r.Current.IsEnabled -and (Find-RIKid $f.Win 'LotRadar could not start')) { return 'failed' }
+            if (Find-RIKid $f.Win 'LotRadar is open') { return 'done' }
+            return 'running'
+        } catch { return 'closed' }
+    }
+    function Wait-FormFailed($f, [int]$MinAttempts, [int]$Seconds) {
+        # failed again AND the attempt counter reached $MinAttempts (so an old failure screen is not mistaken)
+        $dl = (Get-Date).AddSeconds($Seconds)
+        while ((Get-Date) -lt $dl) { if ((Get-AttemptTotal) -ge $MinAttempts -and (Get-FormMode $f) -eq 'failed') { return $true }; Start-Sleep -Milliseconds 500 }
+        return $false
+    }
+    function Test-ServerConsoleVisible { return @(Get-RITopWindows | Where-Object { $_.Title -like '*LotRadar Server*' }).Count -gt 0 }
+    function Close-NewAppWindows($Snapshot) {
+        # Only LotRadar app windows that appeared after this launch (LotRadar itself was closed before the kit ran,
+        # checked by the port test). They are asked to close (WM_CLOSE); no browser process is stopped.
+        $dl = (Get-Date).AddSeconds(20); $closed = 0
+        while ((Get-Date) -lt $dl) {
+            $new = @(Get-RITopWindows | Where-Object { $Snapshot -notcontains [int64]$_.Hwnd -and $_.Title -like 'LotRadar*' -and $_.Title -notlike '*LotRadar Server*' -and $_.Title -notlike 'LotRadar - PREVIEW*' -and @('chrome', 'msedge') -contains (Get-Process -Id $_.Pid -ErrorAction SilentlyContinue).ProcessName })
+            if ($new.Count) { foreach ($w in $new) { [void][LRInput.Native]::PostMessage($w.Hwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero); $closed++ }; break }
+            Start-Sleep -Seconds 1
+        }
+        $script:AppWindowsClosed += $closed
+        return $closed
+    }
 }
 $listener = $null
 $sampler = $null
@@ -370,22 +422,42 @@ try {
     }
     $beforeE5 = Get-AttemptTotal
     # ---- E5 first start (slow, downloads into the sandbox): close the window while starting
+    if ($AutoInput) {
+        $snap = Start-TestShortcut
+        $f = Wait-SandboxForm 90
+        $dl = (Get-Date).AddSeconds(120)
+        while ((Get-Date) -lt $dl -and -not (Find-RIKid $f.Win 'In progress*')) { Start-Sleep -Milliseconds 500 }
+        $inProgress = [bool](Find-RIKid $f.Win 'In progress*')
+        Save-RIShot $f.Hwnd (Join-Path $resultsDir 'startup-window-E5-in-progress.png') | Out-Null
+        $pt = Get-RICloseButtonPoint $f.Hwnd
+        [void](Set-RIForeground $f.Hwnd $f.Pid (Find-RIClickablePoint $f.Win $f.Pid))
+        Send-RIClick $f.Pid $pt
+        $formClosed = $f.Proc.WaitForExit(15000)
+        $dl = (Get-Date).AddSeconds(20); while ((Get-Date) -lt $dl -and -not (Test-ServerConsoleVisible)) { Start-Sleep -Milliseconds 500 }
+        $consoleShown = Test-ServerConsoleVisible
+        Say 'Waiting for LotRadar to finish starting by itself (first start can take 5-20 minutes)...' 'Gray'
+        $ok5 = Wait-Healthy 25
+        $a5 = Get-AutoCheck
+        $q5 = $(if ($inProgress -and $formClosed -and $consoleShown -and $ok5) { 'Y' } else { 'N' })
+        Add-M 'E5a' 'Automatic observation (replaces the person)' 'INFO' ('window showed In progress=' + $inProgress + '; closed by real click on X=' + $formClosed + '; "LotRadar Server" console visible=' + $consoleShown + '; healthy=' + $ok5 + '; app windows closed=' + (Close-NewAppWindows $snap))
+    } else {
     Wait-Key 'E5: Double-click "LotRadar TEST (sandbox)" on your Desktop NOW. When the LotRadar window shows "In progress", click its X to close it. Then come back here'
     Say 'Waiting for LotRadar to finish starting by itself (first start can take 5-20 minutes)...' 'Gray'
     $ok5 = Wait-Healthy 25
     $a5 = Get-AutoCheck
     $q5 = Read-YesNo 'E5: after you closed the window, did the black "LotRadar Server" window come up and keep working, and did LotRadar open by itself?'
+    }
     $s5 = 'FAIL'; if ($q5 -eq 'Y' -and $ok5 -and $a5.Roots -eq 1 -and $a5.Lock) { $s5 = 'PASS' } elseif ($q5 -eq 'S') { $s5 = 'SKIP' }
     Add-M 'E5' 'Close the startup window while starting: startup continues, console shown, LotRadar opens' $s5 ('person: ' + $q5 + '; ' + $a5.Text)
     $e5Attempts = (Get-AttemptTotal) - $beforeE5
     if ($e5Attempts -gt 1 -or $a5.Roots -gt 1) { throw 'Stop: extra attempt or second server during E5' }
     $r5 = $s5
     if ($r5 -eq 'PASS' -and $e5Attempts -ne 1) { $r5 = 'INCONCLUSIVE' }
-    Add-M 'R-E5' 'Close during first start' $r5 ('Owner ' + $q5 + '; observed attempts=' + $e5Attempts + '; ' + $a5.Text)
-    Wait-Key 'Close the LotRadar app window that opened (not this window). I will stop the test server next'
+    Add-M 'R-E5' 'Close during first start' $r5 ($(if ($AutoInput) { 'automatic ' } else { 'Owner ' }) + $q5 + '; observed attempts=' + $e5Attempts + '; ' + $a5.Text)
+    if (-not $AutoInput) { Wait-Key 'Close the LotRadar app window that opened (not this window). I will stop the test server next' }
     Stop-SandboxServer
 
-    if ($env:LOTRADAR_QA_LR010_R -ne '1') {
+    if ($env:LOTRADAR_QA_LR010_R -ne '1' -and -not $AutoInput) {
         # ---- E1 normal start (provisioned)
         Wait-Key 'E1: Double-click "LotRadar TEST (sandbox)" again and just WATCH (do not click). Then come back here'
         $ok1 = Wait-Healthy 5
@@ -406,6 +478,83 @@ try {
         Stop-SandboxServer
 
     }
+    if ($AutoInput) {
+    function Add-AutoRow($id, $action, $beforeCount, $delta, $wantHealthy, [string]$note, [bool]$extraOk, [string]$ifPassButWeak = '') {
+        $check = Get-AutoCheck
+        $observed = (Get-AttemptTotal) - $beforeCount
+        if ($check.Roots -gt 1 -or $observed -gt $delta) { throw ("Stop at $id - " + $check.Text + " new attempts=$observed") }
+        $state = 'PASS'
+        if (-not $extraOk -or $check.Roots -ne [int]$wantHealthy -or ($wantHealthy -and (-not $check.Lock -or -not $check.Health))) { $state = 'FAIL' }
+        elseif ($observed -lt $delta) { $state = 'INCONCLUSIVE' }
+        elseif ($ifPassButWeak) { $state = 'INCONCLUSIVE'; $note += '; ' + $ifPassButWeak }
+        Add-M $id $action $state (Protect-Text ("automatic; new attempts $observed/$delta, " + $check.Text + '; ' + $note))
+    }
+    function Press-Retry($f, [string]$How) {
+        # F5 or a real mouse click on Retry. If the window says the previous attempt is still finishing (R-GUARD),
+        # that is recorded and Retry is pressed again 10 s later.
+        for ($i = 0; $i -lt 4; $i++) {
+            $before = Get-AttemptTotal
+            [void](Set-RIForeground $f.Hwnd $f.Pid (Find-RIClickablePoint $f.Win $f.Pid))
+            if ($How -eq 'F5') { Send-RIKeys $f.Pid @($RIVK.F5) } else { Send-RIClick $f.Pid (Find-RIKid $f.Win 'Retry (F5)') }
+            Start-Sleep -Seconds 2
+            if (Find-RIKid $f.Win 'The previous attempt is still finishing*') {
+                if (-not $script:GuardSeen) { $script:GuardSeen = @($How, ((Get-AttemptTotal) -eq $before)) }
+                Start-Sleep -Seconds 10; continue
+            }
+            return
+        }
+        throw 'BLOCKED: Retry stayed at "previous attempt is still finishing" for 48 s'
+    }
+    $script:GuardSeen = $null
+    foreach ($method in 'F5','click') {
+        $beforeStart = Get-AttemptTotal
+        $listener = New-Object System.Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 8765)
+        $listener.Start()
+        $snap = Start-TestShortcut
+        $f = Wait-SandboxForm 90
+        if (-not (Wait-FormFailed $f ($beforeStart + 1) 180)) { throw 'BLOCKED: no port failure appeared with the test listener active' }
+        $first = Get-AttemptTotal
+        if ($first -ne ($beforeStart + 1)) { throw "Expected exactly one observed initial attempt, observed $($first-$beforeStart)" }
+        if ($method -eq 'F5') {
+            Save-RIShot $f.Hwnd (Join-Path $resultsDir 'startup-window-R-port-failure.png') | Out-Null
+            Press-Retry $f 'F5'
+            $failedAgain = Wait-FormFailed $f ($first + 1) 180
+            $portMsg = [bool](Find-RIKid $f.Win '*8765*')
+            Add-AutoRow 'R-F5-FAIL' 'F5 once with the test listener active: one attempt, fails again with the port message, no server' $first 1 $false ('failed again=' + $failedAgain + '; port message shown=' + $portMsg) ($failedAgain -and $portMsg)
+            $first = Get-AttemptTotal
+            [void](Set-RIForeground $f.Hwnd $f.Pid (Find-RIClickablePoint $f.Win $f.Pid))
+            Send-RIKeys $f.Pid @($RIVK.Alt, $RIVK.C)
+            $dl = (Get-Date).AddSeconds(10); while ((Get-Date) -lt $dl -and -not (Test-ServerConsoleVisible)) { Start-Sleep -Milliseconds 300 }
+            Start-Sleep -Seconds 1
+            $consoleUp = Test-ServerConsoleVisible
+            $leftForm = (Get-RIForegroundPid) -ne $f.Pid
+            $pt = Find-RIClickablePoint $f.Win $f.Pid
+            $how = 'click'
+            if ($pt) { Send-RIClick $f.Pid $pt } else { [void](Set-RIForeground $f.Hwnd $f.Pid $null); $how = 'SetForegroundWindow (the form was fully covered, no click point)' }
+            $back = (Get-RIForegroundPid) -eq $f.Pid
+            $f1 = Get-RIFocus; Send-RIKeys $f.Pid @($RIVK.Tab); $f2 = Get-RIFocus
+            $tabOk = ($f2.Pid -eq $f.Pid -and $f2.Name -ne $f1.Name)
+            Add-AutoRow 'R-ALTC-RETURN' 'Alt+C shows the real console; click back into the form; Tab moves focus within the form' $first 0 $false ("console visible=$consoleUp; console took the foreground=$leftForm; back in form via $how=$back; Tab focus '" + $f1.Name + "' -> '" + $f2.Name + "'") ($consoleUp -and $back -and $tabOk) $(if ($how -ne 'click') { 'returned without a click' } else { '' })
+        }
+        $listener.Stop(); $listener = $null
+        $first = Get-AttemptTotal
+        if ($method -eq 'F5') {
+            Press-Retry $f 'F5'
+            $taps = 0
+            for ($i = 0; $i -lt 4; $i++) { if ((Get-RIForegroundPid) -eq $f.Pid -and (Get-FormMode $f) -eq 'running') { Send-RIKeys $f.Pid @($RIVK.F5); $taps++ }; Start-Sleep -Milliseconds 300 }
+            $ok = Wait-Healthy 5; Start-Sleep -Seconds 3
+            Add-AutoRow 'R-F5-OK' 'F5 once, then F5 taps while it starts: one attempt, healthy, one server, lock held' $first 1 $true ("F5 once + $taps tap(s) while starting; healthy=$ok; app windows closed=" + (Close-NewAppWindows $snap)) $ok $(if ($taps -eq 0) { 'no tap landed while it was starting' } else { '' })
+        } else {
+            Press-Retry $f 'click'
+            $ok = Wait-Healthy 5; Start-Sleep -Seconds 3
+            Add-AutoRow 'R-CLICK-PARITY' 'Real mouse click on Retry: one attempt, healthy, one server, lock held' $first 1 $true ("healthy=$ok; app windows closed=" + (Close-NewAppWindows $snap)) $ok
+        }
+        Stop-SandboxServer
+    }
+    if ($script:GuardSeen) { Add-M 'R-GUARD' 'Previous console still finishing' $(if ($script:GuardSeen[1]) { 'PASS' } else { 'FAIL' }) ('occurred naturally after ' + $script:GuardSeen[0] + '; message shown; no attempt started=' + $script:GuardSeen[1]) }
+    else { Add-M 'R-GUARD' 'Previous console still finishing' 'NOT RUN' 'did not occur naturally; covered by G13' }
+    Add-M 'R-AUTO' 'Automatic input (no person)' 'INFO' ('real system input via SendInput; LotRadar app windows closed by the kit: ' + $script:AppWindowsClosed)
+    } else {
     function Read-RealRow($id,$action,$beforeCount,$delta,$wantHealthy) {
         Wait-Key $action
         $check = Get-AutoCheck
@@ -447,12 +596,13 @@ try {
         $note = Read-Host 'Record focus, time and actual result so the attempt trace can be correlated'
         Add-M 'R-GUARD' 'Previous console still finishing' 'INCONCLUSIVE' (Protect-Text ("Observed: " + $note + ". Compare sampled console identities before assigning PASS."))
     } else { Add-M 'R-GUARD' 'Previous console still finishing' 'NOT RUN' 'Did not occur during physical session' }
+    }
     $errorsR = @($mRows | Where-Object { $_.Id -in 'R-F5-FAIL','R-ALTC-RETURN','R-F5-OK','R-CLICK-PARITY' -and $_.Status -ne 'PASS' })
     Add-M 'E6' 'Real port conflict and Retry parity' $(if ($errorsR.Count) { 'INCOMPLETE' } else { 'PASS' }) ($errorsR.Id -join ', ')
 
 
 } catch {
-    Add-M 'BX' 'Guided test stopped' 'FAIL' (Protect-Text $_.Exception.Message)
+    Add-M 'BX' 'Guided test stopped' $(if ($_.Exception.Message -like 'BLOCKED:*') { 'BLOCKED' } else { 'FAIL' }) (Protect-Text $_.Exception.Message)
 } finally {
     if ($sampler) { Stop-Job $sampler; Remove-Job $sampler }
     if ($listener) { try { $listener.Stop() } catch { } }

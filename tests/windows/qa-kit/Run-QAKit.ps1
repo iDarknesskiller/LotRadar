@@ -17,7 +17,7 @@
   LOCAL folder under %LOCALAPPDATA%\LotRadar QA Results, never into OneDrive.
 #>
 [CmdletBinding()]
-param([switch]$FullLaunch, [switch]$OneDrive, [switch]$CleanupSelfTest, [switch]$UiPreview, [switch]$ManualUI, [switch]$Yes)
+param([switch]$FullLaunch, [switch]$OneDrive, [switch]$CleanupSelfTest, [switch]$UiPreview, [switch]$ManualUI, [switch]$Yes, [switch]$AutoInput)
 $ErrorActionPreference = 'Stop'
 $kit = Split-Path -Parent $PSScriptRoot
 $resultsDir = Join-Path $kit 'RESULTS'
@@ -99,6 +99,7 @@ function Test-ShortcutRestored {
 
 Say '=== LotRadar Windows QA test kit ===' 'Cyan'
 if (@(@($FullLaunch, $OneDrive, $CleanupSelfTest, $UiPreview, $ManualUI) | Where-Object { $_ }).Count -gt 1) { Stop-Kit 'Only one optional test mode at a time. Run them separately.' 9 }
+if ($AutoInput -and -not $ManualUI) { Stop-Kit '-AutoInput only works with -ManualUI (automated real start in the test folder).' 9 }
 
 # ---- 1. kit must be extracted to a normal folder (not opened inside the ZIP viewer)
 if ($kit -like '*\AppData\Local\Temp\*' -or $kit -like '*\Temp1_*') {
@@ -231,6 +232,7 @@ if ($hadShortcut) {
 $toParse = @($harness)
 if ($OneDrive) { $toParse += (Join-Path $PSScriptRoot 'LotRadarQA.OneDrive.ps1') }
 if ($UiPreview -or $ManualUI) { $toParse += (Join-Path $PSScriptRoot 'LotRadarQA.ManualUI.ps1') }
+if ($AutoInput) { $toParse += (Join-Path $PSScriptRoot 'LotRadarQA.RealInput.ps1') }
 foreach ($scriptFile in $toParse) {
     $tokens = $null; $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($scriptFile, [ref]$tokens, [ref]$errors)
