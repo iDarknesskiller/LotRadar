@@ -536,3 +536,8 @@
 .removed-recovery{margin-top:14px;font-size:12px}
 .removed-recovery .removed-row{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line)}
 .delete-listing-card{display:block}
+.delete-listing-section{display:grid;gap:10px;margin-bottom:18px}
+.delete-listing-section>.delete-listing-section-title{margin:0;font-size:13px;color:var(--soft);letter-spacing:.4px}
+.cleanup-status-warning{grid-column:1/-1;border:1px solid var(--warn);background:var(--panel2);color:var(--warn);padding:12px;border-radius:10px;font-size:12px;line-height:1.5;margin-bottom:12px}
+.cleanup-status-warning .btn{margin-left:8px}
+.delete-listing-section .vehicle-grid{width:100%}
