@@ -434,6 +434,26 @@ class QAKit(unittest.TestCase):
         self.assertEqual(sorted({int(r[0]) for r in rows}), [1, 2, 3, 4, 5])
         self.assertIn("throw 'Incomplete physical row evidence'", m)   # run-time guard against missing/duplicate rows
 
+    def test_real_input_driver_covers_the_same_sixteen_rows_safely(self):
+        """LR-010 automated physical rows: tests/windows/Test-StartupRealInput.ps1 must cover exactly the 16 P IDs of the
+        manual preview, use real system input (SendInput), check the foreground before every input, save rows at once,
+        and stop only the processes it started."""
+        drv = open(os.path.join(ROOT, 'tests', 'windows', 'Test-StartupRealInput.ps1'), 'rb').read()
+        drv.decode('ascii')
+        d = drv.decode('ascii')
+        manual = self.read('tools/LotRadarQA.ManualUI.ps1').decode('ascii')
+        manual_ids = set(re.findall(r",@\([1-5],'(P-[A-Z0-9-]+)'", manual))
+        driver_ids = set(re.findall(r"Add-Row '(P-[A-Z0-9-]+)'", d))
+        self.assertEqual(len(manual_ids), 16)
+        self.assertEqual(driver_ids, manual_ids)
+        self.assertIn('SendInput', d)
+        self.assertIn("'-Preview'", d)                       # nothing is installed or started
+        self.assertGreaterEqual(d.count('Assert-OwnedForeground $WantPid'), 2)   # Send-Keys and Send-HeldKey both guard
+        self.assertIn('PidAt(', d)                             # clicks only on a test window
+        self.assertIn('Add-Content -LiteralPath $rowsFile', d) # each row saved immediately
+        self.assertIn('foreach ($id in @($script:Owned))', d)  # cleanup limited to own processes
+        self.assertNotIn('MarketplaceScanner', d)              # never touches live data
+
     def test_gui_cases_cleanup_never_fails_and_report_console_diag(self):
         """Windows 11 run of dc4244e: G9 failed on taskkill "not found" under ErrorActionPreference Stop."""
         h = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
