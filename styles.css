@@ -536,3 +536,6 @@
 .removed-recovery{margin-top:14px;font-size:12px}
 .removed-recovery .removed-row{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line)}
 .delete-listing-card{display:block}
+.delete-listing-section{display:grid;gap:10px;margin-bottom:18px}
+.delete-listing-section>.delete-listing-section-title{margin:0;font-size:13px;color:var(--soft);letter-spacing:.4px}
+.delete-listing-section .vehicle-grid{width:100%}

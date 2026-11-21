@@ -436,7 +436,7 @@ function getVisible(){
   if(tab==='trade'&&(!isTradeInVehicle(r)||r.listed))return false;
   if(tab==='drafts'&&!(r.draft&&!['USER_CONFIRMED_PUBLISHED','USER_CONFIRMED_REMOVED'].includes(r.draft.status)))return false;
   if(tab==='published'&&!r.listed)return false;
-  if(tab==='outstock'&&!cleanupIssues[r.vin])return false;
+   if(tab==='outstock'&&( !cleanupIssues[r.vin] || r.listed || isPendingCleanupVin(r.vin)))return false;
   if(year&&String(r.year)!==year)return false;
   return `${r.vin} ${r.make} ${r.model} ${r.year} ${Object.values(r.sources).map(s=>s.stock).join(' ')}`.toLowerCase().includes(needle);
  }).map(car=>({car,age:ageInDays(car,now),price:cardDealerPrice(car).cents}));
@@ -1882,6 +1882,12 @@ async function refreshFeeds(){try{notify('Refreshing authorized configured feeds
 async function exportData(){try{const data=await api('/api/export');const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='marketplace-audit-'+new Date().toISOString().slice(0,10)+'.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);notify('Audit export saved.')}catch(e){notify(e.message,true);}}
 const removalLabel=row=>row.identity?.title||[row.identity?.year,row.identity?.make,row.identity?.model].filter(Boolean).join(' ')||row.vin;
 const pendingRemovals=()=>(state.removals||[]).filter(r=>r.status==='PENDING_FB_DELETE');
+const isPendingCleanupVin=vin=>pendingRemovals().some(r=>r.vin===vin);
+const activeCleanupState=r=>{
+ if(!cleanupIssues[r.vin]||isPendingCleanupVin(r.vin))return 'DONE';
+ return r.listed?'TRACKED_REVIEW':'UNLISTED_REVIEW';
+};
+const trackedCleanupCandidates=()=>state.vehicles.filter(r=>isUsedVehicle(r)&&activeCleanupState(r)==='TRACKED_REVIEW');
 function updateDeleteListingBadge(){
  const badge=$('delete-listing-badge');if(!badge)return;
  const n=pendingRemovals().length;
@@ -1893,11 +1899,25 @@ function removedRecoveryHtml(){
  return `<details class="removed-recovery"><summary>Removed from inventory (${rows.length}) · restore if removed by mistake</summary>${rows.map(r=>`<div class="removed-row"><span><strong>${esc(removalLabel(r))}</strong> · Stock ${esc(r.identity?.stock||'—')} · ${esc(r.vin)} · ${r.status==='PENDING_FB_DELETE'?'Facebook deletion pending':r.status==='FB_DELETE_CONFIRMED'?'Facebook deletion confirmed':'No Facebook listing'}</span><button type="button" class="btn ghost" data-restore-removed="${esc(r.vin)}">Restore to inventory</button></div>`).join('')}</details>`;
 }
 function renderDeleteListing(){
- const rows=pendingRemovals(),needle=search.trim().toLowerCase();
- const shown=rows.filter(r=>`${r.vin} ${removalLabel(r)} ${r.identity?.stock||''}`.toLowerCase().includes(needle));
- $('inventory-matches').textContent=`${shown.length} of ${rows.length} pending`;$('vehicle-more-row').hidden=true;
+ const candidates=trackedCleanupCandidates(),rows=pendingRemovals(),needle=search.trim().toLowerCase();
+ const shownCandidates=candidates.filter(r=>`${r.vin} ${name(primary(r))} ${Object.values(r.sources||{}).map(s=>s.stock).join(' ')}`.toLowerCase().includes(needle));
+ const shownPending=rows.filter(r=>`${r.vin} ${removalLabel(r)} ${r.identity?.stock||''}`.toLowerCase().includes(needle));
+ $('inventory-matches').textContent=`${shownCandidates.length} to verify · ${shownPending.length} pending`;$('vehicle-more-row').hidden=true;
  $('vehicle-grid').classList.add('cleanup-list');
- $('vehicle-grid').innerHTML=shown.length?shown.map(r=>{
+ const candidateHtml=shownCandidates.map(r=>{
+  const facebookLink=safeFacebookUrl(r.draft?.published_url||'');
+  const stock=Object.values(r.sources||{}).map(s=>s.stock).find(Boolean)||'MISSING';
+  return `<article class="vehicle-card delete-listing-card tracked-review-card" data-delete-vin="${esc(r.vin)}"><div class="vehicle-main">
+   <div class="card-stock-row"><strong class="stock-number">STOCK ${esc(stock)}</strong><strong class="card-mileage">Needs stock verification</strong></div>
+   <div class="vehicle-card-head"><h3>${esc(name(primary(r)))}</h3></div>
+   <div class="vehicle-vin-row"><span>VIN</span><strong>${esc(r.vin)}</strong></div>
+   <div class="vehicle-dealer-warning"><strong>⚑ Needs stock verification</strong><div>This vehicle is tracked on Facebook. Verify that it is unavailable at the dealership before removal.</div></div>
+   <div class="vehicle-card-actions">
+    ${facebookLink?`<button type="button" class="btn secondary" data-tracked-listing-open="${esc(r.vin)}" aria-label="Open tracked Facebook listing for ${esc(name(primary(r)))}">Open tracked listing ↗</button>`:'<button type="button" class="btn ghost" disabled>No valid Facebook URL</button>'}
+    <button type="button" class="btn primary" data-tracked-confirm="${esc(r.vin)}">Confirm out of stock</button>
+   </div></div></article>`;
+ }).join('');
+ const pendingHtml=shownPending.map(r=>{
   const valid=Boolean(safeFacebookUrl(r.open_url));
   return `<article class="vehicle-card delete-listing-card" data-delete-vin="${esc(r.vin)}"><div class="vehicle-main">
    <div class="card-stock-row"><strong class="stock-number">STOCK ${esc(r.identity?.stock||'MISSING')}</strong><strong class="card-mileage">Removed ${esc(new Date(r.removed_at).toLocaleDateString())}</strong></div>
@@ -1907,12 +1927,21 @@ function renderDeleteListing(){
    <div class="vehicle-card-actions">
     <button type="button" class="btn secondary" data-delete-open="${esc(r.vin)}">Delete Listing ↗</button>
     <button type="button" class="btn primary" data-delete-confirm="${esc(r.vin)}">I've deleted it on Facebook</button>
-   </div></div></article>`;}).join(''):`<div class="empty"><strong>${rows.length?'No matching pending listings':'No Facebook listings waiting for deletion'}</strong><p>${rows.length?'Clear or change the search.':'Vehicles removed from Out of Stock that had a tracked Facebook listing appear here.'}</p></div>`;
+    </div></div></article>`;}).join('');
+ const candidateSection=candidateHtml?`<div class="delete-listing-section"><h3 class="delete-listing-section-title">Needs stock verification (${shownCandidates.length})</h3><div class="vehicle-grid cleanup-list">${candidateHtml}</div></div>`:'';
+ const pendingSection=pendingHtml?`<div class="delete-listing-section"><h3 class="delete-listing-section-title">Pending Facebook deletion (${shownPending.length})</h3><div class="vehicle-grid cleanup-list">${pendingHtml}</div></div>`:'';
+ $('vehicle-grid').innerHTML=candidateSection+pendingSection||`<div class="empty"><strong>${candidates.length||rows.length?'No matching Delete Listing vehicles':'No vehicles need Delete Listing action'}</strong><p>${candidates.length||rows.length?'Clear or change the search.':'Tracked or pending unavailable vehicles will appear here after availability review.'}</p></div>`;
 }
 function openFacebookForDeletion(vin){
  const row=(state.removals||[]).find(r=>r.vin===vin&&r.status==='PENDING_FB_DELETE');
  const url=row?safeFacebookUrl(row.open_url):'';
  if(!url)return notify('No valid saved Facebook listing link for this vehicle. The deletion reminder is kept; find the post on Facebook Marketplace manually.',true);
+ window.open(url,'_blank','noopener,noreferrer');
+}
+function openTrackedListing(vin){
+ const row=trackedCleanupCandidates().find(r=>r.vin===vin);
+ const url=row?safeFacebookUrl(row.draft?.published_url||''):'';
+ if(!url)return notify('No valid saved Facebook listing link for this vehicle.',true);
  window.open(url,'_blank','noopener,noreferrer');
 }
 const removalBusy=new Set();
@@ -2021,7 +2050,7 @@ function installHandlers(){installDealerScanControls();document.querySelectorAll
     if(exportPreview.revision&&!exportPreview.urls.has(idx))void loadExportPreviewFrame(idx);
     return;}
  const photoExport=e.target.closest('[data-photos-vin]');if(photoExport){e.preventDefault();e.stopPropagation();void downloadPhotoZip(photoExport.dataset.photosVin);return;}
- for(const [attr,fn] of [['outstockRemove',removeOutOfStock],['deleteOpen',openFacebookForDeletion],['deleteConfirm',confirmFacebookDeleted],['restoreRemoved',restoreRemoved]]){
+ for(const [attr,fn] of [['outstockRemove',removeOutOfStock],['trackedConfirm',removeOutOfStock],['trackedListingOpen',openTrackedListing],['deleteOpen',openFacebookForDeletion],['deleteConfirm',confirmFacebookDeleted],['restoreRemoved',restoreRemoved]]){
   const control=e.target.closest('[data-'+attr.replace(/[A-Z]/g,c=>'-'+c.toLowerCase())+']');
   if(control){e.preventDefault();e.stopPropagation();fn(control.dataset[attr]);return;}}
  const refresh=e.target.closest('[data-refresh-vin]');if(refresh){e.preventDefault();e.stopPropagation();void refreshOneVehicle(refresh.dataset.refreshVin);return;}

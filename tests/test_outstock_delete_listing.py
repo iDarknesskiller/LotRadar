@@ -27,6 +27,20 @@ class Base(unittest.TestCase):
     def pending(self):return self.store.state()['summary']['pending_fb_deletions']
 
 class Removal(Base):
+    def test_cleanup_issue_matrix_is_partitionable_by_tracking_status(self):
+        self.track(VINS[0],URLS[0])
+        self.store.record_link_check(SRC,'https://www.hamptontoyota.com/used/0.htm','unavailable')
+        self.store.record_link_check(SRC,'https://www.hamptontoyota.com/used/1.htm','unavailable')
+        st=self.store.state()
+        by={r['vin']:r for r in st['vehicles']}
+        self.assertTrue(by[VINS[0]]['listed'])
+        self.assertFalse(by[VINS[1]]['listed'])
+        issues=self.store.cleanup_status()
+        self.assertIn(VINS[0],issues)
+        self.assertIn(VINS[1],issues)
+        states={v:('TRACKED_REVIEW' if r['listed'] else 'UNLISTED_REVIEW') for v,r in by.items()
+                if v in issues}
+        self.assertEqual(states,{VINS[0]:'TRACKED_REVIEW',VINS[1]:'UNLISTED_REVIEW'})
     def test_untracked_removal_hides_vehicle_without_reminder(self):
         st=self.store.remove_out_of_stock(VINS[0],True)
         self.assertNotIn(VINS[0],self.vins(st));self.assertEqual(self.row(VINS[0])['status'],'REMOVED');self.assertEqual(self.pending(),0)
@@ -225,4 +239,21 @@ class Frontend(unittest.TestCase):
         for needle in ('confirm_published','relink_facebook','track_existing','fb-compare','facebook-auto-check','btn-facebook-scan'):
             self.assertTrue(needle in js or needle in (self.root/'index.html').read_text(encoding='utf-8'),needle)
         self.assertNotIn("action:'trash_cleanup_listing'",js)
+    def test_cleanup_queues_partition_by_published_tracking(self):
+        js=(self.root/'app.js').read_text(encoding='utf-8')
+        self.assertIn("tab==='outstock'&&( !cleanupIssues[r.vin] || r.listed || isPendingCleanupVin(r.vin))",js)
+        self.assertIn("return r.listed?'TRACKED_REVIEW':'UNLISTED_REVIEW';",js)
+        self.assertIn('const trackedCleanupCandidates=()=>',js)
+        self.assertIn('Pending Facebook deletion',js)
+        self.assertIn('Needs stock verification',js)
+        self.assertIn('data-tracked-confirm=',js)
+        self.assertIn('openTrackedListing(vin)',js)
+        self.assertIn('badge.textContent=`${n?',js)
+    def test_delete_listing_candidate_and_pending_actions_are_distinct(self):
+        js=(self.root/'app.js').read_text(encoding='utf-8')
+        self.assertIn('data-tracked-confirm',js)
+        self.assertIn('data-delete-open',js)
+        self.assertIn("I've deleted it on Facebook",js)
+        self.assertIn('trackedCleanupCandidates().find(r=>r.vin===vin)',js)
+        self.assertIn('pendingRemovals().find(r=>r.vin===vin)',js)
 if __name__=='__main__':unittest.main()
