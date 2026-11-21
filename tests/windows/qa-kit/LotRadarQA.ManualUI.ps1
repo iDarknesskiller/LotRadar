@@ -298,6 +298,7 @@ function Wait-Healthy([int]$Minutes) {
     return $false
 }
 $listener = $null
+$sampler = $null
 try {
     if ($hadLnk) {
         New-Item -ItemType Directory -Path (Split-Path -Parent $lnkBackup) -Force | Out-Null
@@ -335,40 +336,6 @@ try {
     $sc.TargetPath = $wrapper; $sc.WorkingDirectory = $sbProgram; $sc.Description = 'LotRadar TEST (sandbox) - created by the QA kit, removed at the end'
     $sc.Save()
 
-    # ---- E5 first start (slow, downloads into the sandbox): close the window while starting
-    Wait-Key 'E5: Double-click "LotRadar TEST (sandbox)" on your Desktop NOW. When the LotRadar window shows "In progress", click its X to close it. Then come back here'
-    Say 'Waiting for LotRadar to finish starting by itself (first start can take 5-20 minutes)...' 'Gray'
-    $ok5 = Wait-Healthy 25
-    $a5 = Get-AutoCheck
-    $q5 = Read-YesNo 'E5: after you closed the window, did the black "LotRadar Server" window come up and keep working, and did LotRadar open by itself?'
-    $s5 = 'FAIL'; if ($q5 -eq 'Y' -and $ok5 -and $a5.Roots -eq 1 -and $a5.Lock) { $s5 = 'PASS' } elseif ($q5 -eq 'S') { $s5 = 'SKIP' }
-    Add-M 'E5' 'Close the startup window while starting: startup continues, console shown, LotRadar opens' $s5 ('person: ' + $q5 + '; ' + $a5.Text)
-    Wait-Key 'Close the LotRadar app window that opened (not this window). I will stop the test server next'
-    Stop-SandboxServer
-
-    Add-M 'R-E5' 'Close during first start' $s5 ('Owner ' + $q5 + '; ' + $a5.Text)
-    if ($a5.Roots -gt 1) { throw 'Stop: second server tree' }
-    if ($env:LOTRADAR_QA_LR010_R -ne '1') {
-    # ---- E1 normal start (provisioned)
-    Wait-Key 'E1: Double-click "LotRadar TEST (sandbox)" again and just WATCH (do not click). Then come back here'
-    $ok1 = Wait-Healthy 5
-    Start-Sleep -Seconds 5
-    $a1 = Get-AutoCheck
-    $q1 = Read-YesNo 'E1: did the steps go Waiting > In progress > Done, LotRadar open ONCE, and the startup window close by itself?'
-    $s1 = 'FAIL'; if ($q1 -eq 'Y' -and $ok1 -and $a1.Roots -eq 1 -and $a1.Lock) { $s1 = 'PASS' } elseif ($q1 -eq 'S') { $s1 = 'SKIP' }
-    Add-M 'E1' 'Explorer double-click: honest steps, LotRadar opens once, one server, lock held' $s1 ('person: ' + $q1 + '; ' + $a1.Text)
-
-    # ---- E2 second double-click while running
-    Wait-Key 'E2: Double-click "LotRadar TEST (sandbox)" once more while it runs. Then come back here'
-    Start-Sleep -Seconds 8
-    $a2 = Get-AutoCheck
-    $q2 = Read-YesNo 'E2: did LotRadar open again (a second app window is fine) with still only ONE "LotRadar Server" window?'
-    $s2 = 'FAIL'; if ($q2 -eq 'Y' -and $a2.Health -and $a2.Roots -eq 1) { $s2 = 'PASS' } elseif ($q2 -eq 'S') { $s2 = 'SKIP' }
-    Add-M 'E2' 'Second double-click: no second server' $s2 ('person: ' + $q2 + '; ' + $a2.Text)
-    Wait-Key 'Close the LotRadar app window(s). I will stop the test server next'
-    Stop-SandboxServer
-
-    }
     # Sample only cmd children of the startup form in this owned sandbox.
     $trace = Join-Path $resultsDir 'startup-attempts.csv'
     $sampler = Start-Job -ArgumentList $sbProgram,$trace -ScriptBlock {
@@ -395,6 +362,44 @@ try {
         if (Test-Path -LiteralPath $trace) { return @(Import-Csv -LiteralPath $trace).Count }
         return 0
     }
+    $beforeE5 = Get-AttemptTotal
+    # ---- E5 first start (slow, downloads into the sandbox): close the window while starting
+    Wait-Key 'E5: Double-click "LotRadar TEST (sandbox)" on your Desktop NOW. When the LotRadar window shows "In progress", click its X to close it. Then come back here'
+    Say 'Waiting for LotRadar to finish starting by itself (first start can take 5-20 minutes)...' 'Gray'
+    $ok5 = Wait-Healthy 25
+    $a5 = Get-AutoCheck
+    $q5 = Read-YesNo 'E5: after you closed the window, did the black "LotRadar Server" window come up and keep working, and did LotRadar open by itself?'
+    $s5 = 'FAIL'; if ($q5 -eq 'Y' -and $ok5 -and $a5.Roots -eq 1 -and $a5.Lock) { $s5 = 'PASS' } elseif ($q5 -eq 'S') { $s5 = 'SKIP' }
+    Add-M 'E5' 'Close the startup window while starting: startup continues, console shown, LotRadar opens' $s5 ('person: ' + $q5 + '; ' + $a5.Text)
+    $e5Attempts = (Get-AttemptTotal) - $beforeE5
+    if ($e5Attempts -gt 1 -or $a5.Roots -gt 1) { throw 'Stop: extra attempt or second server during E5' }
+    $r5 = $s5
+    if ($r5 -eq 'PASS' -and $e5Attempts -ne 1) { $r5 = 'INCONCLUSIVE' }
+    Add-M 'R-E5' 'Close during first start' $r5 ('Owner ' + $q5 + '; observed attempts=' + $e5Attempts + '; ' + $a5.Text)
+    Wait-Key 'Close the LotRadar app window that opened (not this window). I will stop the test server next'
+    Stop-SandboxServer
+
+    if ($env:LOTRADAR_QA_LR010_R -ne '1') {
+        # ---- E1 normal start (provisioned)
+        Wait-Key 'E1: Double-click "LotRadar TEST (sandbox)" again and just WATCH (do not click). Then come back here'
+        $ok1 = Wait-Healthy 5
+        Start-Sleep -Seconds 5
+        $a1 = Get-AutoCheck
+        $q1 = Read-YesNo 'E1: did the steps go Waiting > In progress > Done, LotRadar open ONCE, and the startup window close by itself?'
+        $s1 = 'FAIL'; if ($q1 -eq 'Y' -and $ok1 -and $a1.Roots -eq 1 -and $a1.Lock) { $s1 = 'PASS' } elseif ($q1 -eq 'S') { $s1 = 'SKIP' }
+        Add-M 'E1' 'Explorer double-click: honest steps, LotRadar opens once, one server, lock held' $s1 ('person: ' + $q1 + '; ' + $a1.Text)
+
+        # ---- E2 second double-click while running
+        Wait-Key 'E2: Double-click "LotRadar TEST (sandbox)" once more while it runs. Then come back here'
+        Start-Sleep -Seconds 8
+        $a2 = Get-AutoCheck
+        $q2 = Read-YesNo 'E2: did LotRadar open again (a second app window is fine) with still only ONE "LotRadar Server" window?'
+        $s2 = 'FAIL'; if ($q2 -eq 'Y' -and $a2.Health -and $a2.Roots -eq 1) { $s2 = 'PASS' } elseif ($q2 -eq 'S') { $s2 = 'SKIP' }
+        Add-M 'E2' 'Second double-click: no second server' $s2 ('person: ' + $q2 + '; ' + $a2.Text)
+        Wait-Key 'Close the LotRadar app window(s). I will stop the test server next'
+        Stop-SandboxServer
+
+    }
     function Read-RealRow($id,$action,$beforeCount,$delta,$wantHealthy) {
         Wait-Key $action
         $check = Get-AutoCheck
@@ -409,30 +414,28 @@ try {
         elseif ($observed -lt $delta) { $state = 'INCONCLUSIVE' }
         Add-M $id $action $state (Protect-Text ("new attempts $observed/$delta, " + $check.Text + ", observation: " + $detail))
     }
-    try {
-        foreach ($method in 'F5','click') {
-            $beforeStart = Get-AttemptTotal
-            $listener = New-Object System.Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 8765)
-            $listener.Start()
-            Wait-Key 'Double-click the TEST shortcut. Wait for its port failure and enabled Retry. Leave the startup window open.'
+    foreach ($method in 'F5','click') {
+        $beforeStart = Get-AttemptTotal
+        $listener = New-Object System.Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 8765)
+        $listener.Start()
+        Wait-Key 'Double-click the TEST shortcut. Wait for its port failure and enabled Retry. Leave the startup window open.'
+        $first = Get-AttemptTotal
+        if ($first -ne ($beforeStart + 1)) { throw "Expected exactly one observed initial attempt, observed $($first-$beforeStart)" }
+        if ($method -eq 'F5') {
+            Read-RealRow 'R-F5-FAIL' 'With the test listener active, press F5 once. Wait for another port failure. Expect one attempt and zero servers.' $first 1 $false
             $first = Get-AttemptTotal
-            if ($first -ne ($beforeStart + 1)) { throw "Expected exactly one observed initial attempt, observed $($first-$beforeStart)" }
-            if ($method -eq 'F5') {
-                Read-RealRow 'R-F5-FAIL' 'With the test listener active, press F5 once. Wait for another port failure. Expect one attempt and zero servers.' $first 1 $false
-                $first = Get-AttemptTotal
-                Read-RealRow 'R-ALTC-RETURN' 'Press Alt+C, click back into the form and press Tab. Confirm the real console appeared and focus moves within the form.' $first 0 $false
-            }
-            $listener.Stop(); $listener = $null
-            $first = Get-AttemptTotal
-            if ($method -eq 'F5') {
-                Read-RealRow 'R-F5-OK' 'Press F5 once then tap F5 while starting. Wait for LotRadar to open. Expect one new attempt and one healthy server.' $first 1 $true
-            } else {
-                Read-RealRow 'R-CLICK-PARITY' 'Click Retry once. Wait for LotRadar to open. Expect one new attempt and one healthy server.' $first 1 $true
-            }
-            Wait-Key 'Close only the new TEST app window. Press Enter so the kit can stop its test server.'
-            Stop-SandboxServer
+            Read-RealRow 'R-ALTC-RETURN' 'Press Alt+C, click back into the form and press Tab. Confirm the real console appeared and focus moves within the form.' $first 0 $false
         }
-    } finally { Stop-Job $sampler; Remove-Job $sampler }
+        $listener.Stop(); $listener = $null
+        $first = Get-AttemptTotal
+        if ($method -eq 'F5') {
+            Read-RealRow 'R-F5-OK' 'Press F5 once then tap F5 while starting. Wait for LotRadar to open. Expect one new attempt and one healthy server.' $first 1 $true
+        } else {
+            Read-RealRow 'R-CLICK-PARITY' 'Click Retry once. Wait for LotRadar to open. Expect one new attempt and one healthy server.' $first 1 $true
+        }
+        Wait-Key 'Close only the new TEST app window. Press Enter so the kit can stop its test server.'
+        Stop-SandboxServer
+    }
     $guard = Read-YesNo 'Did you naturally see the previous attempt is still finishing message after pressing F5? Y to record, N or S if unobserved.'
     if ($guard -eq 'Y') {
         $note = Read-Host 'Record focus, time and actual result so the attempt trace can be correlated'
@@ -445,6 +448,7 @@ try {
 } catch {
     Add-M 'BX' 'Guided test stopped' 'FAIL' (Protect-Text $_.Exception.Message)
 } finally {
+    if ($sampler) { Stop-Job $sampler; Remove-Job $sampler }
     if ($listener) { try { $listener.Stop() } catch { } }
     Stop-SandboxServer
     $lockFree = -not (Test-Path -LiteralPath (Join-Path $sbRuntime 'marketplace-launch.lock')) -or -not (Test-LockHeld)
