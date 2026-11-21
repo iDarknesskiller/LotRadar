@@ -446,13 +446,39 @@ class QAKit(unittest.TestCase):
         driver_ids = set(re.findall(r"Add-Row '(P-[A-Z0-9-]+)'", d))
         self.assertEqual(len(manual_ids), 16)
         self.assertEqual(driver_ids, manual_ids)
-        self.assertIn('SendInput', d)
+        self.assertIn("qa-kit\\LotRadarQA.RealInput.ps1", d)  # shared guarded input module
         self.assertIn("'-Preview'", d)                       # nothing is installed or started
-        self.assertGreaterEqual(d.count('Assert-OwnedForeground $WantPid'), 2)   # Send-Keys and Send-HeldKey both guard
-        self.assertIn('PidAt(', d)                             # clicks only on a test window
+        ri = open(os.path.join(ROOT, 'tests', 'windows', 'qa-kit', 'LotRadarQA.RealInput.ps1'), 'rb').read().decode('ascii')
+        self.assertIn('SendInput', ri)
+        self.assertGreaterEqual(ri.count('Assert-RIForeground $WantPid'), 3)   # Send-RIKeys and Send-RIHeldKey (also per repeat)
+        self.assertIn('PidAt(', ri)                            # clicks only on a test window
         self.assertIn('Add-Content -LiteralPath $rowsFile', d) # each row saved immediately
         self.assertIn('foreach ($id in @($script:Owned))', d)  # cleanup limited to own processes
         self.assertNotIn('MarketplaceScanner', d)              # never touches live data
+
+    def test_auto_input_stage_b_replaces_the_person_safely(self):
+        """LR-010 automated session R: -AutoInput works only with -ManualUI, the shared real-input module is in the kit,
+        every R row is produced without Read-YesNo/Wait-Key, and windows are only closed by WM_CLOSE when proven new."""
+        run = self.read('tools/Run-QAKit.ps1').decode('ascii')
+        self.assertIn('[switch]$AutoInput', run)
+        self.assertIn("if ($AutoInput -and -not $ManualUI) { Stop-Kit", run)
+        ri = self.read('tools/LotRadarQA.RealInput.ps1').decode('ascii')
+        self.assertIn('function Assert-RIForeground', ri)
+        self.assertIn('Assert-RINoHeldModifiers; Assert-RIForeground $WantPid', ri)
+        self.assertIn("throw \"BLOCKED: the click point is covered", ri)
+        self.assertNotIn('Stop-Process', ri)
+        self.assertNotIn('taskkill', ri)
+        cmd = self.read('RUN_AUTOMATED_REAL_TESTS.cmd').decode('ascii')
+        self.assertIn('-ManualUI -AutoInput -Yes', cmd)
+        m = self.read('tools/LotRadarQA.ManualUI.ps1').decode('ascii')
+        auto = m[m.index('    if ($AutoInput) {\r\n    function Add-AutoRow'):m.index('    function Read-RealRow')]
+        for rid in ('R-F5-FAIL', 'R-ALTC-RETURN', 'R-F5-OK', 'R-CLICK-PARITY', 'R-GUARD'):
+            self.assertIn("'" + rid + "'", auto)
+        self.assertNotIn('Read-YesNo', auto)
+        self.assertNotIn('Wait-Key', auto)
+        self.assertNotIn('Read-Host', auto)
+        self.assertIn('$Snapshot -notcontains', m)   # only app windows that appeared after this launch are closed
+        self.assertIn("-not $AutoInput) {", m)       # E1/E2 (person-only checks) are skipped in automatic mode
 
     def test_gui_cases_cleanup_never_fails_and_report_console_diag(self):
         """Windows 11 run of dc4244e: G9 failed on taskkill "not found" under ErrorActionPreference Stop."""

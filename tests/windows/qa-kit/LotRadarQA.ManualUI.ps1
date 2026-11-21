@@ -489,13 +489,19 @@ try {
         elseif ($ifPassButWeak) { $state = 'INCONCLUSIVE'; $note += '; ' + $ifPassButWeak }
         Add-M $id $action $state (Protect-Text ("automatic; new attempts $observed/$delta, " + $check.Text + '; ' + $note))
     }
-    function Press-Retry($f, [string]$How) {
-        # F5 or a real mouse click on Retry. If the window says the previous attempt is still finishing (R-GUARD),
-        # that is recorded and Retry is pressed again 10 s later.
+    function Press-Retry($f, [string]$How, [int]$Taps = 0) {
+        # F5 or a real mouse click on Retry. With -Taps, F5 is tapped again right away while the new attempt runs
+        # (counted in $script:Taps). If the window says the previous attempt is still finishing (R-GUARD), that is
+        # recorded and Retry is pressed again 10 s later.
         for ($i = 0; $i -lt 4; $i++) {
             $before = Get-AttemptTotal
             [void](Set-RIForeground $f.Hwnd $f.Pid (Find-RIClickablePoint $f.Win $f.Pid))
             if ($How -eq 'F5') { Send-RIKeys $f.Pid @($RIVK.F5) } else { Send-RIClick $f.Pid (Find-RIKid $f.Win 'Retry (F5)') }
+            $script:Taps = 0
+            for ($t = 0; $t -lt $Taps; $t++) {
+                if ((Get-RIForegroundPid) -eq $f.Pid -and (Get-FormMode $f) -eq 'running') { Send-RIKeys $f.Pid @($RIVK.F5); $script:Taps++ }
+                Start-Sleep -Milliseconds 100
+            }
             Start-Sleep -Seconds 2
             if (Find-RIKid $f.Win 'The previous attempt is still finishing*') {
                 if (-not $script:GuardSeen) { $script:GuardSeen = @($How, ((Get-AttemptTotal) -eq $before)) }
@@ -539,9 +545,8 @@ try {
         $listener.Stop(); $listener = $null
         $first = Get-AttemptTotal
         if ($method -eq 'F5') {
-            Press-Retry $f 'F5'
-            $taps = 0
-            for ($i = 0; $i -lt 4; $i++) { if ((Get-RIForegroundPid) -eq $f.Pid -and (Get-FormMode $f) -eq 'running') { Send-RIKeys $f.Pid @($RIVK.F5); $taps++ }; Start-Sleep -Milliseconds 300 }
+            Press-Retry $f 'F5' 4
+            $taps = $script:Taps
             $ok = Wait-Healthy 5; Start-Sleep -Seconds 3
             Add-AutoRow 'R-F5-OK' 'F5 once, then F5 taps while it starts: one attempt, healthy, one server, lock held' $first 1 $true ("F5 once + $taps tap(s) while starting; healthy=$ok; app windows closed=" + (Close-NewAppWindows $snap)) $ok $(if ($taps -eq 0) { 'no tap landed while it was starting' } else { '' })
         } else {
