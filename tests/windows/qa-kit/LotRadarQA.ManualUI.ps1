@@ -498,6 +498,11 @@ try {
             [void](Set-RIForeground $f.Hwnd $f.Pid (Find-RIClickablePoint $f.Win $f.Pid))
             if ($How -eq 'F5') { Send-RIKeys $f.Pid @($RIVK.F5) } else { Send-RIClick $f.Pid (Find-RIKid $f.Win 'Retry (F5)') }
             $script:Taps = 0; $script:TapNote = @()
+            if ($Taps -gt 0) {
+                # Retry first closes the failed console (synchronously), so the window shows the old failure for a moment
+                $dl = (Get-Date).AddSeconds(8)
+                while ((Get-Date) -lt $dl -and (Get-FormMode $f) -ne 'running') { Start-Sleep -Milliseconds 100 }
+            }
             for ($t = 0; $t -lt $Taps; $t++) {
                 $mode = Get-FormMode $f
                 if ($mode -ne 'running') { $script:TapNote += "mode=$mode"; break }
