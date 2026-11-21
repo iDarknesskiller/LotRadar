@@ -28,21 +28,47 @@ and `build_type` in `Install-Manifest.json`.
 * The commit to package must be committed. Packages are built from **committed blobs at HEAD**, never from
   uncommitted working-tree files.
 
-## Private branding assets
+## Branding assets (committed, Owner-approved public files)
 
-Photo export requires `business_card.png` and `dedication.jpg`. Branding requires `lotradar_logo.png` (transparent RGBA PNG, shown unchanged in the sidebar) and `LotRadar.ico` (made from that PNG; used for the shortcuts and the browser tab icon). **Production builds fail if the logo or icon is missing or corrupt**; development builds work without them and the app keeps the text "LR" mark. These files are private: keep them in the `--asset-dir` folder, never in the public repository. The logo is never added to vehicle photos or exports.
-Keep them in a folder **outside** this repository (or under the git-ignored `branding/`), e.g.
-`C:\LotRadarPrivate\assets\`. The builder checks type headers and size and refuses an in-repo, non-ignored folder.
+Photo export requires `business_card.png` and `dedication.jpg`. Branding uses `lotradar_logo.png` (transparent RGBA
+PNG, shown unchanged in the sidebar and startup window) and `LotRadar.ico` (made from that PNG; used for the shortcuts
+and the browser tab icon). The logo is never added to vehicle photos or exports.
+
+Since 2026-11-19 these four files are **committed** at the paths the program reads, with the Project Owner's
+explicit approval to publish them (including the business card's photo and contact details):
+
+| Path in the repository and installed program | SHA-256 |
+| --- | --- |
+| `branding/business_card.png` | `be82e63c6035cf337cdc9a7bb038f670393324fa9e1f9aa3c710607bdfa701bd` |
+| `branding/dedication.jpg` | `f1f86eef4f8d69d9f797e69767e8c1058afeb156d5af2d1ea369a538715db0e5` |
+| `branding/lotradar_logo.png` | `b598d23ba243d30274d59ba78abc1571348b46eefbccd494a9dd3e0af2820e7d` |
+| `LotRadar.ico` | `e97981648825570899b7a208fcd7aa82f2a66238fc791a87e18cf24b680d7629` |
+
+So a **GitHub "Download ZIP" of `main` works as is**: export previews and the logo need no extra private folder and
+no Git. Only these four exact paths are tracked; any other file in `branding/` stays git-ignored, and the builder
+refuses to package an unknown tracked file. The builder also refuses a committed asset whose bytes differ from the
+table above (`APPROVED_ASSET_SHA256` in `scripts/build_installer.py`); changing an asset needs a new Owner approval.
+
+`--asset-dir` is now an optional **per-file override** for a single build (a file found there replaces the committed
+copy; files not found there keep the committed copy). The override folder must be outside the repository or
+git-ignored (e.g. `private-assets/`); the tracked `branding/` folder itself is refused. `--no-branding`
+(development only) packages no branding at all, to test the text "LR" fallback; the Windows QA kit uses it.
 
 ## Build commands
 
 ```
-# Release candidate: requires both branding images and a clean working tree
+# Release candidate: committed branding, clean working tree required
+python scripts/build_installer.py build --mode production
+
+# Same, overriding one or more branding files for this build only
 python scripts/build_installer.py build --mode production --asset-dir C:\LotRadarPrivate\assets
 
-# Development/test package without private images (named *-DEV-NOBRANDING.zip; photo export will report
-# "branding_assets_missing")
+# Development/test package (committed branding, named *-DEV.zip)
 python scripts/build_installer.py build --mode development
+
+# Development package WITHOUT branding (named *-DEV-NOBRANDING.zip; photo export reports
+# "branding_assets_missing: business_card.png, dedication.jpg")
+python scripts/build_installer.py build --mode development --no-branding
 
 # Verify any package (re-hashes everything, scans for private data / secrets)
 python scripts/build_installer.py verify dist\LotRadar-Installer-<...>.zip --require-production
@@ -50,7 +76,9 @@ python scripts/build_installer.py verify dist\LotRadar-Installer-<...>.zip --req
 
 The build fails (and writes nothing) on: a missing mandatory file, a tracked file that is neither packaged nor
 explicitly excluded, a forbidden path (`data`, `runtime`, databases, keys, logs, `.exe`, ...), a secret-looking
-string, a missing/invalid required asset (production), or a dirty tree (production). Output is deterministic:
+string, a missing/invalid required asset (production), a committed asset that does not match its approved
+SHA-256, or a dirty tree (production). The manifest records where each branding file came from
+(`branding_asset_sources`: `committed` or `asset-dir`). Output is deterministic:
 the same commit and assets give the same ZIP byte for byte. Share the ZIP's SHA-256 (printed by the build) when
 handing it over. Publish it only as a release artifact, with the Project Owner's approval.
 

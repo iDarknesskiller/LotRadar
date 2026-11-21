@@ -999,10 +999,17 @@ class PhotoCache:
         ordered=sorted(status['photos'],key=lambda item:(item['index']!=cover_index,item['index']))
         card_path=BRANDING_DIR/'business_card.png'
         dedication_path=BRANDING_DIR/'dedication.jpg'
-        if not card_path.is_file() or not dedication_path.is_file():
-            raise ValueError('branding_assets_missing; reinstall_R56')
+        # Name the exact branding files so the UI can say what is wrong (never "still fetching").
+        missing=[p.name for p in (card_path,dedication_path) if not p.is_file()]
+        if missing:
+            raise ValueError('branding_assets_missing: '+', '.join(missing)+'; reinstall_R56')
         card_bytes=card_path.read_bytes()
-        dedication_bytes=dedication_export_image(dedication_path.read_bytes())
+        if not card_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+            raise ValueError('branding_assets_invalid: business_card.png; reinstall_R56')
+        try:
+            dedication_bytes=dedication_export_image(dedication_path.read_bytes())
+        except Exception as exc:
+            raise ValueError('branding_assets_invalid: dedication.jpg; reinstall_R56') from exc
         vehicle_photos=[]
         branded_urls=set()
         seen_export_images=set()

@@ -4,7 +4,7 @@
 'use strict';
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const labels={all:'Used inventory',trade:'Trade-in priority',drafts:'Listing drafts',published:'Tracked on Facebook',outstock:'Out of stock & Facebook cleanup'};
+const labels={all:'Used inventory',trade:'Trade-in priority',drafts:'Listing drafts',published:'Tracked on Facebook',outstock:'Out of Stock',deletelisting:'Delete Listing'};
 const sourceLabels={toyota_new:'Toyota • New',toyota_used:'Toyota • Used',mitsubishi_new:'Mitsubishi • New',mitsubishi_used:'Mitsubishi • Used'};
 const usedSources=['toyota_used','mitsubishi_used'];
 const isTradeInStock=stock=>/[A-Za-z]$/.test(String(stock||'').trim());
@@ -31,6 +31,14 @@ async function loadPhotoSelection(p){
  if(exportPreview!==p)return;
  if(saved.source!==p.actualSource)throw Error('Photo source changed; refresh preview');
  photoSelection={vin:p.vin,source:p.actualSource,keys:[...saved.keys],groups:saved.groups||{},autoGroups:saved.auto_groups||{},classifyAvailable:!!saved.classify_available,autoSort:saved.auto_sort||{},saved:saved.saved?[...saved.keys]:null,limit:saved.limit,ready:true,missing:saved.missing_keys||[],dirty:false,error:''};
+ watchSortStartedByOpen(p,saved.auto_sort);
+}
+// The open request can queue a sort AFTER the progress panel already read "Ready"; show it and follow it to the end.
+function watchSortStartedByOpen(p,sort){
+ const d=photoProgress.data;
+ if(!sort?.running||!d||photoProgress.vin!==p.vin||['queued','downloading','sorting'].includes(d.stage))return;
+ photoProgress={...photoProgress,data:{...d,stage:'sorting',sorting:{running:true,classified:sort.classified||0,total:sort.total||0,error:''}}};
+ updatePhotoProgressInPlace();void watchPhotoProgress(p.vin,p.actualSource);
 }
 function persistPhotoSelection(){
  clearTimeout(photoSaveTimer);
@@ -69,6 +77,18 @@ document.addEventListener('change',e=>{
 });
 
 let exportPreview={enabled:false,vin:'',source:'',revision:'',photos:[],urls:new Map(),pending:new Set(),failed:new Map(),counts:null,loading:false,error:'',actualSource:''};
+// Plain-text reason for a failed export preview. A branding problem must never read as "photos still
+// fetching": the downloaded originals are fine, only the business card / dedication images are missing.
+function exportPreviewErrorText(error){
+ const text=String(error||'');
+ const brand=/^branding_assets_(missing|invalid)(?::\s*([^;]+))?/.exec(text);
+ if(brand){
+  const files=(brand[2]||'business_card.png, dedication.jpg').trim();
+  return `Export preview needs LotRadar's branding images: ${files} ${brand[1]==='missing'?'missing':'damaged'} in the program's branding folder. Downloaded vehicle photos are not affected. Reinstall or re-download LotRadar to restore them.`;
+ }
+ if(/^no_export_ready_photos/.test(text))return 'No export photos ready yet. Download the car photos first.';
+ return 'Export preview unavailable: '+text;
+}
 function resetExportPreview(){
  if(selectionActive())void persistPhotoSelection().catch(()=>{});
  for(const value of exportPreview.urls.values())URL.revokeObjectURL(value);
@@ -181,7 +201,7 @@ async function toggleExportPreview(){
   if(exportPreview!==p)return;
   await Promise.all([1,2,3].map(i=>loadExportPreviewFrame(i)));
   if(exportPreview===p)void fillExportPreviewThumbnails(p);
- }catch(err){if(exportPreview===p){p.loading=false;p.error=String(err.message||err);renderDetail();notify('Export preview image unavailable: '+p.error,true);}}
+ }catch(err){if(exportPreview===p){p.loading=false;p.error=String(err.message||err);renderDetail();notify(exportPreviewErrorText(p.error),true);}}
 }
 
 let globalPhotoSettings={contact_number:'',auto_replace:false};
@@ -257,7 +277,7 @@ const localOrHttps=url=>validHttps(url)||/^\/api\/photo\?vin=/.test(String(url||
 const photoApproved=r=>Object.values(r.sources).some(q=>q.images_approved&&q.images.length);
 const statusText=r=>r.draft?({READY_TO_REVIEW:'Listing draft',READY_FOR_MANUAL_PUBLISH:'Listing draft',USER_CONFIRMED_PUBLISHED:'Tracked on Facebook',USER_CONFIRMED_REMOVED:'User confirmed removed'}[r.draft.status]||r.draft.status):'Not listed';
 let cleanupIssues={},cleanupLoading=false,cleanupError='',checkingListingLinks=false;
-const cleanupRank=r=>cleanupIssues[r.vin]?.can_trash?0:1;
+const cleanupRank=r=>0;
 const cleanupIssueText=issue=>{
  const labels={unavailable:'Link unavailable',check_failed:'Check failed · retry',inventory_review:'Inventory status needs review'};
  return issue.dealer.map(check=>`${sourceLabels[check.source]} · ${labels[check.outcome]}`)
@@ -272,7 +292,7 @@ async function refreshCleanupStatus(){
   cleanupIssues=response.issues||{};cleanupError='';
   if(changed){renderStats();renderGrid();}
  }catch(e){
-  if(cleanupError!==e.message){cleanupError=e.message;if(tab==='outstock')renderGrid();}
+  if(cleanupError!==e.message){cleanupError=e.message;if(tab==='outstock'||tab==='deletelisting')renderGrid();}
  }finally{cleanupLoading=false;}
 }
 const safeFacebookUrl=url=>{try{const p=new URL(url);if(p.protocol!=='https:'||!['facebook.com','www.facebook.com','m.facebook.com'].includes(p.hostname)||p.username||p.password||!(p.port===''||p.port==='443'))return '';const path=p.pathname.replace(/\/$/,'');const m=/^\/marketplace\/item\/(\d{8,24})$/.exec(path);const id=m?.[1]||(path==='/marketplace/edit'?(p.searchParams.get('listing_id')||''):'');return /^\d{8,24}$/.test(id)?`https://www.facebook.com/marketplace/item/${id}`:'';}catch{return '';}};
@@ -416,7 +436,7 @@ function getVisible(){
   if(tab==='trade'&&(!isTradeInVehicle(r)||r.listed))return false;
   if(tab==='drafts'&&!(r.draft&&!['USER_CONFIRMED_PUBLISHED','USER_CONFIRMED_REMOVED'].includes(r.draft.status)))return false;
   if(tab==='published'&&!r.listed)return false;
-  if(tab==='outstock'&&!cleanupIssues[r.vin])return false;
+   if(tab==='outstock'&&( !cleanupIssues[r.vin] || r.listed || isPendingCleanupVin(r.vin)))return false;
   if(year&&String(r.year)!==year)return false;
   return `${r.vin} ${r.make} ${r.model} ${r.year} ${Object.values(r.sources).map(s=>s.stock).join(' ')}`.toLowerCase().includes(needle);
  }).map(car=>({car,age:ageInDays(car,now),price:cardDealerPrice(car).cents}));
@@ -477,7 +497,8 @@ const cardDealerPrice=r=>{
  return {label:money(selected.record.price_cents),cents:Number(selected.record.price_cents),conflict,
    warning:conflict?'Saved dealer source prices differ. Refresh both dealer pages and verify before posting.':''};
 };
-function renderGrid(){const readyButton=document.querySelector('[data-act="get-trade-ready"]');if(readyButton)readyButton.hidden=tab!=='trade';renderInventoryCounts();const a=getVisible();$('inventory-matches').textContent=`${Math.min(a.length,vehicleVisible).toLocaleString()} of ${a.length.toLocaleString()} shown`;$('section-title').textContent=labels[tab];$('vehicle-grid').classList.remove('cleanup-list');$('crumb-view').textContent=labels[tab].toUpperCase();document.querySelectorAll('[data-tab]').forEach(e=>{e.classList.toggle('selected',e.dataset.tab===tab);e.setAttribute('aria-current',e.dataset.tab===tab?'page':'false');});
+function renderGrid(){updateDeleteListingBadge();const readyButton=document.querySelector('[data-act="get-trade-ready"]');if(readyButton)readyButton.hidden=tab!=='trade';renderInventoryCounts();const a=getVisible();$('inventory-matches').textContent=`${Math.min(a.length,vehicleVisible).toLocaleString()} of ${a.length.toLocaleString()} shown`;$('section-title').textContent=labels[tab];$('vehicle-grid').classList.remove('cleanup-list');$('crumb-view').textContent=labels[tab].toUpperCase();document.querySelectorAll('[data-tab]').forEach(e=>{e.classList.toggle('selected',e.dataset.tab===tab);e.setAttribute('aria-current',e.dataset.tab===tab?'page':'false');});
+ if(tab==='deletelisting')return renderDeleteListing();
  if(!a.length&&tab==='trade'&&state.vehicles.some(isUsedVehicle)){
   $('vehicle-more-row').hidden=true;
   $('vehicle-grid').innerHTML=`<div class="empty"><strong>${search?'No matching unposted vehicles':'No unposted used vehicles'}</strong><p>${search?'Clear or change the search.':'Run Scan Inventory to look for newly added units.'}</p></div>`;
@@ -485,7 +506,7 @@ function renderGrid(){const readyButton=document.querySelector('[data-act="get-t
  }
  if(!a.length&&tab==='outstock'){
   $('vehicle-more-row').hidden=true;
-  $('vehicle-grid').innerHTML=`<div class="empty"><strong>${cleanupError?'Could not load link checks':search?'No matching link issues':'No link issues found'}</strong><p>${esc(cleanupError||'Run Verify Inventory and Check Facebook under More scans to update this view.')}</p></div>`;
+  $('vehicle-grid').innerHTML=`<div class="empty"><strong>${cleanupError?'Could not load link checks':search?'No matching link issues':'No link issues found'}</strong><p>${esc(cleanupError||'Run Verify Inventory and Check Facebook under More scans to update this view.')}</p></div>`+removedRecoveryHtml();
   return;
  }
  if(!a.length){$('vehicle-more-row').hidden=true;$('vehicle-grid').innerHTML=`<div class="empty"><strong>${state.vehicles.some(isUsedVehicle)?'No matching used vehicles':'Ready for your first used inventory scan'}</strong><p>${state.vehicles.some(isUsedVehicle)?'Adjust your filters to see more used vehicles.':'Scan Toyota Used and Mitsubishi Used in the background.'}</p><button class="btn secondary" data-act="open-import">Import inventory</button></div>`;return;}
@@ -506,14 +527,14 @@ function renderGrid(){const readyButton=document.querySelector('[data-act="get-t
     <div class="inventory-card-age">${usedSources.filter(src=>r.sources?.[src]).map(src=>`${esc(sourceLabels[src])}: ${r.last_successful_refresh?.[src]?'Refreshed '+esc(new Date(r.last_successful_refresh[src]).toLocaleString()):'Last successful refresh not recorded'}`).join('<br>')}</div>
     <div class="vehicle-vin-row"><span>VIN</span><strong title="${esc(r.vin)}">${esc(r.vin)}</strong></div>
     ${facebookLink?'<div class="vehicle-facebook-state">✓ Tracked on Facebook</div>':''}
-    ${issue?`<div class="vehicle-dealer-warning"><strong>⚠ ${issue.probable_out_of_stock?'Probably out of stock':'Needs attention'}</strong>${cleanupIssueText(issue).map(line=>`<div>${esc(line)}</div>`).join('')}</div>`:''}
+    ${issue?`<div class="vehicle-dealer-warning"><strong>⚠ ${issue.probable_out_of_stock?'Possibly unavailable · verify at dealership':'Needs availability review'}</strong>${cleanupIssueText(issue).map(line=>`<div>${esc(line)}</div>`).join('')}</div>`:''}
     <div class="vehicle-card-actions">
       <button class="card-photos" type="button" data-photos-vin="${esc(r.vin)}" title="Export screened vehicle photos">↓ Download photos</button>
       <button class="card-refresh" type="button" data-refresh-vin="${esc(r.vin)}" ${refreshing?'disabled':''} title="Refresh this VIN in the background" aria-label="Refresh stock ${esc(stock)}">${refreshing?'⏳ Refreshing…':'⟳ Refresh this vehicle'}</button>
       ${facebookLink?`<a class="btn secondary card-facebook-open" data-card-facebook href="${esc(facebookLink)}" target="_blank" rel="noopener noreferrer" aria-label="Open tracked Facebook listing for ${esc(name(first))}">Open Facebook ↗</a>`:''}
-      ${tab==='outstock'&&issue?.can_trash&&facebookLink?`<button type="button" class="btn ghost fb-cleanup-move" data-cleanup-trash="${esc(r.vin)}">Move to Trash</button>`:''}
+      ${tab==='outstock'?`<button type="button" class="btn ghost fb-cleanup-move" data-outstock-remove="${esc(r.vin)}" title="Only after you have verified the vehicle is unavailable at the dealership">Confirm out of stock &amp; remove</button>`:''}
     </div>
-  </div></article>`}).join('');document.querySelectorAll('.vehicle-photo img').forEach(img=>img.addEventListener('error',()=>{img.hidden=true}));}
+  </div></article>`}).join('')+(tab==='outstock'?removedRecoveryHtml():'');document.querySelectorAll('.vehicle-photo img').forEach(img=>img.addEventListener('error',()=>{img.hidden=true}));}
 function openDetail(vin){if(!state.vehicles.some(v=>v.vin===vin))return;if(selectedVin!==vin)facebookUrlEdit=null;const car=state.vehicles.find(v=>v.vin===vin);facebookCompareOpenVin=car?.draft?.published_url?vin:'';if(selectedVin!==vin)draftEditBuffer=null;resetExportPreview();selectedVin=vin;gallery={vin,source:'',index:0,cache:null,pictures:[],initial:true};$('detail-overlay').hidden=false;renderDetail();void toggleExportPreview();void refreshPhotoStatus();void startPhotoAutoFetch(vin);if(car?.draft?.published_url)void loadFacebookComparison();}
 function closeOverlay(which){
  if(which==='chrome-bridge'){$('chrome-pair-key').value='';$('chrome-pair-controls').hidden=true;}
@@ -677,7 +698,7 @@ const imageAudit=photoProgressPanel();
  const editState=captureEditState();
  $('drawer-content').innerHTML=`<div class="posting-photo-area">
   <div class="export-preview-default"><strong>Facebook photo preview</strong><span>Exact exported images · Business card + dedication #2 · ${previewReady?(exportPreview.actualSource==='mitsubishi_used'?'Mitsubishi backup':'Toyota primary'):'Toyota preferred, Mitsubishi backup'}</span></div>
- <div class="gallery-stage">${main?`<img src="${esc(main)}" alt="${esc(modelValue)} ${previewActive?'export':'source'} photo ${gallery.index+1}">`:`<span class="muted">${previewActive?(exportPreview.loading?'Preparing exact export preview…':previewReady?(exportPreview.failed.has(gallery.index)?'Photo unavailable. Select its thumbnail to retry.':'Loading exported photo…'):(exportPreview.error?'Photos are still being fetched or unavailable.':'No export photos ready yet.')):'No vehicle photos captured yet.'}</span>`}</div>
+ <div class="gallery-stage">${main?`<img src="${esc(main)}" alt="${esc(modelValue)} ${previewActive?'export':'source'} photo ${gallery.index+1}">`:`<span class="muted">${previewActive?(exportPreview.loading?'Preparing exact export preview…':previewReady?(exportPreview.failed.has(gallery.index)?'Photo unavailable. Select its thumbnail to retry.':'Loading exported photo…'):(exportPreview.error?esc(exportPreviewErrorText(exportPreview.error)):'No export photos ready yet.')):'No vehicle photos captured yet.'}</span>`}</div>
   ${previewReady?photoSelectionToolbar():''}
   <div class="photo-grid-heading"><button type="button" class="btn secondary" data-act="toggle-photo-grid" aria-expanded="${photoGridExpanded}" aria-controls="photo-thumbnail-grid">${photoGridExpanded?'▴ Collapse photos':'▾ Show all photos'} (${pictures.length})</button></div>
   <div class="posting-thumb-row ${photoGridExpanded?'photo-grid-row':''}"><div id="photo-thumbnail-grid" class="gallery-thumbs ${photoGridExpanded?'photo-grid-expanded':''}" aria-label="${previewActive?'Exported':'Vehicle'} photos">${thumbnails}</div><span class="photo-count">${pictures.length?`${gallery.index+1} / ${pictures.length}`:exportPreview.loading?'Preparing…':exportPreview.error?'Preview unavailable':'0 photos'}</span></div>
@@ -1859,19 +1880,97 @@ async function importFile(ev){ev.preventDefault();const file=$('import-file').fi
  catch(e){notify('Import rejected: '+e.message,true);}}
 async function refreshFeeds(){try{notify('Refreshing authorized configured feeds…');const res=await api('/api/sync',{});setState(res.state);const outcomes=Object.entries(res.results||{});if(!outcomes.length)return notify('No authorized feed configured. Import a dealership export first.');let good=outcomes.filter(([,x])=>x.ok).length;notify(`${good}/${outcomes.length} authorized feeds refreshed${good<outcomes.length?'; see server logs for failures':''}.`,good<outcomes.length);}catch(e){notify('Refresh failed: '+e.message,true);}}
 async function exportData(){try{const data=await api('/api/export');const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='marketplace-audit-'+new Date().toISOString().slice(0,10)+'.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);notify('Audit export saved.')}catch(e){notify(e.message,true);}}
-async function completeFacebookCleanup(vin){
- const car=state.vehicles.find(r=>r.vin===vin&&r.listed),issue=cleanupIssues[vin];
- if(!car||!issue?.can_trash||cleanupError)return notify('Check both links again before moving this listing to Trash.',true);
- if(!window.confirm(`Move ${name(primary(car))} to local Trash for 30 days? This removes tracking in LotRadar and leaves Facebook and dealer inventory untouched.`))return;
- try{
-  const result=await api('/api/action',{action:'trash_cleanup_listing',vin,listing_id:issue.listing_id,explicit_confirmation:true});
-  delete cleanupIssues[vin];
-  setState(result.state);
-  await refreshCleanupStatus();
-  notify('Moved local Facebook tracking to Trash. Dealer inventory kept.');
- }catch(e){notify('Cleanup not saved: '+e.message,true);void refreshCleanupStatus();}
+const removalLabel=row=>row.identity?.title||[row.identity?.year,row.identity?.make,row.identity?.model].filter(Boolean).join(' ')||row.vin;
+const pendingRemovals=()=>(state.removals||[]).filter(r=>r.status==='PENDING_FB_DELETE');
+const isPendingCleanupVin=vin=>pendingRemovals().some(r=>r.vin===vin);
+const activeCleanupState=r=>{
+ if(!cleanupIssues[r.vin]||isPendingCleanupVin(r.vin))return 'DONE';
+ return r.listed?'TRACKED_REVIEW':'UNLISTED_REVIEW';
+};
+const trackedCleanupCandidates=()=>state.vehicles.filter(r=>isUsedVehicle(r)&&activeCleanupState(r)==='TRACKED_REVIEW');
+function updateDeleteListingBadge(){
+ const badge=$('delete-listing-badge');if(!badge)return;
+ const n=pendingRemovals().length;
+ badge.textContent=`${n?'● ':''}Pending (${n})`;badge.classList.toggle('attention',n>0);
 }
-function installHandlers(){installDealerScanControls();document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab=b.dataset.tab;vehicleVisible=60;renderGrid();if(tab==='outstock')void refreshCleanupStatus();}));
+function removedRecoveryHtml(){
+ const rows=(state.removals||[]);
+ if(!rows.length)return '';
+ return `<details class="removed-recovery"><summary>Removed from inventory (${rows.length}) · restore if removed by mistake</summary>${rows.map(r=>`<div class="removed-row"><span><strong>${esc(removalLabel(r))}</strong> · Stock ${esc(r.identity?.stock||'—')} · ${esc(r.vin)} · ${r.status==='PENDING_FB_DELETE'?'Facebook deletion pending':r.status==='FB_DELETE_CONFIRMED'?'Facebook deletion confirmed':'No Facebook listing'}</span><button type="button" class="btn ghost" data-restore-removed="${esc(r.vin)}">Restore to inventory</button></div>`).join('')}</details>`;
+}
+function renderDeleteListing(){
+ const candidates=trackedCleanupCandidates(),rows=pendingRemovals(),needle=search.trim().toLowerCase();
+ const shownCandidates=candidates.filter(r=>`${r.vin} ${name(primary(r))} ${Object.values(r.sources||{}).map(s=>s.stock).join(' ')}`.toLowerCase().includes(needle));
+ const shownPending=rows.filter(r=>`${r.vin} ${removalLabel(r)} ${r.identity?.stock||''}`.toLowerCase().includes(needle));
+ $('inventory-matches').textContent=`${shownCandidates.length} to verify · ${shownPending.length} pending`;$('vehicle-more-row').hidden=true;
+ $('vehicle-grid').classList.add('cleanup-list');
+ const candidateHtml=shownCandidates.map(r=>{
+  const facebookLink=safeFacebookUrl(r.draft?.published_url||'');
+  const stock=Object.values(r.sources||{}).map(s=>s.stock).find(Boolean)||'MISSING';
+  return `<article class="vehicle-card delete-listing-card tracked-review-card" data-delete-vin="${esc(r.vin)}"><div class="vehicle-main">
+   <div class="card-stock-row"><strong class="stock-number">STOCK ${esc(stock)}</strong><strong class="card-mileage">Needs stock verification</strong></div>
+   <div class="vehicle-card-head"><h3>${esc(name(primary(r)))}</h3></div>
+   <div class="vehicle-vin-row"><span>VIN</span><strong>${esc(r.vin)}</strong></div>
+   <div class="vehicle-dealer-warning"><strong>⚑ Needs stock verification</strong><div>This vehicle is tracked on Facebook. Verify that it is unavailable at the dealership before removal.</div></div>
+   <div class="vehicle-card-actions">
+    ${facebookLink?`<button type="button" class="btn secondary" data-tracked-listing-open="${esc(r.vin)}" aria-label="Open tracked Facebook listing for ${esc(name(primary(r)))}">Open tracked listing ↗</button>`:'<button type="button" class="btn ghost" disabled>No valid Facebook URL</button>'}
+    <button type="button" class="btn primary" data-tracked-confirm="${esc(r.vin)}">Confirm out of stock</button>
+   </div></div></article>`;
+ }).join('');
+ const pendingHtml=shownPending.map(r=>{
+  const valid=Boolean(safeFacebookUrl(r.open_url));
+  return `<article class="vehicle-card delete-listing-card" data-delete-vin="${esc(r.vin)}"><div class="vehicle-main">
+   <div class="card-stock-row"><strong class="stock-number">STOCK ${esc(r.identity?.stock||'MISSING')}</strong><strong class="card-mileage">Removed ${esc(new Date(r.removed_at).toLocaleDateString())}</strong></div>
+   <div class="vehicle-card-head"><h3>${esc(removalLabel(r))}</h3></div>
+   <div class="vehicle-vin-row"><span>VIN</span><strong>${esc(r.vin)}</strong></div>
+   <div class="vehicle-dealer-warning"><strong>⚑ Facebook listing still needs manual deletion</strong>${valid?`<div>${esc(r.open_url)}</div>`:'<div>No valid saved Facebook listing link. The reminder is kept; find and delete this post manually on Facebook Marketplace.</div>'}</div>
+   <div class="vehicle-card-actions">
+    <button type="button" class="btn secondary" data-delete-open="${esc(r.vin)}">Delete Listing ↗</button>
+    <button type="button" class="btn primary" data-delete-confirm="${esc(r.vin)}">I've deleted it on Facebook</button>
+    </div></div></article>`;}).join('');
+ const candidateSection=candidateHtml?`<div class="delete-listing-section"><h3 class="delete-listing-section-title">Needs stock verification (${shownCandidates.length})</h3><div class="vehicle-grid cleanup-list">${candidateHtml}</div></div>`:'';
+ const pendingSection=pendingHtml?`<div class="delete-listing-section"><h3 class="delete-listing-section-title">Pending Facebook deletion (${shownPending.length})</h3><div class="vehicle-grid cleanup-list">${pendingHtml}</div></div>`:'';
+ const warning=cleanupError?`<div class="cleanup-status-warning" role="alert"><strong>Availability review status could not be refreshed</strong><div>${esc(cleanupError)}</div><div>Pending Facebook deletion reminders remain visible below. <button type="button" class="btn ghost" data-cleanup-retry>Retry</button></div></div>`:'';
+ $('vehicle-grid').innerHTML=warning+(candidateSection+pendingSection||`<div class="empty"><strong>${candidates.length||rows.length?'No matching Delete Listing vehicles':'No vehicles need Delete Listing action'}</strong><p>${candidates.length||rows.length?'Clear or change the search.':'Tracked or pending unavailable vehicles will appear here after availability review.'}</p></div>`);
+}
+function openFacebookForDeletion(vin){
+ const row=(state.removals||[]).find(r=>r.vin===vin&&r.status==='PENDING_FB_DELETE');
+ const url=row?safeFacebookUrl(row.open_url):'';
+ if(!url)return notify('No valid saved Facebook listing link for this vehicle. The deletion reminder is kept; find the post on Facebook Marketplace manually.',true);
+ window.open(url,'_blank','noopener,noreferrer');
+}
+function openTrackedListing(vin){
+ const row=trackedCleanupCandidates().find(r=>r.vin===vin);
+ const url=row?safeFacebookUrl(row.draft?.published_url||''):'';
+ if(!url)return notify('No valid saved Facebook listing link for this vehicle.',true);
+ window.open(url,'_blank','noopener,noreferrer');
+}
+const removalBusy=new Set();
+async function removalAction(vin,body,okMessage){
+ if(removalBusy.has(vin))return;
+ removalBusy.add(vin);
+ try{const result=await api('/api/action',{vin,...body});delete cleanupIssues[vin];setState(result.state);notify(okMessage);}
+ catch(e){notify('Not saved: '+e.message,true);void reload();}
+ finally{removalBusy.delete(vin);}
+}
+function removeOutOfStock(vin){
+ const car=state.vehicles.find(r=>r.vin===vin);if(!car)return;
+ const tracked=car.listed?' A Delete Listing reminder will be created for its Facebook listing; LotRadar will NOT delete the Facebook post.':'';
+ if(!window.confirm(`Have you verified that ${name(primary(car))} (VIN ${vin}) is no longer available at the dealership?\n\nThis removes it from active inventory. Nothing is permanently deleted and you can restore it.${tracked}`))return;
+ void removalAction(vin,{action:'remove_out_of_stock',explicit_out_of_stock_confirmation:true},'Removed from active inventory.');
+}
+function confirmFacebookDeleted(vin){
+ const row=pendingRemovals().find(r=>r.vin===vin);if(!row)return;
+ if(!window.confirm(`Confirm that you manually deleted the Facebook Marketplace listing for ${removalLabel(row)}?\n\nLotRadar will clear the reminder and move its local tracking record to the 30-day Trash.`))return;
+ void removalAction(vin,{action:'confirm_facebook_deleted',explicit_manual_facebook_deletion:true,expected_listing_url:row.listing_url},'Reminder cleared. Local tracking archived to Trash for 30 days.');
+}
+function restoreRemoved(vin){
+ const row=(state.removals||[]).find(r=>r.vin===vin);if(!row)return;
+ const note=row.status==='PENDING_FB_DELETE'?'\n\nThis also cancels its pending Facebook deletion reminder; its Facebook tracking is unchanged.':row.status==='FB_DELETE_CONFIRMED'?'\n\nIts local Facebook tracking was already archived to Trash; restore it there separately if needed.':'';
+ if(!window.confirm(`Restore ${removalLabel(row)} to active inventory?${note}`))return;
+ void removalAction(vin,{action:'restore_removed',explicit_confirmation:true},'Restored to active inventory.');
+}
+function installHandlers(){installDealerScanControls();document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab=b.dataset.tab;vehicleVisible=60;renderGrid();if(tab==='outstock'||tab==='deletelisting')void refreshCleanupStatus();}));
  $('search').addEventListener('input',e=>{search=e.target.value;vehicleVisible=60;clearTimeout(searchRenderTimer);searchRenderTimer=setTimeout(()=>{searchRenderTimer=null;renderGrid()},110);});
  $('vehicle-show-more').addEventListener('click',()=>{vehicleVisible+=60;renderGrid();});
  inventoryFilterIds.forEach(id=>$(id).addEventListener('input',()=>{vehicleVisible=60;renderGrid();}));
@@ -1952,7 +2051,10 @@ function installHandlers(){installDealerScanControls();document.querySelectorAll
     if(exportPreview.revision&&!exportPreview.urls.has(idx))void loadExportPreviewFrame(idx);
     return;}
  const photoExport=e.target.closest('[data-photos-vin]');if(photoExport){e.preventDefault();e.stopPropagation();void downloadPhotoZip(photoExport.dataset.photosVin);return;}
- const cleanupTrash=e.target.closest('[data-cleanup-trash]');if(cleanupTrash){e.preventDefault();e.stopPropagation();void completeFacebookCleanup(cleanupTrash.dataset.cleanupTrash);return;}
+ const cleanupRetry=e.target.closest('[data-cleanup-retry]');if(cleanupRetry){e.preventDefault();e.stopPropagation();void refreshCleanupStatus();return;}
+ for(const [attr,fn] of [['outstockRemove',removeOutOfStock],['trackedConfirm',removeOutOfStock],['trackedListingOpen',openTrackedListing],['deleteOpen',openFacebookForDeletion],['deleteConfirm',confirmFacebookDeleted],['restoreRemoved',restoreRemoved]]){
+  const control=e.target.closest('[data-'+attr.replace(/[A-Z]/g,c=>'-'+c.toLowerCase())+']');
+  if(control){e.preventDefault();e.stopPropagation();fn(control.dataset[attr]);return;}}
  const refresh=e.target.closest('[data-refresh-vin]');if(refresh){e.preventDefault();e.stopPropagation();void refreshOneVehicle(refresh.dataset.refreshVin);return;}
  if(e.target.closest('a,input,label,button')&&e.target.closest('[data-cleanup-vin]'))return;
  const facebook=e.target.closest('[data-card-facebook]');if(facebook){e.stopPropagation();return;}
@@ -1981,7 +2083,7 @@ function installHandlers(){installDealerScanControls();document.querySelectorAll
 function installListingTrashButton(){if($('btn-listing-trash')){$('btn-listing-trash').addEventListener('click',openListingTrash);return;}const host=document.querySelector('.sidenav');if(!host)return;const button=document.createElement('button');button.type='button';button.id='btn-listing-trash';button.className='btn secondary';button.textContent='🗑 Trash';button.title='Restore local listing records within 30 days';host.appendChild(button);button.addEventListener('click',openListingTrash);}
 async function init(){try{let theme;try{theme=localStorage.getItem('marketplace-theme')}catch{};if(theme==='light'||theme==='dark')document.documentElement.dataset.theme=theme;installHandlers();installPhotoSettings();installScanDockClose();installListingTrashButton();const boot=await api('/api/bootstrap');csrf=boot.csrf;await loadPhotoSettings();await reload();await refreshCleanupStatus();await loadBasicCatalog();await pollDealerScanControls();await refreshSiteScanStatus();await refreshLiveVerifyStatus();await refreshFacebookBulkStatus();await refreshFullScanStatus();await refreshDealerConsole();
  setInterval(()=>{if(!document.hidden&&selectedVin&&(!gallery.cache||gallery.cache.pending))void refreshPhotoStatus()},6500);
- setInterval(()=>{if(!document.hidden){void refreshDealerConsole();void refreshReaderSetup();if(tab==='outstock'||lastScanJob?.running)void refreshCleanupStatus();}},3000);
+ setInterval(()=>{if(!document.hidden){void refreshDealerConsole();void refreshReaderSetup();if(tab==='outstock'||tab==='deletelisting'||lastScanJob?.running)void refreshCleanupStatus();}},3000);
  // Recover scan monitoring after page refresh, even if the console is hidden.
  if(lastScanJob?.running){scanDockEnabled=true;updateScanDock(lastScanJob);siteScanTimer=setInterval(()=>{if(!document.hidden)void refreshSiteScanStatus()},1700);}
  // A server-owned Full Scan remains running if the user reloads Marketplace.
