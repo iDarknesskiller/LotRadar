@@ -292,7 +292,7 @@ async function refreshCleanupStatus(){
   cleanupIssues=response.issues||{};cleanupError='';
   if(changed){renderStats();renderGrid();}
  }catch(e){
-  if(cleanupError!==e.message){cleanupError=e.message;if(tab==='outstock')renderGrid();}
+  if(cleanupError!==e.message){cleanupError=e.message;if(tab==='outstock'||tab==='deletelisting')renderGrid();}
  }finally{cleanupLoading=false;}
 }
 const safeFacebookUrl=url=>{try{const p=new URL(url);if(p.protocol!=='https:'||!['facebook.com','www.facebook.com','m.facebook.com'].includes(p.hostname)||p.username||p.password||!(p.port===''||p.port==='443'))return '';const path=p.pathname.replace(/\/$/,'');const m=/^\/marketplace\/item\/(\d{8,24})$/.exec(path);const id=m?.[1]||(path==='/marketplace/edit'?(p.searchParams.get('listing_id')||''):'');return /^\d{8,24}$/.test(id)?`https://www.facebook.com/marketplace/item/${id}`:'';}catch{return '';}};
@@ -1930,7 +1930,8 @@ function renderDeleteListing(){
     </div></div></article>`;}).join('');
  const candidateSection=candidateHtml?`<div class="delete-listing-section"><h3 class="delete-listing-section-title">Needs stock verification (${shownCandidates.length})</h3><div class="vehicle-grid cleanup-list">${candidateHtml}</div></div>`:'';
  const pendingSection=pendingHtml?`<div class="delete-listing-section"><h3 class="delete-listing-section-title">Pending Facebook deletion (${shownPending.length})</h3><div class="vehicle-grid cleanup-list">${pendingHtml}</div></div>`:'';
- $('vehicle-grid').innerHTML=candidateSection+pendingSection||`<div class="empty"><strong>${candidates.length||rows.length?'No matching Delete Listing vehicles':'No vehicles need Delete Listing action'}</strong><p>${candidates.length||rows.length?'Clear or change the search.':'Tracked or pending unavailable vehicles will appear here after availability review.'}</p></div>`;
+ const warning=cleanupError?`<div class="cleanup-status-warning" role="alert"><strong>Availability review status could not be refreshed</strong><div>${esc(cleanupError)}</div><div>Pending Facebook deletion reminders remain visible below. <button type="button" class="btn ghost" data-cleanup-retry>Retry</button></div></div>`:'';
+ $('vehicle-grid').innerHTML=warning+(candidateSection+pendingSection||`<div class="empty"><strong>${candidates.length||rows.length?'No matching Delete Listing vehicles':'No vehicles need Delete Listing action'}</strong><p>${candidates.length||rows.length?'Clear or change the search.':'Tracked or pending unavailable vehicles will appear here after availability review.'}</p></div>`);
 }
 function openFacebookForDeletion(vin){
  const row=(state.removals||[]).find(r=>r.vin===vin&&r.status==='PENDING_FB_DELETE');
@@ -1969,7 +1970,7 @@ function restoreRemoved(vin){
  if(!window.confirm(`Restore ${removalLabel(row)} to active inventory?${note}`))return;
  void removalAction(vin,{action:'restore_removed',explicit_confirmation:true},'Restored to active inventory.');
 }
-function installHandlers(){installDealerScanControls();document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab=b.dataset.tab;vehicleVisible=60;renderGrid();if(tab==='outstock')void refreshCleanupStatus();}));
+function installHandlers(){installDealerScanControls();document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab=b.dataset.tab;vehicleVisible=60;renderGrid();if(tab==='outstock'||tab==='deletelisting')void refreshCleanupStatus();}));
  $('search').addEventListener('input',e=>{search=e.target.value;vehicleVisible=60;clearTimeout(searchRenderTimer);searchRenderTimer=setTimeout(()=>{searchRenderTimer=null;renderGrid()},110);});
  $('vehicle-show-more').addEventListener('click',()=>{vehicleVisible+=60;renderGrid();});
  inventoryFilterIds.forEach(id=>$(id).addEventListener('input',()=>{vehicleVisible=60;renderGrid();}));
@@ -2050,6 +2051,7 @@ function installHandlers(){installDealerScanControls();document.querySelectorAll
     if(exportPreview.revision&&!exportPreview.urls.has(idx))void loadExportPreviewFrame(idx);
     return;}
  const photoExport=e.target.closest('[data-photos-vin]');if(photoExport){e.preventDefault();e.stopPropagation();void downloadPhotoZip(photoExport.dataset.photosVin);return;}
+ const cleanupRetry=e.target.closest('[data-cleanup-retry]');if(cleanupRetry){e.preventDefault();e.stopPropagation();void refreshCleanupStatus();return;}
  for(const [attr,fn] of [['outstockRemove',removeOutOfStock],['trackedConfirm',removeOutOfStock],['trackedListingOpen',openTrackedListing],['deleteOpen',openFacebookForDeletion],['deleteConfirm',confirmFacebookDeleted],['restoreRemoved',restoreRemoved]]){
   const control=e.target.closest('[data-'+attr.replace(/[A-Z]/g,c=>'-'+c.toLowerCase())+']');
   if(control){e.preventDefault();e.stopPropagation();fn(control.dataset[attr]);return;}}
@@ -2081,7 +2083,7 @@ function installHandlers(){installDealerScanControls();document.querySelectorAll
 function installListingTrashButton(){if($('btn-listing-trash')){$('btn-listing-trash').addEventListener('click',openListingTrash);return;}const host=document.querySelector('.sidenav');if(!host)return;const button=document.createElement('button');button.type='button';button.id='btn-listing-trash';button.className='btn secondary';button.textContent='🗑 Trash';button.title='Restore local listing records within 30 days';host.appendChild(button);button.addEventListener('click',openListingTrash);}
 async function init(){try{let theme;try{theme=localStorage.getItem('marketplace-theme')}catch{};if(theme==='light'||theme==='dark')document.documentElement.dataset.theme=theme;installHandlers();installPhotoSettings();installScanDockClose();installListingTrashButton();const boot=await api('/api/bootstrap');csrf=boot.csrf;await loadPhotoSettings();await reload();await refreshCleanupStatus();await loadBasicCatalog();await pollDealerScanControls();await refreshSiteScanStatus();await refreshLiveVerifyStatus();await refreshFacebookBulkStatus();await refreshFullScanStatus();await refreshDealerConsole();
  setInterval(()=>{if(!document.hidden&&selectedVin&&(!gallery.cache||gallery.cache.pending))void refreshPhotoStatus()},6500);
- setInterval(()=>{if(!document.hidden){void refreshDealerConsole();void refreshReaderSetup();if(tab==='outstock'||lastScanJob?.running)void refreshCleanupStatus();}},3000);
+ setInterval(()=>{if(!document.hidden){void refreshDealerConsole();void refreshReaderSetup();if(tab==='outstock'||tab==='deletelisting'||lastScanJob?.running)void refreshCleanupStatus();}},3000);
  // Recover scan monitoring after page refresh, even if the console is hidden.
  if(lastScanJob?.running){scanDockEnabled=true;updateScanDock(lastScanJob);siteScanTimer=setInterval(()=>{if(!document.hidden)void refreshSiteScanStatus()},1700);}
  // A server-owned Full Scan remains running if the user reloads Marketplace.

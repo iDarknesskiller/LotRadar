@@ -256,4 +256,12 @@ class Frontend(unittest.TestCase):
         self.assertIn("I've deleted it on Facebook",js)
         self.assertIn('trackedCleanupCandidates().find(r=>r.vin===vin)',js)
         self.assertIn('pendingRemovals().find(r=>r.vin===vin)',js)
+    def test_cleanup_tabs_refresh_together_and_error_keeps_pending(self):
+        js=(self.root/'app.js').read_text(encoding='utf-8')
+        self.assertIn("tab==='outstock'||tab==='deletelisting')void refreshCleanupStatus()",js)
+        self.assertIn("tab==='outstock'||tab==='deletelisting'||lastScanJob?.running",js)
+        self.assertIn("tab==='outstock'||tab==='deletelisting')renderGrid()",js)
+        self.assertIn('Availability review status could not be refreshed',js)
+        self.assertIn('Pending Facebook deletion reminders remain visible below',js)
+        self.assertIn('data-cleanup-retry',js)
 if __name__=='__main__':unittest.main()
