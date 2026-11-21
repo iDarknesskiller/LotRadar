@@ -249,6 +249,32 @@ class TestBuildGuards(BuilderTestCase):
         with self.assertRaisesRegex(bi.BuildError, 'new_module.py'):
             self.build()
 
+    def test_new_root_markdown_document_is_ignored(self):
+        # LR-012: a new handoff/README at the repository root must not break packaging, and is never packaged.
+        self.commit_change('NEW_HANDOFF_NOTE.md', b'# note\n')
+        self.commit_change('Lower_Case_Note.MD', b'# note\n')
+        path, manifest, *_ = self.build()
+        listed = [i['path'] for i in manifest['payload_files']]
+        self.assertNotIn('NEW_HANDOFF_NOTE.md', listed)
+        with zipfile.ZipFile(path) as z:
+            self.assertFalse([n for n in z.namelist() if n.lower().endswith('.md')])
+
+    def test_other_unknown_files_still_fail_build(self):
+        # Only root-level .md is auto-excluded: root .txt, nested .md and code still fail.
+        for rel in ('NOTES.txt', 'chrome-extension/README.md', 'helper.ps1'):
+            with self.subTest(rel=rel):
+                self.repo = os.path.join(self.tmp, 'repo-' + rel.replace('/', '_'))
+                subprocess.check_call(['git', 'clone', '-q', '--no-hardlinks', REPO, self.repo])
+                self.commit_change(rel, b'x\n')
+                with self.assertRaisesRegex(bi.BuildError, re.escape(rel)):
+                    self.build(out='o-' + rel.replace('/', '_'))
+
+    def test_is_root_document_unit(self):
+        for p in ('README.md', 'ARCHITECT_HANDOFF.md', 'x.MD'):
+            self.assertTrue(bi.is_root_document(p), p)
+        for p in ('docs/a.md', 'chrome-extension/README.md', 'README - SCANNER.txt', 'server.py', 'md', 'a.mdx'):
+            self.assertFalse(bi.is_root_document(p), p)
+
     def test_secret_in_source_fails_build(self):
         fake = 'sk-' + 'A1b2C3d4' * 4
         self.commit_change('ai_copy.py', rb(os.path.join(self.repo, 'ai_copy.py'))
