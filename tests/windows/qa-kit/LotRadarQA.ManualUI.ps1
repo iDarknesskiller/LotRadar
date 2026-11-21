@@ -118,22 +118,22 @@ if ($UiPreview) {
         [IO.Compression.ZipFileExtensions]::ExtractToFile($ge, $gui, $true)
     } finally { $z.Dispose() }
     $steps = @(
-        @(1,'P-TAB','At failure press Tab four times. Focus cycles Details, Console, Retry (F5), Close.')
-        @(1,'P-STAB','Press Shift+Tab four times. Focus cycles in reverse.')
-        @(1,'P-ALTS','Press Alt+S. Details open and Hide details appears.')
-        @(1,'P-ALTD','Press Alt+D. Details close.')
-        @(1,'P-ALTC','Press Alt+C. Read the preview message about no console.')
-        @(1,'P-F5-RETRY','Tab to Retry and press plain F5 once. Observe the focused control after Retry disables.')
-        @(1,'P-F5-RUNNING','While starting tap F5 repeatedly and hold it for two seconds. Startup continues once.')
-        @(1,'P-F5-DONE','After LotRadar is open press F5. No new attempt.')
-        @(1,'P-ESC','Press Escape. The window closes.')
-        @(2,'P-F5-FOCUS-BTN','At failure focus Show details using Tab, press F5 once. Watch focus and wait for success, then close with X.')
-        @(3,'P-F5-FOCUS-DETAILS','At failure open details, click in the details text and press F5. No keystroke edits the text. Wait for success, then close with X.')
-        @(4,'P-CLICK-PARITY','At failure click Retry (F5) once. Observe resulting focus, wait for success, then close with X.')
-        @(5,'P-ALTR-NONE','At failure focus the form and press Alt+R. LotRadar stays failed. Observe any other application response.')
-        @(5,'P-F5-OTHER-WINDOW','Focus the QA console and press F5. LotRadar stays failed. Observe the console response.')
-        @(5,'P-LABEL','Before closing, inspect Retry (F5). The whole label must fit.')
-        @(5,'P-ALTL','Refocus the failed LotRadar window and press Alt+L. It closes.')
+        ,@(1,'P-TAB','At failure press Tab four times. Focus cycles Details, Console, Retry (F5), Close.')
+        ,@(1,'P-STAB','Press Shift+Tab four times. Focus cycles in reverse.')
+        ,@(1,'P-ALTS','Press Alt+S. Details open and Hide details appears.')
+        ,@(1,'P-ALTD','Press Alt+D. Details close.')
+        ,@(1,'P-ALTC','Press Alt+C. Read the preview message about no console.')
+        ,@(1,'P-F5-RETRY','Tab to Retry and press plain F5 once. Observe the focused control after Retry disables.')
+        ,@(1,'P-F5-RUNNING','While starting tap F5 repeatedly and hold it for two seconds. Startup continues once.')
+        ,@(1,'P-F5-DONE','After LotRadar is open press F5. No new attempt.')
+        ,@(1,'P-ESC','Press Escape. The window closes.')
+        ,@(2,'P-F5-FOCUS-BTN','At failure focus Show details using Tab, press F5 once. Watch focus and wait for success, then close with X.')
+        ,@(3,'P-F5-FOCUS-DETAILS','At failure open details, click in the details text and press F5. No keystroke edits the text. Wait for success, then close with X.')
+        ,@(4,'P-CLICK-PARITY','At failure click Retry (F5) once. Observe resulting focus, wait for success, then close with X.')
+        ,@(5,'P-ALTR-NONE','At failure focus the form and press Alt+R. LotRadar stays failed. Observe any other application response.')
+        ,@(5,'P-F5-OTHER-WINDOW','Focus the QA console and press F5. LotRadar stays failed. Observe the console response.')
+        ,@(5,'P-LABEL','Before closing, inspect Retry (F5). The whole label must fit.')
+        ,@(5,'P-ALTL','Refocus the failed LotRadar window and press Alt+L. It closes.')
     )
     for ($run = 1; $run -le 5; $run++) {
         $rows = @($steps | Where-Object { $_[0] -eq $run })
@@ -171,10 +171,16 @@ if ($UiPreview) {
                 elseif ($id -eq 'P-F5-DONE' -and @($auto.retry_log.Split(',') | Where-Object { $_ -eq 'f5:not-eligible' }).Count -lt 2) { $state = 'INCONCLUSIVE' }
                 elseif ($id -eq 'P-LABEL' -and $auto.clipped) { $state = 'FAIL' }
             }
-            Add-M $id $row[2] $state (Protect-Text ("Windows " + [Environment]::OSVersion.Version + " PS " + $PSVersionTable.PSVersion + " DPI $dpi scale $pct% run $run attempts=" + $auto.attempts + " log=" + $auto.retry_log + " observed=" + $observation))
+            Add-M $id $row[2] $state (Protect-Text ("Windows " + [Environment]::OSVersion.Version + " PS " + $PSVersionTable.PSVersion + " DPI $dpi scale $pct% run $run attempts=" + $auto.attempts + " (full retry log in preview-result-$run.json), observed=" + $observation))
         }
     }
     $incomplete = @($mRows | Where-Object { $_.Id -like 'P-*' -and $_.Status -ne 'PASS' })
+    $expectedIds = @($steps | ForEach-Object { $_[1] })
+    $actualIds = @($mRows | Where-Object { $_.Id -like 'P-*' } | ForEach-Object { $_.Id })
+    if ($expectedIds.Count -ne 16 -or $actualIds.Count -ne 16 -or (Compare-Object $expectedIds $actualIds)) {
+        Add-M 'E3' 'Physical keyboard results' 'INCONCLUSIVE' 'Missing or duplicate physical row IDs'
+        throw 'Incomplete physical row evidence'
+    }
     $e3Status = 'PASS'
     foreach ($status in 'SKIP','INCONCLUSIVE','BLOCKED','FAIL') { if ($incomplete.Status -contains $status) { $e3Status = $status } }
     Add-M 'E3' 'Physical keyboard results' $e3Status ('Rows requiring review: ' + ($incomplete.Id -join ', '))

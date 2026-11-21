@@ -415,6 +415,25 @@ class QAKit(unittest.TestCase):
         self.assertIn('Confirm-Start', b)
         for case in ("'E1'", "'E2'", "'E5'", "'E6'", "'B9'"):
             self.assertIn(case, b)
+
+    def test_preview_physical_rows_are_sixteen_distinct_named_rows(self):
+        """LR-010-05: without a leading comma PowerShell flattens nested @(...) rows, so the Owner saw blank prompts.
+        Every physical row must be its own ,@(run,'ID','instruction') element, with 16 unique IDs across runs 1-5."""
+        m = self.read('tools/LotRadarQA.ManualUI.ps1').decode('ascii').replace('\r\n', '\n')
+        start = m.index('$steps = @(')
+        block = m[start:m.index('\n    )', start)]
+        entries = [l.strip() for l in block.splitlines()[1:] if l.strip()]
+        self.assertTrue(entries)
+        for line in entries:
+            self.assertTrue(line.startswith(',@('), 'row is not wrapped with a leading comma (would be flattened): ' + line)
+        rows = re.findall(r"^,@\(([1-5]),'(P-[A-Z0-9-]+)','([^']{10,})'\)$", '\n'.join(entries), re.M)
+        self.assertEqual(len(rows), len(entries), 'every row must be (run, ID, instruction)')
+        ids = [r[1] for r in rows]
+        self.assertEqual(len(ids), 16)
+        self.assertEqual(len(set(ids)), 16, 'duplicate physical row ID')
+        self.assertEqual(sorted({int(r[0]) for r in rows}), [1, 2, 3, 4, 5])
+        self.assertIn("throw 'Incomplete physical row evidence'", m)   # run-time guard against missing/duplicate rows
+
     def test_gui_cases_cleanup_never_fails_and_report_console_diag(self):
         """Windows 11 run of dc4244e: G9 failed on taskkill "not found" under ErrorActionPreference Stop."""
         h = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
