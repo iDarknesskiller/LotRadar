@@ -82,6 +82,13 @@ SOURCE_ALLOWLIST = [
 EXCLUDED_EXACT = {'.gitignore', '.gitattributes', 'README.md', 'AI_README.md', 'AUDIT_README.txt', 'FILE_MANIFEST.json'}
 EXCLUDED_PREFIXES = ('installer/', 'scripts/', 'docs/', 'tests/')
 
+
+def is_root_document(path):
+    """Markdown documents at the repository root (README.md, AI_README.md, ARCHITECT_HANDOFF.md, ...) are never
+    program files. They are excluded automatically so a new root document cannot make every build fail (LR-012).
+    Only the root level and only .md: any other unknown tracked file still fails the build."""
+    return '/' not in path and path.lower().endswith('.md')
+
 # Package-root files (outside the payload) taken from installer/.
 PACKAGE_FILES = {
     'Installer.cmd': 'installer/Installer.cmd',
@@ -173,7 +180,8 @@ def load_committed_source(root):
     if missing:
         raise BuildError('Mandatory tracked files are missing at HEAD: ' + ', '.join(missing))
     unknown = sorted(p for p in tracked
-                     if p not in allow and p not in ASSETS and p not in EXCLUDED_EXACT and not p.startswith(EXCLUDED_PREFIXES))
+                     if p not in allow and p not in ASSETS and p not in EXCLUDED_EXACT
+                     and not p.startswith(EXCLUDED_PREFIXES) and not is_root_document(p))
     if unknown:
         raise BuildError('Tracked files are neither packaged nor explicitly excluded (update the allowlist '
                          'in scripts/build_installer.py): ' + ', '.join(unknown))
