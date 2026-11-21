@@ -381,11 +381,36 @@ function New-Button([string]$Text, [int]$X) {
 }
 $btnDetails = New-Button '&Show details' 30
 $btnConsole = New-Button 'Show &console' 158
-$btnRetry = New-Button '&Retry' 286
+$btnRetry = New-Button 'Retry (F5)' 286
 $btnClose = New-Button 'C&lose' 414
 $btnConsole.Visible = $false
 $btnRetry.Enabled = $false
 $form.CancelButton = $btnClose
+
+$script:AttemptCount = 0
+$script:RetryLog = New-Object System.Collections.ArrayList
+$script:RetryVia = 'click'
+$script:F5Down = $false
+$form.Add_KeyDown({
+    param($sender, $e)
+    if ($e.KeyCode -ne [Windows.Forms.Keys]::F5 -or $e.Modifiers -ne [Windows.Forms.Keys]::None) { return }
+    $e.Handled = $true
+    $e.SuppressKeyPress = $true
+    if ($script:F5Down) { [void]$script:RetryLog.Add('f5:repeat'); return }
+    $script:F5Down = $true
+    if ($script:Mode -ne 'failed' -or -not $btnRetry.Enabled -or -not $btnRetry.Visible) {
+        [void]$script:RetryLog.Add('f5:not-eligible')
+        return
+    }
+    $script:RetryVia = 'f5'
+    try { $btnRetry.PerformClick() } finally { $script:RetryVia = 'click' }
+})
+$form.Add_KeyUp({
+    param($sender, $e)
+    if ($e.KeyCode -eq [Windows.Forms.Keys]::F5) { $script:F5Down = $false }
+})
+$form.Add_Deactivate({ $script:F5Down = $false })
+
 
 # ------------------------------------------------------------------ attempt state
 $script:Mode = 'running'        # running | done | failed
@@ -453,6 +478,7 @@ function Update-Details {
     $details.Text = ($lines -join "`r`n")
 }
 function Start-Attempt {
+    $script:AttemptCount++
     $script:Nonce = New-Nonce
     $script:StatusPath = Join-Path $runtimeDir ('startup-status-' + $script:Nonce + '.jsonl')
     $script:Offset = [int64]0
@@ -488,6 +514,7 @@ $PreviewSteps = @(
     @('browser', 'info', 'Downloading the browser runtime (example)'),
     @('browser', 'complete', 'Browser runtime ready'), @('server', 'started', 'Starting the local LotRadar server'))
 function Start-PreviewAttempt {
+    $script:AttemptCount++
     $script:PreviewRun++
     $script:PreviewIdx = 0; $script:PreviewAt = Get-Date
     $script:Events.Clear()
@@ -765,11 +792,13 @@ $btnConsole.Add_Click({
     Show-ConsoleWindow
 })
 $btnRetry.Add_Click({
-    if ($script:Mode -ne 'failed') { return }
+    if ($script:Mode -ne 'failed') { [void]$script:RetryLog.Add($script:RetryVia + ':ignored'); return }
     if (-not (Close-FailedConsole)) {
+        [void]$script:RetryLog.Add($script:RetryVia + ':finishing')
         $status.Text = 'The previous attempt is still finishing. Close its console window (taskbar), then press Retry.'
         return
     }
+    [void]$script:RetryLog.Add($script:RetryVia + ':started')
     if ($Preview) { Start-PreviewAttempt; return }
     if ($script:StatusPath) { Remove-Item -LiteralPath $script:StatusPath -Force -ErrorAction SilentlyContinue }
     try { Start-Attempt } catch { $script:Mode = 'running'; Set-Failed 'install' ('Could not start the LotRadar startup script: ' + (Protect-Message $_.Exception.Message)) }
@@ -825,7 +854,7 @@ try {
             $evList = @($script:Events | ForEach-Object { $_.Stage + ':' + $_.State })
             $consoleExit = $null
             try { if ($script:Console -and $script:Console.HasExited) { $consoleExit = $script:Console.ExitCode } } catch { }
-            [IO.File]::WriteAllText($ResultFile, (@{ exit = $script:ExitCode; mode = $script:Mode; reason = $script:FailReason; events = $evList; health = $script:HealthOk; tick_error = [string]$script:LastTickError; console_exit = $consoleExit; boot_pid = $script:BootPid; console_shown = [bool]$script:ConsoleShown; console_diag = (@($script:ConsoleDiag) -join ','); clipped = [string]$script:Clipped; scale = $script:Scale; steps = [string]$script:StepsAtClose; logo = [bool]$script:HasLogo } | ConvertTo-Json -Compress), $utf8)
+            [IO.File]::WriteAllText($ResultFile, (@{ attempts = $script:AttemptCount; retry_log = (@($script:RetryLog) -join ','); exit = $script:ExitCode; mode = $script:Mode; reason = $script:FailReason; events = $evList; health = $script:HealthOk; tick_error = [string]$script:LastTickError; console_exit = $consoleExit; boot_pid = $script:BootPid; console_shown = [bool]$script:ConsoleShown; console_diag = (@($script:ConsoleDiag) -join ','); clipped = [string]$script:Clipped; scale = $script:Scale; steps = [string]$script:StepsAtClose; logo = [bool]$script:HasLogo } | ConvertTo-Json -Compress), $utf8)
         } catch { }
     }
 }

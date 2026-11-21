@@ -214,10 +214,30 @@ class TestStartupVisualContract(unittest.TestCase):
 
     def test_controls_and_accelerators_kept(self):
         c = self.code
-        for b in ("New-Button '&Show details'", "New-Button 'Show &console'", "New-Button '&Retry'", "New-Button 'C&lose'"):
+        for b in ("New-Button '&Show details'", "New-Button 'Show &console'", "New-Button 'Retry (F5)'", "New-Button 'C&lose'"):
             self.assertIn(b, c)
+        self.assertNotIn("'&Retry'", c)
         self.assertIn('$form.CancelButton = $btnClose', c)
         self.assertIn('$anim.Stop()', c[c.index('$form.Add_FormClosing({'):])
+
+    def test_f5_retry_routing(self):
+        code = self.code
+        down = code.split('$form.Add_KeyDown({', 1)[1].split('$form.Add_KeyUp({', 1)[0]
+        for fragment in ('::F5', '$e.Modifiers -ne [Windows.Forms.Keys]::None',
+                         '$e.Handled = $true', '$e.SuppressKeyPress = $true',
+                         'if ($script:F5Down)', '$script:F5Down = $true',
+                         "$script:Mode -ne 'failed'", '-not $btnRetry.Enabled',
+                         '-not $btnRetry.Visible', '$btnRetry.PerformClick()'):
+            self.assertIn(fragment, down)
+        self.assertEqual(code.count('$btnRetry.PerformClick()'), 1)
+        self.assertNotRegex(down, r'Start-(Preview)?Attempt')
+        for event in ('KeyUp', 'Deactivate'):
+            self.assertIn('$script:F5Down = $false', code.split('$form.Add_'+event+'({', 1)[1].split('})', 1)[0])
+        for function in ('Start-Attempt', 'Start-PreviewAttempt'):
+            self.assertEqual(code.split('function '+function+' {', 1)[1].split('\n}', 1)[0].count('$script:AttemptCount++'), 1)
+        result = code.split('[IO.File]::WriteAllText($ResultFile', 1)[1]
+        self.assertIn('attempts = $script:AttemptCount', result)
+        self.assertIn('retry_log = (@($script:RetryLog)', result)
 
 
 if __name__ == '__main__':

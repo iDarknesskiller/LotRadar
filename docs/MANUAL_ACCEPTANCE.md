@@ -70,7 +70,7 @@ the four visible steps the window reports. Still manual:
    under "Initializing LotRadar" names which one), LotRadar opens once, the startup window closes by itself,
    "LotRadar Server" stays in the taskbar.
 2. Double-click again while LotRadar runs: LotRadar opens again; still one "LotRadar Server" window.
-3. Keyboard only: Tab moves between the buttons, Alt+S / Alt+C / Alt+R / Alt+L work, Esc closes.
+3. Keyboard only: Tab moves between the buttons, Alt+S / Alt+D / Alt+C / Alt+L work, plain F5 retries when enabled, Alt+R leaves the attempt unchanged, Esc closes.
 4. Display scaling 100%, 125%, 150% and 200% (Settings > Display; sign out and back in after each change): text,
    steps and buttons are not cut off, also with "Show details" open.
 5. Close the startup window while it shows "In progress": the "LotRadar Server" window comes up and LotRadar still

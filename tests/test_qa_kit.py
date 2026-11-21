@@ -415,6 +415,71 @@ class QAKit(unittest.TestCase):
         self.assertIn('Confirm-Start', b)
         for case in ("'E1'", "'E2'", "'E5'", "'E6'", "'B9'"):
             self.assertIn(case, b)
+
+    def test_preview_physical_rows_are_sixteen_distinct_named_rows(self):
+        """LR-010-05: without a leading comma PowerShell flattens nested @(...) rows, so the Owner saw blank prompts.
+        Every physical row must be its own ,@(run,'ID','instruction') element, with 16 unique IDs across runs 1-5."""
+        m = self.read('tools/LotRadarQA.ManualUI.ps1').decode('ascii').replace('\r\n', '\n')
+        start = m.index('$steps = @(')
+        block = m[start:m.index('\n    )', start)]
+        entries = [l.strip() for l in block.splitlines()[1:] if l.strip()]
+        self.assertTrue(entries)
+        for line in entries:
+            self.assertTrue(line.startswith(',@('), 'row is not wrapped with a leading comma (would be flattened): ' + line)
+        rows = re.findall(r"^,@\(([1-5]),'(P-[A-Z0-9-]+)','([^']{10,})'\)$", '\n'.join(entries), re.M)
+        self.assertEqual(len(rows), len(entries), 'every row must be (run, ID, instruction)')
+        ids = [r[1] for r in rows]
+        self.assertEqual(len(ids), 16)
+        self.assertEqual(len(set(ids)), 16, 'duplicate physical row ID')
+        self.assertEqual(sorted({int(r[0]) for r in rows}), [1, 2, 3, 4, 5])
+        self.assertIn("throw 'Incomplete physical row evidence'", m)   # run-time guard against missing/duplicate rows
+
+    def test_real_input_driver_covers_the_same_sixteen_rows_safely(self):
+        """LR-010 automated physical rows: tests/windows/Test-StartupRealInput.ps1 must cover exactly the 16 P IDs of the
+        manual preview, use real system input (SendInput), check the foreground before every input, save rows at once,
+        and stop only the processes it started."""
+        drv = open(os.path.join(ROOT, 'tests', 'windows', 'Test-StartupRealInput.ps1'), 'rb').read()
+        drv.decode('ascii')
+        d = drv.decode('ascii')
+        manual = self.read('tools/LotRadarQA.ManualUI.ps1').decode('ascii')
+        manual_ids = set(re.findall(r",@\([1-5],'(P-[A-Z0-9-]+)'", manual))
+        driver_ids = set(re.findall(r"Add-Row '(P-[A-Z0-9-]+)'", d))
+        self.assertEqual(len(manual_ids), 16)
+        self.assertEqual(driver_ids, manual_ids)
+        self.assertIn("qa-kit\\LotRadarQA.RealInput.ps1", d)  # shared guarded input module
+        self.assertIn("'-Preview'", d)                       # nothing is installed or started
+        ri = open(os.path.join(ROOT, 'tests', 'windows', 'qa-kit', 'LotRadarQA.RealInput.ps1'), 'rb').read().decode('ascii')
+        self.assertIn('SendInput', ri)
+        self.assertGreaterEqual(ri.count('Assert-RIForeground $WantPid'), 3)   # Send-RIKeys and Send-RIHeldKey (also per repeat)
+        self.assertIn('PidAt(', ri)                            # clicks only on a test window
+        self.assertIn('Add-Content -LiteralPath $rowsFile', d) # each row saved immediately
+        self.assertIn('foreach ($id in @($script:Owned))', d)  # cleanup limited to own processes
+        self.assertNotIn('MarketplaceScanner', d)              # never touches live data
+
+    def test_auto_input_stage_b_replaces_the_person_safely(self):
+        """LR-010 automated session R: -AutoInput works only with -ManualUI, the shared real-input module is in the kit,
+        every R row is produced without Read-YesNo/Wait-Key, and windows are only closed by WM_CLOSE when proven new."""
+        run = self.read('tools/Run-QAKit.ps1').decode('ascii')
+        self.assertIn('[switch]$AutoInput', run)
+        self.assertIn("if ($AutoInput -and -not $ManualUI) { Stop-Kit", run)
+        ri = self.read('tools/LotRadarQA.RealInput.ps1').decode('ascii')
+        self.assertIn('function Assert-RIForeground', ri)
+        self.assertIn('Assert-RINoHeldModifiers; Assert-RIForeground $WantPid', ri)
+        self.assertIn("throw \"BLOCKED: the click point is covered", ri)
+        self.assertNotIn('Stop-Process', ri)
+        self.assertNotIn('taskkill', ri)
+        cmd = self.read('RUN_AUTOMATED_REAL_TESTS.cmd').decode('ascii')
+        self.assertIn('-ManualUI -AutoInput -Yes', cmd)
+        m = self.read('tools/LotRadarQA.ManualUI.ps1').decode('ascii')
+        auto = m[m.index('    if ($AutoInput) {\r\n    function Add-AutoRow'):m.index('    function Read-RealRow')]
+        for rid in ('R-F5-FAIL', 'R-ALTC-RETURN', 'R-F5-OK', 'R-CLICK-PARITY', 'R-GUARD'):
+            self.assertIn("'" + rid + "'", auto)
+        self.assertNotIn('Read-YesNo', auto)
+        self.assertNotIn('Wait-Key', auto)
+        self.assertNotIn('Read-Host', auto)
+        self.assertIn('$Snapshot -notcontains', m)   # only app windows that appeared after this launch are closed
+        self.assertIn("-not $AutoInput) {", m)       # E1/E2 (person-only checks) are skipped in automatic mode
+
     def test_gui_cases_cleanup_never_fails_and_report_console_diag(self):
         """Windows 11 run of dc4244e: G9 failed on taskkill "not found" under ErrorActionPreference Stop."""
         h = self.read('tools/Test-LotRadarInstaller.ps1').decode('ascii')
