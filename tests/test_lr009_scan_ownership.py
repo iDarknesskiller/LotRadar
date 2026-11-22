@@ -811,6 +811,303 @@ class AC05Regression(Fixture):
         self.assertEqual(len(self.store.removals()), 0)
 
 
+# ------------------------------------- LR-009-03 Codex findings (F1-F3) -----
+class FakeBrowser:
+    """Reader transport stand-in. ``close_gate`` holds close() in flight, then raises."""
+    def __init__(self, close_gate=None):
+        self.close_gate = close_gate
+        self.closing = threading.Event()
+
+    async def close(self):
+        self.closing.set()
+        if self.close_gate is None:
+            return
+        import asyncio
+        while not self.close_gate.is_set():
+            await asyncio.sleep(0.01)
+        self.closed = time.monotonic()
+        raise RuntimeError('synthetic old browser close failure')
+
+
+class PumpHarness:
+    """Run the production HeadlessDealer._run/_pump loop with a fake transport."""
+    def __init__(self, test, browsers):
+        import asyncio
+        from contextlib import asynccontextmanager
+        self.test = test
+        self.h = test.handler.headless_dealer
+        self.browsers = list(browsers)
+        self.leases = []
+        self.leased = threading.Event()
+
+        @asynccontextmanager
+        async def transport():
+            yield types.SimpleNamespace(chromium=None)
+
+        async def launch(_chromium):
+            return self.browsers.pop(0)
+
+        async def read(_browser, job):
+            self.leases.append(job)
+            self.leased.set()
+            await asyncio.Future()  # an in-flight dealer page; only cancellation ends it
+
+        api = types.ModuleType('playwright.async_api')
+        api.async_playwright = transport
+        pkg = types.ModuleType('playwright')
+        pkg.async_api = api
+        self.stack = ExitStack()
+        self.stack.enter_context(patch.dict(sys.modules, {'playwright': pkg, 'playwright.async_api': api}))
+        self.stack.enter_context(patch.object(self.h, '_launch', launch))
+        self.stack.enter_context(patch.object(self.h, '_read', read))
+        self.stack.enter_context(patch.object(self.h.load_monitor, 'sample', lambda: {}))
+        self.h.stop_event.clear()
+        self.thread = threading.Thread(target=self.h._run, name='LR009-Test-Pump', daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.h.stop_event.set()
+        self.thread.join(10)
+        self.stack.close()
+        if self.thread.is_alive():
+            raise AssertionError('Reader pump did not exit')
+        return False
+
+
+class F1RetiredReaderTransport(Fixture):
+    """Codex LR-009-03 finding 1: a retired browser's close failure stops the new run."""
+
+    def _lease_old_quick_and_retire_it(self, pump, close_gate):
+        self.assertEqual(self.call(START, QUICK)[0], 200)
+        wait_for(pump.leased, 'old Quick lease')
+        self.call(CONTROL, {'action': 'stop'})
+        wait_for(pump.browsers_used[0].closing, 'old browser close in flight')
+
+    def test_old_browser_close_failure_leaves_new_rescan_running_and_served(self):
+        gate = threading.Event()
+        old, new = FakeBrowser(gate), FakeBrowser()
+        with PumpHarness(self, [old, new]) as pump:
+            pump.browsers_used = [old, new]
+            self._lease_old_quick_and_retire_it(pump, gate)
+            self.assertEqual(self.call(START, RESCAN)[0], 200)
+            new_run = self.bridge.run_id
+            pump.leased.clear()
+            gate.set()  # the retired browser's close now fails
+            wait_for(pump.leased, 'the Rescan job is served after the old close failed')
+            self.assertEqual(pump.leases[-1]['_run_id'], new_run)
+            status = self.status()
+            self.assertEqual((status['running'], status['state'], status['mode']),
+                             (True, 'running', 'chrome_inventory_full'))
+            self.assertEqual(self.events('HEADLESS_ERROR'), [])
+            self.assertEqual(self.h_teardown(), 'RuntimeError')
+            self.call(CONTROL, {'action': 'stop'})
+
+    def test_old_browser_close_failure_stays_out_of_new_basic(self):
+        gate = threading.Event()
+        old = FakeBrowser(gate)
+        with PumpHarness(self, [old]) as pump:
+            pump.browsers_used = [old]
+            self._lease_old_quick_and_retire_it(pump, gate)
+            self.disc.blocking = {'toyota_used': True}
+            self.assertEqual(self.call(START, BASIC)[0], 200)
+            wait_for(self.disc.entered('toyota_used'))
+            gate.set()
+            # The close failure has been handled once it is recorded, or once
+            # the pump (pre-fix behaviour) has died from it.
+            deadline = time.monotonic() + 5
+            while (self.h_teardown() is None and pump.thread.is_alive()
+                   and time.monotonic() < deadline):
+                time.sleep(0.02)
+            time.sleep(0.2)
+            self.assertEqual(self.status()['state'], 'running')
+            self.call(CONTROL, {'action': 'stop'})
+            self.finish_basic()
+        diag = json.loads((self.root / 'last_website_scan_diagnostics.json').read_text('utf-8'))
+        self.assertEqual([e for e in diag['events'] if e['stage'] == 'HEADLESS_ERROR'], [])
+        self.assertEqual([e for e in diag['errors'] if 'Headless' in e['reason']], [])
+        self.assertEqual(self.h_teardown(), 'RuntimeError')
+
+    def test_current_run_transport_failure_still_stops_that_run(self):
+        """The legitimate case: the active run's own transport fails to launch."""
+        async def broken_launch(_chromium):
+            raise RuntimeError('synthetic launch failure')
+        with PumpHarness(self, []) as pump:
+            with patch.object(pump.h, '_launch', broken_launch):
+                self.assertEqual(self.call(START, QUICK)[0], 200)
+                run = self.bridge.run_id
+                pump.thread.join(5)  # a current-run fault ends the pump
+                self.assertFalse(pump.thread.is_alive())
+        status = self.status()
+        self.assertEqual((status['running'], status['state'], self.bridge.run_id), (False, 'stopped', run))
+        self.assertEqual(len(self.events('HEADLESS_ERROR')), 1)
+        self.assertTrue(any('Headless browser failed: RuntimeError' in e['reason'] for e in status['errors']))
+
+    def test_retired_run_fault_restarts_the_pump_for_the_current_run(self):
+        from headless_dealer import ReaderFault
+        h = self.handler.headless_dealer
+        self.assertEqual(self.call(START, QUICK)[0], 200)
+        calls = []
+
+        async def pump():
+            calls.append(self.bridge.run_id)
+            if len(calls) == 1:
+                raise ReaderFault('retired-run', RuntimeError('late teardown'))
+        with patch.object(h, '_pump', pump):
+            h._run()
+        self.assertEqual(len(calls), 2, 'pump restarted once for the active run')
+        self.assertEqual(self.status()['state'], 'running')
+        self.assertEqual(self.events('HEADLESS_ERROR'), [])
+        self.call(CONTROL, {'action': 'stop'})
+
+    def _late_untagged_failure(self, failures):
+        """Codex's delayed pump failure: the old pump raises after Stop + Rescan."""
+        h = self.handler.headless_dealer
+        entered, go = threading.Event(), threading.Event()
+        calls = []
+
+        async def pump():
+            calls.append(self.bridge.run_id)
+            if len(calls) == 1:
+                entered.set()
+                wait_for(go, 'release of the old pump')
+            if len(calls) <= failures:
+                raise RuntimeError('synthetic transport shutdown')
+        with patch.object(h, '_pump', pump):
+            self.assertEqual(self.call(START, QUICK)[0], 200)
+            worker = threading.Thread(target=h._run, daemon=True)
+            worker.start()
+            wait_for(entered)
+            try:
+                self.call(CONTROL, {'action': 'stop'})
+                self.assertEqual(self.call(START, RESCAN)[0], 200)
+                rescan = self.bridge.run_id
+            finally:
+                go.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+        return calls, rescan
+
+    def test_one_late_untagged_failure_restarts_the_pump_for_the_new_rescan(self):
+        calls, rescan = self._late_untagged_failure(failures=1)
+        self.assertEqual(calls[1:], [rescan], 'one restart, serving the Rescan')
+        status = self.status()
+        self.assertEqual((status['running'], status['state'], self.bridge.run_id), (True, 'running', rescan))
+        self.assertEqual(self.events('HEADLESS_ERROR'), [])
+        self.call(CONTROL, {'action': 'stop'})
+
+    def test_a_transport_that_keeps_failing_stops_the_new_rescan_once(self):
+        calls, rescan = self._late_untagged_failure(failures=10)
+        self.assertEqual(len(calls), 2, 'bounded: one restart, then the active run is stopped')
+        status = self.status()
+        self.assertEqual((status['running'], status['state'], self.bridge.run_id), (False, 'stopped', rescan))
+        self.assertEqual(len(self.events('HEADLESS_ERROR')), 1)
+
+    def h_teardown(self):
+        return getattr(self.handler.headless_dealer, 'teardown_error', None)
+
+
+class F2ForeignEventsStayOutOfBasic(SeededCatalog):
+    """Codex LR-009-03 finding 2: unrelated Reader/refresh errors in Basic's history."""
+
+    def test_reader_pump_failure_while_basic_owns_the_slot(self):
+        h = self.handler.headless_dealer
+        entered, release = threading.Event(), threading.Event()
+
+        async def failing_pump():
+            entered.set()
+            wait_for(release, 'test release of the old pump')
+            raise RuntimeError('synthetic transport shutdown')
+        with patch.object(h, '_pump', failing_pump):
+            self.assertEqual(self.call(START, QUICK)[0], 200)
+            worker = threading.Thread(target=h._run, daemon=True)
+            worker.start()
+            wait_for(entered)
+            try:
+                self.call(CONTROL, {'action': 'stop'})
+                self.disc.blocking = {'toyota_used': True}
+                self.assertEqual(self.call(START, BASIC)[0], 200)
+                wait_for(self.disc.entered('toyota_used'))
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertEqual(self.status()['state'], 'running')
+        self.call(CONTROL, {'action': 'stop'})
+        self.finish_basic()
+        diag = json.loads((self.root / 'last_website_scan_diagnostics.json').read_text('utf-8'))
+        self.assertEqual([e['stage'] for e in diag['events'] if e['stage'] == 'HEADLESS_ERROR'], [])
+
+    def test_trade_ready_refresh_refusal_is_not_logged_in_basic(self):
+        import inspect
+        self.seed_vehicle()
+        self.disc.blocking = {'toyota_used': True}
+        self.assertEqual(self.call(START, BASIC)[0], 200)
+        wait_for(self.disc.entered('toyota_used'))
+        trade_ready = inspect.getclosurevars(self.handler.do_POST).nonlocals.get('trade_ready')
+        self.assertIsNotNone(trade_ready, 'trade-ready hook not reachable from the handler')
+        trade_ready.refresh_gallery(VIN, 'toyota_used')
+        self.assertEqual(self.events('TRADE_READY_REFRESH_ERROR'), [])
+        self.assertEqual(self.bridge.queue, [])
+        self.assertEqual(self.status()['state'], 'running')
+        self.finish_basic()
+
+
+class F3CoordinatorLaunchFailure(Fixture):
+    """Codex LR-009-03 finding 3: a failed coordinator launch keeps the slot occupied."""
+
+    def _failing(self, thread_name):
+        real = threading.Thread.start
+
+        def start(thread):
+            if thread.name == thread_name:
+                raise RuntimeError("can't start new thread")
+            return real(thread)
+        return patch.object(threading.Thread, 'start', start)
+
+    def _assert_slot_free(self):
+        self.assertFalse(self.handler.full_job['running'])
+        self.assertEqual(self.handler.full_job['phase'], 'failed')
+        self.assertEqual(self.bridge.queue, [])
+        self.assertEqual(self.bridge.inflight, {})
+        self.assertEqual(self.call(START, QUICK)[0], 200, 'a new scan is admitted after the rollback')
+        self.call(CONTROL, {'action': 'stop'})
+
+    def test_full_scan_coordinator_launch_failure_rolls_back(self):
+        with self._failing('Marketplace-Full-Scan'):
+            code, reply = self.call('/api/full-scan-start', VERIFY)
+        self.assertEqual((code, reply.get('error')), (400, 'scan_coordinator_start_failed; no scan is running'))
+        status = self.status()
+        self.assertEqual((status['running'], status['state']), (False, 'failed'))
+        self.assertTrue(any(e['reason'].startswith('full_scan_coordinator_start_failed') for e in status['errors']))
+        self.assertTrue(self.handler.full_job['error'].startswith('full_scan_coordinator_start_failed'))
+        self._assert_slot_free()
+
+    def test_check_listings_coordinator_launch_failure_rolls_back_verification(self):
+        self.seed_vehicle()
+        self.store.create_draft(VIN, 'toyota_used')
+        self.store.db.execute("UPDATE drafts SET status='USER_CONFIRMED_PUBLISHED',published_url=? WHERE vin=?",
+                              ('https://www.facebook.com/marketplace/item/1111111111111/', VIN))
+        self.store.db.commit()
+        with self._failing('LotRadar-Check-Listing-Links'):
+            code, reply = self.call('/api/facebook-auto-check-all', {'explicit_request': True})
+        self.assertEqual((code, reply.get('error')), (400, 'scan_coordinator_start_failed; no scan is running'))
+        self.assertFalse(self.bridge.verify['running'])
+        self.assertTrue(self.bridge.verify.get('interrupted'))
+        self._assert_slot_free()
+
+    def test_successful_launch_is_unchanged(self):
+        code, reply = self.call('/api/full-scan-start', VERIFY)
+        self.assertEqual(code, 200)
+        self.assertTrue(reply['full']['running'])
+        self.call(CONTROL, {'action': 'stop'})
+        deadline = time.monotonic() + 10
+        while self.handler.full_job['running']:
+            self.assertLess(time.monotonic(), deadline, 'Full Scan coordinator did not stop')
+            time.sleep(0.1)
+
+
 # ------------------------------------------------- scraper checkpoints ------
 class FakeRobots:
     def permitted(self, _url):

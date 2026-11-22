@@ -38,11 +38,22 @@ def allowed_job(job):
             else allowed_vehicle_url(url, source))
 
 
+class ReaderFault(Exception):
+    """A Reader transport failure tagged with the run whose work raised it (LR-009)."""
+    def __init__(self, run_id, cause):
+        super().__init__(type(cause).__name__)
+        self.run_id = run_id
+        self.cause = cause
+
+
 class HeadlessDealer:
     def __init__(self, bridge):
         self.bridge = bridge
         self.stop_event = threading.Event()
         self.error = None
+        self.teardown_error = None
+        self.serving_run = None   # run whose pending work the pump is serving
+        self.restarted_for = None  # run that already used its one pump restart
         self.user_agent = None
         self.denial_run = None
         self.denials = {}
@@ -76,19 +87,51 @@ class HeadlessDealer:
             self.thread.join(timeout=15)
 
     def _run(self):
-        try:
-            asyncio.run(self._pump())
-        except Exception as exc:
-            self.error = type(exc).__name__
-            self.bridge.events('', 'HEADLESS_ERROR', 'Headless browser stopped: '+self.error)
-            with self.bridge.lock:
-                # LR-009: a Reader failure ends Reader work only; historical
-                # discovery has its own browser and its own owner.
-                if getattr(self.bridge, 'basic_run', None) is not None:
+        while True:
+            try:
+                asyncio.run(self._pump())
+                return
+            except Exception as exc:
+                if not self._fault(exc):
                     return
-                self.bridge.control('stop')
-                with self.bridge.scan_lock:
-                    self.bridge.scan_info.setdefault('errors', []).append({'source':'', 'reason':'Headless browser failed: '+self.error})
+                # A retired run's failure must not strand the current run's
+                # queue without a transport: serve it from a fresh pump.
+
+    def _fault(self, exc):
+        """LR-009: report and stop only the run whose Reader work failed.
+
+        A failure tagged with (or, untagged, raised while serving) a run other
+        than the active one restarts the pump once for the active run. A second
+        failure means the transport itself is broken: the active run is stopped.
+        Returns True when the pump should restart.
+        """
+        cause = exc.cause if isinstance(exc, ReaderFault) else exc
+        failed_run = exc.run_id if isinstance(exc, ReaderFault) else self.serving_run
+        self.error = type(cause).__name__
+        bridge = self.bridge
+        with bridge.lock:
+            # Historical discovery has its own browser and its own owner; an
+            # idle Reader failure is not part of its run history.
+            if getattr(bridge, 'basic_run', None) is not None:
+                return False
+            active = bridge.verify.get('running') if bridge.mode == 'verify' else bridge.scan_info.get('running')
+            if not active:
+                return False
+            if failed_run != bridge.run_id and self.restarted_for != bridge.run_id:
+                self.restarted_for = bridge.run_id
+                return not self.stop_event.is_set()
+            bridge.events('', 'HEADLESS_ERROR', 'Headless browser stopped: '+self.error)
+            bridge.control('stop')
+            with bridge.scan_lock:
+                bridge.scan_info.setdefault('errors', []).append({'source':'', 'reason':'Headless browser failed: '+self.error})
+            return False
+
+    async def _retire(self, browser):
+        """Close a browser no run is using; its teardown failure belongs to no run."""
+        try:
+            await browser.close()
+        except Exception as exc:
+            self.teardown_error = type(exc).__name__
 
     async def _read(self, browser, job):
         if not allowed_job(job):
@@ -183,7 +226,8 @@ class HeadlessDealer:
         from playwright.async_api import async_playwright
         async with async_playwright() as p:
             browser = None
-            tasks = {}  # task -> lease; stop discards stale work before another run
+            tasks = {}  # task -> (lease id, run id); stop discards stale work before another run
+            self.serving_run = None
             try:
                 while not self.stop_event.is_set():
                     self.bridge.headless_seen = time.monotonic()
@@ -194,29 +238,40 @@ class HeadlessDealer:
                         live_ids = set(self.bridge.inflight)
                         pending = bool(self.bridge.queue) and not self.bridge.paused
                         cap = self.bridge.effective_workers
-                    for task, job_id in list(tasks.items()):
+                        current_run = self.bridge.run_id
+                    if pending:
+                        self.serving_run = current_run
+                    elif not tasks:
+                        self.serving_run = None
+                    for task, (job_id, job_run) in list(tasks.items()):
                         if job_id not in live_ids and not task.done():
                             task.cancel()
                         if task.done():
-                            if not task.cancelled():
-                                task.result()
                             del tasks[task]
+                            if not task.cancelled():
+                                try:
+                                    task.result()
+                                except Exception as exc:
+                                    raise ReaderFault(job_run, exc) from exc
                     if pending and len(tasks) < cap:
                         if browser is None:
-                            browser = await self._launch(p.chromium)
+                            try:
+                                browser = await self._launch(p.chromium)
+                            except Exception as exc:
+                                raise ReaderFault(current_run, exc) from exc
                             self.error = None
                         state = self.bridge.next(consumer='headless')
                         if state.get('job'):
                             job = state['job']
                             task = asyncio.create_task(self._job(browser, job))
-                            tasks[task] = job['id']
+                            tasks[task] = (job['id'], job.get('_run_id'))
                     if not pending and not tasks and browser is not None:
-                        await browser.close()
-                        browser = None
+                        retired, browser = browser, None
+                        await self._retire(retired)
                     await asyncio.sleep(.15)
             finally:
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
                 if browser:
-                    await browser.close()
+                    await self._retire(browser)

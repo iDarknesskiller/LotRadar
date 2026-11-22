@@ -352,6 +352,11 @@ def create_handler(store, port, token):
                     pending=any(j.get('expected_vin')==vin and j['source']==source for j in chrome_bridge.queue+list(chrome_bridge.inflight.values()))
                 if not pending:return
                 photo_cache.stopping.wait(.5)
+        except ValueError as exc:
+            # LR-009 D3: an automatic refresh is refused while historical
+            # discovery owns the slot. That refusal is not an event of its run.
+            if str(exc).startswith('historical_discovery_running'):return
+            push_event(source,'TRADE_READY_REFRESH_ERROR',f'{vin}: {str(exc)[:150]}')
         except Exception as exc:push_event(source,'TRADE_READY_REFRESH_ERROR',f'{vin}: {str(exc)[:150]}')
     trade_ready.refresh_gallery=refresh_ready_gallery
     chrome_bridge.priority_photos_pending=photo_cache.has_priority_work
@@ -368,6 +373,25 @@ def create_handler(store, port, token):
 
     def full_job_status():
         with full_lock:return json.loads(json.dumps(full_job))
+
+    def launch_coordinator(operation,name,stage_run,args=()):
+        """LR-009: start the Full Scan/recheck coordinator, or undo its admission.
+
+        If the thread cannot start, the Reader stage this request admitted
+        (identified by run id) and the full_job reservation are rolled back so
+        no slot stays occupied by an operation that never ran.
+        """
+        try:
+            launch_scan_thread(target=full_scan_worker,args=args,daemon=True,name=name).start()
+        except Exception as exc:
+            reason=f'{operation}_coordinator_start_failed: {type(exc).__name__}'
+            with full_lock:
+                chrome_bridge.abort_reader_run(stage_run,reason)
+                full_job.update(running=False,phase='failed',partial=True,error=reason,finished_at=utc())
+            raise ValueError('scan_coordinator_start_failed; no scan is running') from exc
+
+    def bridge_run_id():
+        with chrome_bridge.lock:return chrome_bridge.run_id
 
     def full_scan_worker(tracked_pairs=None):
         """Advance three explicit, bounded browser jobs in sequence.
@@ -1373,11 +1397,11 @@ def create_handler(store, port, token):
                         # when the browser queue itself refused to start.
                         started=chrome_bridge.start(catalog,list(USED_SOURCES),850,
                                                      skip_existing=False,discover_live=True)
+                        stage_run=bridge_run_id()
                         full_job.update(running=True,phase='scanning_inventory',operation='full_scan',
                             started_at=utc(),finished_at=None,cancel_requested=False,scan=None,verify=None,
                             facebook=None,error=None,partial=False)
-                    threading.Thread(target=full_scan_worker,daemon=True,
-                                     name='Marketplace-Full-Scan').start()
+                    launch_coordinator('full_scan','Marketplace-Full-Scan',stage_run)
                     return self._json(200,{'ok':True,'full':full_job_status(),'chrome':started})
                 if path == '/api/chrome-refresh-vehicle':
                     if data.get('explicit_user_request') is not True:raise ValueError('explicit_vehicle_refresh_required')
@@ -1613,11 +1637,11 @@ def create_handler(store, port, token):
                         except ValueError as exc:
                             if str(exc)!='no_saved_vehicle_links_to_verify':raise
                             verify={'error':'No valid saved dealer links to check.'}
+                        stage_run=bridge_run_id()
                         full_job.update(running=True,phase='verifying_inventory',operation='recheck_outstock',
                             started_at=utc(),finished_at=None,cancel_requested=False,scan=None,verify=verify,
                             facebook=None,error=None,partial=bool(verify.get('error')))
-                    threading.Thread(target=full_scan_worker,args=(pairs,),daemon=True,
-                        name='LotRadar-Recheck-Outstock').start()
+                    launch_coordinator('recheck_outstock','LotRadar-Recheck-Outstock',stage_run,(pairs,))
                     return self._json(200,{'ok':True,'vehicles':len(vins),'dealer_links':verify.get('total',0),
                         'facebook_links':len(pairs)})
                 if path == '/api/facebook-auto-check-all':
@@ -1639,11 +1663,11 @@ def create_handler(store, port, token):
                             if str(exc)!='no_saved_vehicle_links_to_verify':
                                 raise
                             verify={'error':'No saved dealer links to check.'}
+                        stage_run=bridge_run_id()
                         full_job.update(running=True,phase='verifying_inventory',operation='check_listings',
                             started_at=utc(),finished_at=None,cancel_requested=False,scan=None,verify=verify,
                             facebook=None,error=None,partial=bool(verify.get('error')))
-                    threading.Thread(target=full_scan_worker,args=(pairs,),daemon=True,
-                                     name='LotRadar-Check-Listing-Links').start()
+                    launch_coordinator('check_listings','LotRadar-Check-Listing-Links',stage_run,(pairs,))
                     return self._json(200,{'ok':True,'total':len(pairs),'dealer_links':verify.get('total',0)})
                 if path == '/api/facebook-auto-check':
                     if data.get('explicit_request') is not True:raise ValueError('explicit_check_request_required')

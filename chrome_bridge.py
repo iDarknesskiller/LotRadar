@@ -221,6 +221,36 @@ class ChromeBridge:
             self.basic_run = None
             return True
 
+    def abort_reader_run(self, run_id, reason):
+        """Roll back an admitted Reader run whose coordinator never started.
+
+        Only the active run identified by ``run_id`` is touched; a finished or
+        newer run is left alone. Nothing is imported or marked sold.
+        """
+        from core import utc
+        with self.lock:
+            if self.basic_run is not None or run_id is None or self.run_id != run_id:
+                return False
+            reason = str(reason)[:300]
+            if self.mode == 'verify':
+                if not self.verify.get('running'):
+                    return False
+                self.queue.clear();self.inflight.clear();self.paused=False;self._reset_worker_budget()
+                self.verify.update(running=False, finished_at=utc(), interrupted=True, partial_coverage=True,
+                                   notice='Did not start: '+reason+'; nothing was checked.')
+                self._save_verify()
+                self.events('', 'FINISH', 'Check did not start: '+reason[:160])
+                return True
+            if not self.scan_info.get('running'):
+                return False
+            self.queue.clear();self.inflight.clear();self.paused=False;self._reset_worker_budget()
+            with self.scan_lock:
+                self.scan_info.update(running=False, current='', eta_seconds=None, failed=True, launch_failed=run_id)
+                self.scan_info.setdefault('errors', []).append({'source': '', 'reason': reason})
+            self.events('', 'FINISH', 'Scan did not start: '+reason[:160])
+            self._write_diagnostics()
+            return True
+
     def _write_diagnostics(self):
         try:
             with self.scan_lock:
@@ -262,7 +292,8 @@ class ChromeBridge:
                 return 'paused' if self.paused else 'running'
             if self.scan_info.get('stopped'):
                 return 'stopped'
-            if self.scan_info.get('mode') == 'basic' and self.scan_info.get('failed'):
+            if self.scan_info.get('failed') and (self.scan_info.get('mode') == 'basic'
+                                                 or self.scan_info.get('launch_failed') == self.run_id):
                 return 'failed'
             return 'finished' if self.scan_info.get('completed') else 'idle'
 
@@ -750,6 +781,7 @@ class ChromeBridge:
             job=self.queue.pop(position)
             job['_lease_at']=now
             job['_worker_epoch']=self.worker_epoch
+            job['_run_id']=self.run_id  # LR-009: a transport failure is reported against this run only
             self.inflight[job['id']]=job
             if self.mode=='scan':self.events(job['source'],'CHROME_OPEN',job['url'])
             return {'job':dict(job),'running':True,'connected':True,
