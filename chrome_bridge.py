@@ -121,6 +121,7 @@ class ChromeBridge:
             attrs=['mode','run_id','totals','count','failures','discovery_limits','discovered_urls','inventory_pages','inventory_counts','quick_scan','quick_existing_paths','verify_repair','verify','saved_discovery_links']
             data={k:getattr(self,k,{}) for k in attrs}
             data['jobs']=list(self.inflight.values())+self.queue
+            data['provisional']=bool(self.dispatch_hold)  # LR-009: coordinator not started yet
             data['scan_info']=dict(self.scan_info)
             raw=json.dumps(data,default=lambda x:list(x) if isinstance(x,set) else str(x))
             if raw==getattr(self,'_last_checkpoint',None):return
@@ -133,6 +134,9 @@ class ChromeBridge:
             data=json.loads(path.read_text('utf-8'))
             jobs=data.get('jobs',[])
             if not jobs:return
+            if data.get('provisional'):
+                self._discard_provisional(data)
+                return
             seen=set();self.queue=[]
             for job in jobs:
                 if not isinstance(job,dict) or job.get('id') in seen:continue
@@ -235,16 +239,57 @@ class ChromeBridge:
             self.dispatch_hold = True
 
     def release_dispatch(self):
+        """End the hold. The checkpoint stops marking the work provisional."""
         with self.lock:
             self.dispatch_hold = False
+            self._try_checkpoint()
+
+    def _try_checkpoint(self):
+        """Best-effort checkpoint for admission/rollback paths (LR-009).
+
+        Memory is already correct when this runs. If the saved queue cannot
+        be written, the previous file stays; any of this run's jobs in it were
+        written while dispatch was held, so they are marked provisional and a
+        restart discards them instead of resuming them.
+        """
+        try:
+            self._checkpoint_scan()
+            return True
+        except OSError as exc:
+            self.events('', 'CHECKPOINT_WRITE_FAILED',
+                        'Saved scan queue could not be updated ('+type(exc).__name__+'); '
+                        'work that never started is still discarded after a restart')
+            return False
+
+    def _discard_provisional(self, data):
+        """Restore path: the app stopped before this operation's coordinator started.
+
+        Its queued work was never released for dispatch, so it is not resumed.
+        The operation is shown as failed (scan) or interrupted (verification).
+        """
+        from core import utc
+        reason = ('COORDINATOR_NEVER_STARTED: LotRadar restarted before this operation started; '
+                  'its queued work was discarded and nothing was dispatched')
+        self.run_id = data.get('run_id')
+        self.mode = data.get('mode', 'scan')
+        if self.mode == 'verify':
+            self.verify.update(data.get('verify', {}))
+            self.verify.update(running=False, interrupted=True, partial_coverage=True, finished_at=utc(), notice=reason)
+            self._save_verify()
+        else:
+            info = dict(data.get('scan_info', {}))
+            info.update(running=False, current='', eta_seconds=None, failed=True, launch_failed=self.run_id)
+            info['errors'] = list(info.get('errors', [])) + [{'source': '', 'reason': reason}]
+            self.scan_info.update(info)
+        self._try_checkpoint()
 
     def abort_reader_run(self, run_id, reason):
         """Roll back an admitted Reader run whose coordinator never started.
 
         Only the active run identified by ``run_id`` is touched; a finished or
-        newer run is left alone. Nothing is imported or marked sold. The
-        rollback is written to the durable checkpoint before returning, so a
-        restart cannot restore the failed operation's jobs.
+        newer run is left alone. Nothing is imported or marked sold. Memory is
+        rolled back first; the checkpoint is then rewritten (best effort, see
+        ``_try_checkpoint``), so a restart cannot resume the failed operation.
         """
         from core import utc
         with self.lock:
@@ -269,7 +314,7 @@ class ChromeBridge:
                 self.events('', 'FINISH', 'Scan did not start: '+reason[:160])
                 self._write_diagnostics()
             self.dispatch_hold = False
-            self._checkpoint_scan()
+            self._try_checkpoint()
             return True
 
     def _write_diagnostics(self):

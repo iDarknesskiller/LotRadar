@@ -1171,12 +1171,115 @@ class F3CoordinatorLaunchFailure(Fixture):
         self.assertEqual(json.dumps(self.store.state()['vehicles'], sort_keys=True), before)
         self._assert_slot_free()
 
+    def _reopen(self):
+        return CB.ChromeBridge(self.root, self.store, lambda *a: None, {}, threading.RLock())
+
+    def _one_failed_queue_save(self, when, once=True):
+        """Fail a replace of pending_dealer_scan.json while ``when()`` is true (once, or every time)."""
+        real, fired = os.replace, []
+
+        def replace(src, dst, *a, **k):
+            if Path(dst).name == 'pending_dealer_scan.json' and not (once and fired) and when():
+                fired.append(1)
+                raise PermissionError('synthetic saved-queue write failure')
+            return real(src, dst, *a, **k)
+        return patch.object(os, 'replace', replace), fired
+
+    def test_restart_before_the_coordinator_starts_does_not_resume_its_work(self):
+        """LR-009-07: work saved while dispatch was held is provisional after a restart."""
+        self._seed_coordinated_targets()
+        routes = [('/api/full-scan-start', VERIFY), ('/api/facebook-auto-check-all', {'explicit_request': True})]
+        for route, body in routes:
+            with self.subTest(route=route):
+                arrived, release = threading.Event(), threading.Event()
+
+                def launch(**_):
+                    arrived.set()
+                    wait_for(release, 'test release of the coordinator launch')
+                    raise RuntimeError("can't start new thread")
+                with patch.object(self.server, 'launch_scan_thread', launch), ThreadPoolExecutor(1) as pool:
+                    pending = pool.submit(self.call, route, body)
+                    try:
+                        wait_for(arrived)
+                        saved = json.loads((self.root / 'pending_dealer_scan.json').read_text('utf-8'))
+                        self.assertTrue(saved['provisional'] and saved['jobs'], 'held work is saved as provisional')
+                        reopened = self._reopen()  # the restore path a restart would take
+                        self.assertEqual((reopened.queue, reopened.paused), ([], False))
+                        with self.assertRaises(ValueError):
+                            reopened.control('resume')  # nothing to resume
+                        reopened.dealer_engine = 'chrome'
+                        reopened.last_seen = time.monotonic()
+                        self.assertIsNone(reopened.next(consumer='chrome')['job'])
+                        if saved['mode'] == 'verify':
+                            self.assertFalse(reopened.verify['running'])
+                            self.assertTrue(reopened.verify['interrupted'])
+                            self.assertIn('COORDINATOR_NEVER_STARTED', reopened.verify['notice'])
+                        else:
+                            self.assertEqual(reopened.scan_state(), 'failed')
+                            self.assertIn('COORDINATOR_NEVER_STARTED', reopened.scan_info['errors'][-1]['reason'])
+                    finally:
+                        release.set()
+                    self.assertEqual(pending.result(10)[0], 400)
+                self._assert_slot_free()
+
+    def test_failed_queue_save_during_admission_leaves_nothing_dispatchable(self):
+        """LR-009-07: the start is refused and its queued work is withdrawn."""
+        patcher, fired = self._one_failed_queue_save(lambda: self.bridge.dispatch_hold)
+        with patcher:
+            code, reply = self.call('/api/full-scan-start', VERIFY)
+        self.assertTrue(fired)
+        self.assertEqual((code, reply.get('error')),
+                         (400, 'scan_start_failed; the saved scan queue could not be written; no scan is running'))
+        self.assertFalse(self.bridge.dispatch_hold)
+        self.assertIsNone(self.bridge.next(consumer='headless')['job'])
+        self.assertFalse(self.handler.full_job['running'])
+        status = self.status()
+        self.assertEqual((status['running'], status['state']), (False, 'failed'))
+        self.assertEqual(self._reopen().queue, [])
+        self.assertEqual(self.call(START, QUICK)[0], 200)
+        self.call(CONTROL, {'action': 'stop'})
+
+    def test_failed_queue_save_during_rollback_still_frees_the_coordinator_slot(self):
+        """LR-009-07 (Codex's one-shot failure): Full Scan is marked failed; the next scan is admitted."""
+        patcher, fired = self._one_failed_queue_save(lambda: bool(self.bridge.scan_info.get('launch_failed')))
+        with patcher, self._failing('Marketplace-Full-Scan'):
+            code, reply = self.call('/api/full-scan-start', VERIFY)
+        self.assertTrue(fired)
+        self.assertEqual((code, reply.get('error')), (400, 'scan_coordinator_start_failed; no scan is running'))
+        self.assertEqual(len(self.events('CHECKPOINT_WRITE_FAILED')), 1)
+        self.assertEqual(self._reopen().queue, [])
+        self._assert_slot_free()
+
+    def test_rollback_with_storage_down_keeps_unstarted_work_provisional_on_disk(self):
+        """Every save fails during rollback: memory is rolled back, disk keeps only provisional work."""
+        patcher, fired = self._one_failed_queue_save(lambda: bool(self.bridge.scan_info.get('launch_failed')), once=False)
+        with patcher:
+            with self._failing('Marketplace-Full-Scan'):
+                code, reply = self.call('/api/full-scan-start', VERIFY)
+            # Storage is still down: what a crash right now would leave behind.
+            saved = json.loads((self.root / 'pending_dealer_scan.json').read_text('utf-8'))
+            self.assertTrue(saved['provisional'] and saved['jobs'], 'only the held admission snapshot is on disk')
+            reopened = self._reopen()
+            self.assertEqual(reopened.queue, [], 'provisional work is not resumed after a restart')
+            self.assertEqual(reopened.scan_state(), 'failed')
+            self.assertFalse(self.handler.full_job['running'])
+            self.assertFalse(self.bridge.queue or self.bridge.inflight or self.bridge.dispatch_hold)
+        self.assertGreaterEqual(len(fired), 2)  # rollback save and release save both refused
+        self.assertEqual((code, reply.get('error')), (400, 'scan_coordinator_start_failed; no scan is running'))
+        self.assertTrue(self.events('CHECKPOINT_WRITE_FAILED'))
+        self.assertIsNone(self.bridge.next(consumer='headless')['job'])
+        self.assertEqual(self.call(START, QUICK)[0], 200)
+        self.call(CONTROL, {'action': 'stop'})
+
     def test_jobs_dispatch_once_the_coordinator_has_started(self):
         code, reply = self.call('/api/full-scan-start', VERIFY)
         self.assertEqual(code, 200)
         job = self.bridge.next(consumer='headless')['job']
         self.assertEqual(job['kind'], 'inventory_index')
         self.assertFalse(self.bridge.dispatch_hold)
+        saved = json.loads((self.root / 'pending_dealer_scan.json').read_text('utf-8'))
+        self.assertFalse(saved['provisional'], 'a started operation is resumable after a restart')
+        self.assertTrue(saved['jobs'])
         self.call(CONTROL, {'action': 'stop'})
         deadline = time.monotonic() + 10
         while self.handler.full_job['running']:

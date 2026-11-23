@@ -380,11 +380,21 @@ def create_handler(store, port, token):
         Caller holds full_lock. No job leaves the queue until launch_coordinator
         has started the coordinator thread (or rolled the stage back).
         """
+        previous=bridge_run_id()
         chrome_bridge.hold_dispatch()
         try:
             return start()
-        except BaseException:
-            chrome_bridge.release_dispatch()
+        except BaseException as exc:
+            # A start that queued work and then failed (for example, the saved
+            # queue could not be written) must not leave dispatchable jobs.
+            admitted=bridge_run_id()
+            try:
+                if admitted!=previous:
+                    chrome_bridge.abort_reader_run(admitted,'scan_admission_failed: '+type(exc).__name__)
+            finally:
+                chrome_bridge.release_dispatch()
+            if isinstance(exc,OSError):
+                raise ValueError('scan_start_failed; the saved scan queue could not be written; no scan is running') from exc
             raise
 
     def launch_coordinator(operation,name,stage_run,args=()):
@@ -400,9 +410,15 @@ def create_handler(store, port, token):
         except Exception as exc:
             reason=f'{operation}_coordinator_start_failed: {type(exc).__name__}'
             with full_lock:
-                chrome_bridge.abort_reader_run(stage_run,reason)
-                chrome_bridge.release_dispatch()
-                full_job.update(running=False,phase='failed',partial=True,error=reason,finished_at=utc())
+                try:
+                    chrome_bridge.abort_reader_run(stage_run,reason)
+                finally:
+                    # The coordinator slot is released even if the rollback
+                    # could not be fully recorded.
+                    try:
+                        chrome_bridge.release_dispatch()
+                    finally:
+                        full_job.update(running=False,phase='failed',partial=True,error=reason,finished_at=utc())
             raise ValueError('scan_coordinator_start_failed; no scan is running') from exc
         chrome_bridge.release_dispatch()
 
