@@ -30,7 +30,7 @@ from listing_transfer import build_transfer_kit
 from photo_cache import PhotoCache
 from chrome_bridge import ChromeBridge, READER_REVISION
 from facebook_auto import FacebookAutoQueue
-from dealer_site_scraper import scan_source, scan_basic_source, enrich_basic_from_visible_text, SITES, ScanFailure, prepare as prepare_external_scan
+from dealer_site_scraper import scan_source, scan_basic_source, enrich_basic_from_visible_text, SITES, ScanFailure, ScanCancelled, prepare as prepare_external_scan
 
 BASE = Path(__file__).resolve().parent
 STATIC = {'/photo-selection.css':'photo-selection.css','/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/styles.css': 'styles.css'}
@@ -100,6 +100,11 @@ def missing_photo_targets(store, cache):
 
 
 AUTO_SORT_RETRY_SECONDS=30     # minimum gap before the menu retries a sort that just failed
+
+
+def launch_scan_thread(**options):
+    """Thread factory for the historical worker (a seam for launch-failure tests)."""
+    return threading.Thread(**options)
 
 
 def default_data_dir():
@@ -347,6 +352,11 @@ def create_handler(store, port, token):
                     pending=any(j.get('expected_vin')==vin and j['source']==source for j in chrome_bridge.queue+list(chrome_bridge.inflight.values()))
                 if not pending:return
                 photo_cache.stopping.wait(.5)
+        except ValueError as exc:
+            # LR-009 D3: an automatic refresh is refused while historical
+            # discovery owns the slot. That refusal is not an event of its run.
+            if str(exc).startswith('historical_discovery_running'):return
+            push_event(source,'TRADE_READY_REFRESH_ERROR',f'{vin}: {str(exc)[:150]}')
         except Exception as exc:push_event(source,'TRADE_READY_REFRESH_ERROR',f'{vin}: {str(exc)[:150]}')
     trade_ready.refresh_gallery=refresh_ready_gallery
     chrome_bridge.priority_photos_pending=photo_cache.has_priority_work
@@ -363,6 +373,41 @@ def create_handler(store, port, token):
 
     def full_job_status():
         with full_lock:return json.loads(json.dumps(full_job))
+
+    def admit_held(start):
+        """LR-009: admit a coordinated Reader stage with dispatch held.
+
+        Caller holds full_lock. No job leaves the queue until launch_coordinator
+        has started the coordinator thread (or rolled the stage back).
+        """
+        chrome_bridge.hold_dispatch()
+        try:
+            return start()
+        except BaseException:
+            chrome_bridge.release_dispatch()
+            raise
+
+    def launch_coordinator(operation,name,stage_run,args=()):
+        """LR-009: start the Full Scan/recheck coordinator, or undo its admission.
+
+        If the thread cannot start, the Reader stage this request admitted
+        (identified by run id) and the full_job reservation are rolled back,
+        durably, before any of its jobs could be dispatched, so nothing is
+        imported and no slot stays occupied by an operation that never ran.
+        """
+        try:
+            launch_scan_thread(target=full_scan_worker,args=args,daemon=True,name=name).start()
+        except Exception as exc:
+            reason=f'{operation}_coordinator_start_failed: {type(exc).__name__}'
+            with full_lock:
+                chrome_bridge.abort_reader_run(stage_run,reason)
+                chrome_bridge.release_dispatch()
+                full_job.update(running=False,phase='failed',partial=True,error=reason,finished_at=utc())
+            raise ValueError('scan_coordinator_start_failed; no scan is running') from exc
+        chrome_bridge.release_dispatch()
+
+    def bridge_run_id():
+        with chrome_bridge.lock:return chrome_bridge.run_id
 
     def full_scan_worker(tracked_pairs=None):
         """Advance three explicit, bounded browser jobs in sequence.
@@ -597,11 +642,54 @@ def create_handler(store, port, token):
                 'totals':totals, 'by_source':by_source,'unscanned_sources':unscanned_sources,'latest_scan':latest_scan,
                 'findings':findings[:160]}
 
-    def website_scan_worker(sources, photos_approved, max_vehicles, mode="basic"):
+    def commit_basic_catalog(run, source, output):
+        """LR-009: stage one dealer's catalog, then commit it only if Stop has not won.
+
+        Returns False (prior catalog kept) when the run was stopped before commit.
+        A failed file replace leaves both the file and the in-memory view unchanged.
+        """
+        if not chrome_bridge.basic_owner(run):
+            return False  # Defensive: a stale worker never writes another run's catalog.
+        with scan_lock:
+            if run.stopping:
+                return False
+            # Preserve user-captured details when a subsequent scan discovers the
+            # SAME URL. Never transfer details by model name alone.
+            old_rows={r.get('url'):r for r in catalog.get('sources',{}).get(source,{}).get('records',[])}
+            staged_output=json.loads(json.dumps(output))
+            for row in staged_output.get('records',[]):
+                old=old_rows.get(row.get('url'))
+                if old and isinstance(old.get('enrichment'),dict):
+                    row['enrichment']=copy.deepcopy(old['enrichment'])
+            staged=json.loads(json.dumps(catalog))
+            staged.setdefault('sources',{})[source]=staged_output
+            tmp=catalog_path.with_suffix('.new')
+            try:
+                tmp.write_text(json.dumps(staged,ensure_ascii=False,indent=2),encoding='utf-8')
+                tmp.replace(catalog_path)
+            except OSError as exc:
+                try:tmp.unlink()
+                except OSError:pass
+                raise RuntimeError('catalog_write_failed; previous catalog kept: '+type(exc).__name__) from exc
+            catalog.setdefault('sources',{})[source]=staged_output
+            scan_info['results'][source] = {
+                'catalog_candidates':staged_output['count'], 'index_candidates':staged_output['index_candidates'],
+                'verified':False, 'partial':True, 'accepted':0, 'parsed':0,
+                'complete_details':0, 'pending':staged_output['count']}
+            scan_info.setdefault('committed',[]).append(source)
+        return True
+
+    def website_scan_worker(run, sources, photos_approved, max_vehicles, mode="basic"):
+        """Historical discovery. ``run`` owns the dealer-scan slot until this returns."""
         start=time.monotonic()
         push_event('', 'START', f'User started {len(sources)} dealership sections; mode {mode}; max {max_vehicles} links per section')
+        unexpected=None
         try:
             for source in sources:
+                try:
+                    run.checkpoint()  # Dealer boundary: Pause waits here; Stop ends here.
+                except ScanCancelled:
+                    break
                 source_start=time.monotonic()
                 with scan_lock:
                     scan_info['current'] = source
@@ -636,31 +724,16 @@ def create_handler(store, port, token):
                             push_event(source,phase.upper(),msg)
                     if mode == 'basic':
                         # Browser/sitemap link discovery only: no VDP requests, no VIN requirement.
-                        output = scan_basic_source(source,max_vehicles=max_vehicles,progress=report)
-                        with scan_lock:
-                            # Preserve user-captured details when a subsequent scan
-                            # discovers the SAME URL. Never transfer details by model
-                            # name alone: many vehicles share year/make/model.
-                            old_rows={r.get('url'):r for r in catalog.get('sources',{}).get(source,{}).get('records',[])}
-                            for row in output.get('records',[]):
-                                old=old_rows.get(row.get('url'))
-                                if old and isinstance(old.get('enrichment'),dict):
-                                    row['enrichment']=old['enrichment']
-                            catalog['sources'][source] = output
-                            scan_info['results'][source] = {
-                                'catalog_candidates':output['count'], 'index_candidates':output['index_candidates'],
-                                'verified':False, 'partial':True, 'accepted':0, 'parsed':0,
-                                'complete_details':0, 'pending':output['count']}
-                            snapshot=json.loads(json.dumps(catalog))
-                        tmp=catalog_path.with_suffix('.new')
-                        tmp.write_text(json.dumps(snapshot,ensure_ascii=False,indent=2),encoding='utf-8')
-                        tmp.replace(catalog_path)
+                        output = scan_basic_source(source,max_vehicles=max_vehicles,progress=report,control=run)
+                        if not commit_basic_catalog(run, source, output):
+                            raise ScanCancelled('USER_STOPPED_SCAN')
                         push_event(source,'CATALOG',f'{output["count"]} URL-derived Y/M/model candidates; 0 VINs verified; no detail requests')
                     else:
                         output = scan_source(source, photos_approved=photos_approved,
                                              max_vehicles=max_vehicles, progress=report)
                         if not output['vehicles']:
                             raise ValueError('no_valid_vehicle_rows; data_untouched')
+                        run.checkpoint()
                         result=store.import_feed(source,'json',json.dumps(output),complete=False)
                         with scan_lock:
                             scan_info['results'][source] = {'accepted':result['accepted'],
@@ -673,6 +746,13 @@ def create_handler(store, port, token):
                                 'discovery':output['scraper']['discovery'],
                                 'first_errors':output['scraper']['failures'][:5]}
                         push_event(source,'IMPORTED',f'{result["accepted"]} valid records, {result["quarantined"]} quarantined')
+                except ScanCancelled:
+                    # Stop won before this dealer was committed: its prior catalog stays.
+                    with scan_lock:
+                        scan_info.setdefault('stopped_sources',[]).append(source)
+                        scan_info.setdefault('section_durations',{})[source]=round(time.monotonic()-source_start,1)
+                    push_event(source,'STOPPED','Stopped before this section was saved; previous catalog kept')
+                    break
                 except Exception as exc:
                     with scan_lock:
                         scan_info['errors'].append({'source':source,'reason':str(exc)[:300]})
@@ -680,23 +760,15 @@ def create_handler(store, port, token):
                             scan_info.setdefault('samples',{})[source]=exc.samples[:5]
                     push_event(source,'FAILED',str(exc)[:220])
                 with scan_lock:
+                    # Section processed (saved or failed). Only 'committed' sections were written.
                     scan_info['completed'].append(source)
                     scan_info.setdefault('section_durations',{})[source]=round(time.monotonic()-source_start,1)
+        except Exception as exc:
+            unexpected='historical_worker_failed: '+type(exc).__name__
         finally:
-            with scan_lock:
-                scan_info['running'] = False
-                scan_info['current'] = ''
-                scan_info['eta_seconds'] = None
-                scan_info['elapsed_seconds'] = round(time.monotonic()-start)
-                snapshot = dict(scan_info)
-            push_event('', 'FINISH',f'Scan ended: {len(snapshot["completed"])} sections, {len(snapshot["errors"])} failed')
-            with scan_lock:snapshot=dict(scan_info)
-            try:
-                stage = scan_report_path.with_suffix('.new')
-                stage.write_text(json.dumps(snapshot,indent=2),encoding='utf-8')
-                stage.replace(scan_report_path)
-            except OSError:
-                pass
+            # Final event and diagnostics are written inside the release, before
+            # another run can be admitted.
+            chrome_bridge.release_basic(run, elapsed_seconds=round(time.monotonic()-start), failed=unexpected)
 
     def decorated_state(snapshot):
         for car in snapshot.get('vehicles',[]):
@@ -988,8 +1060,13 @@ def create_handler(store, port, token):
                 if self.headers.get('X-SalesmanHub-Token') != token:
                     return self._json(403, {'error':'session_token_required'})
                 chrome_bridge.recover_jobs()
-                with scan_lock:
-                    snapshot=json.loads(json.dumps(scan_info))
+                with chrome_bridge.lock:
+                    # One consistent view: owner state and scan details together.
+                    with scan_lock:
+                        snapshot=json.loads(json.dumps(scan_info))
+                    snapshot['state']=chrome_bridge.scan_state()
+                    snapshot['stopping']=snapshot['state']=='stopping'
+                    snapshot['paused']=snapshot['state']=='paused'
                 snapshot['timing']=chrome_bridge.scan_timing()
                 return self._json(200,snapshot)
             if path == '/api/export':
@@ -1298,20 +1375,31 @@ def create_handler(store, port, token):
                         raise ValueError('invalid_scan_limit')
                     if chrome_bridge.verify_status().get('running'):
                         raise ValueError('live_verification_running; wait for Chrome Reader to finish')
+                    # LR-009: admission is atomic inside the bridge lock; every
+                    # incompatible start (Basic, Quick, Rescan, verify) checks the
+                    # same owner. Full Scan's own stage transitions stay protected.
                     if mode in ('chrome','headless'):
                         headless_dealer.ensure_ready()
-                        return self._json(200,{'ok':True,'started':True,
-                            'chrome':chrome_bridge.start(catalog,sources,limit,
+                        with full_lock:
+                            if full_job['running']:
+                                raise ValueError('full_scan_running; stop Full Scan before starting another scan')
+                            started=chrome_bridge.start(catalog,sources,limit,
                                 skip_existing=data.get('skip_existing') is True,
-                                discover_live=data.get('discover_live') is True)})
-                    with scan_lock:
-                        if scan_info['running']:
-                            raise ValueError('website_scan_already_running')
-                        scan_info.update(running=True,current='',completed=[],errors=[],results={},progress={},events=[],samples={},sources=sources,started_at=utc(),eta_seconds=None,section_durations={},mode=mode)
-                    thread=threading.Thread(target=website_scan_worker,
-                        args=(sources,True,limit,mode),daemon=True)
-                    thread.start()
-                    return self._json(200, {'ok':True,'started':True})
+                                discover_live=data.get('discover_live') is True)
+                        return self._json(200,{'ok':True,'started':True,'chrome':started})
+                    with full_lock:
+                        if full_job['running']:
+                            raise ValueError('full_scan_running; stop Full Scan before starting another scan')
+                        run=chrome_bridge.reserve_basic(sources,mode)
+                    try:
+                        thread=launch_scan_thread(target=website_scan_worker,
+                            args=(run,sources,True,limit,mode),daemon=True,name='LotRadar-Historical-Discovery')
+                        run.thread=thread
+                        thread.start()
+                    except Exception as exc:
+                        chrome_bridge.release_basic(run,failed='worker_start_failed: '+type(exc).__name__)
+                        raise ValueError('scan_worker_start_failed; no scan is running') from exc
+                    return self._json(200, {'ok':True,'started':True,'run_id':run.id})
                 if path == '/api/full-scan-start':
                     if data.get('explicit_user_request') is not True:
                         raise ValueError('explicit_full_scan_request_required')
@@ -1323,13 +1411,13 @@ def create_handler(store, port, token):
                             raise ValueError('full_scan_already_running')
                         # Start first to ensure we never report an active Full Scan
                         # when the browser queue itself refused to start.
-                        started=chrome_bridge.start(catalog,list(USED_SOURCES),850,
-                                                     skip_existing=False,discover_live=True)
+                        started=admit_held(lambda:chrome_bridge.start(catalog,list(USED_SOURCES),850,
+                                                     skip_existing=False,discover_live=True))
+                        stage_run=bridge_run_id()
                         full_job.update(running=True,phase='scanning_inventory',operation='full_scan',
                             started_at=utc(),finished_at=None,cancel_requested=False,scan=None,verify=None,
                             facebook=None,error=None,partial=False)
-                    threading.Thread(target=full_scan_worker,daemon=True,
-                                     name='Marketplace-Full-Scan').start()
+                    launch_coordinator('full_scan','Marketplace-Full-Scan',stage_run)
                     return self._json(200,{'ok':True,'full':full_job_status(),'chrome':started})
                 if path == '/api/chrome-refresh-vehicle':
                     if data.get('explicit_user_request') is not True:raise ValueError('explicit_vehicle_refresh_required')
@@ -1357,9 +1445,12 @@ def create_handler(store, port, token):
                     headless_dealer.ensure_ready()
                     if not chrome_bridge.dealer_connected():
                         raise ValueError('dealer_reader_not_connected')
-                    return self._json(200, {'ok':True,
-                        'verification':chrome_bridge.start_verify(int(data.get('limit') or 1200),
-                            repair_missing=data.get('repair_missing') is True)})
+                    with full_lock:
+                        if full_job['running']:
+                            raise ValueError('full_scan_running; stop Full Scan before starting another scan')
+                        verification=chrome_bridge.start_verify(int(data.get('limit') or 1200),
+                            repair_missing=data.get('repair_missing') is True)
+                    return self._json(200, {'ok':True,'verification':verification})
                 if path == '/api/transfer-kit':
                     vin=str(data.get('vin') or '').upper()
                     item=next((v for v in store.state()['vehicles'] if v['vin']==vin),None)
@@ -1558,15 +1649,15 @@ def create_handler(store, port, token):
                         headless_dealer.ensure_ready()
                         if not chrome_bridge.dealer_connected():raise ValueError('dealer_reader_not_connected')
                         try:
-                            verify=chrome_bridge.start_verify(1200,tracked_vins=vins)
+                            verify=admit_held(lambda:chrome_bridge.start_verify(1200,tracked_vins=vins))
                         except ValueError as exc:
                             if str(exc)!='no_saved_vehicle_links_to_verify':raise
                             verify={'error':'No valid saved dealer links to check.'}
+                        stage_run=bridge_run_id()
                         full_job.update(running=True,phase='verifying_inventory',operation='recheck_outstock',
                             started_at=utc(),finished_at=None,cancel_requested=False,scan=None,verify=verify,
                             facebook=None,error=None,partial=bool(verify.get('error')))
-                    threading.Thread(target=full_scan_worker,args=(pairs,),daemon=True,
-                        name='LotRadar-Recheck-Outstock').start()
+                    launch_coordinator('recheck_outstock','LotRadar-Recheck-Outstock',stage_run,(pairs,))
                     return self._json(200,{'ok':True,'vehicles':len(vins),'dealer_links':verify.get('total',0),
                         'facebook_links':len(pairs)})
                 if path == '/api/facebook-auto-check-all':
@@ -1583,16 +1674,16 @@ def create_handler(store, port, token):
                         if full_job['running'] or chrome_bridge.status()['running'] or facebook_auto.bulk_status()['active']:
                             raise ValueError('A scan is already running. Let it finish or stop it before checking both links.')
                         try:
-                            verify=chrome_bridge.start_verify(1200,tracked_vins={vin for vin,_ in pairs})
+                            verify=admit_held(lambda:chrome_bridge.start_verify(1200,tracked_vins={vin for vin,_ in pairs}))
                         except ValueError as exc:
                             if str(exc)!='no_saved_vehicle_links_to_verify':
                                 raise
                             verify={'error':'No saved dealer links to check.'}
+                        stage_run=bridge_run_id()
                         full_job.update(running=True,phase='verifying_inventory',operation='check_listings',
                             started_at=utc(),finished_at=None,cancel_requested=False,scan=None,verify=verify,
                             facebook=None,error=None,partial=bool(verify.get('error')))
-                    threading.Thread(target=full_scan_worker,args=(pairs,),daemon=True,
-                                     name='LotRadar-Check-Listing-Links').start()
+                    launch_coordinator('check_listings','LotRadar-Check-Listing-Links',stage_run,(pairs,))
                     return self._json(200,{'ok':True,'total':len(pairs),'dealer_links':verify.get('total',0)})
                 if path == '/api/facebook-auto-check':
                     if data.get('explicit_request') is not True:raise ValueError('explicit_check_request_required')
@@ -1664,6 +1755,7 @@ def create_handler(store, port, token):
     Handler.photo_categories = photo_categories
     Handler.auto_sorter = auto_sorter
     Handler.headless_dealer = headless_dealer
+    Handler.full_job = full_job  # LR-009 test seam: Full Scan stage-transition guard
     return Handler
 
 

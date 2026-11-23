@@ -42,6 +42,63 @@ MAKE_NAMES = ['Alfa Romeo', 'Land Rover', 'Mercedes-Benz', 'Aston Martin', 'Roll
 PRICE_LABEL = r'(?:Hampton Price|Internet Price|Sale Price|Our Price|Dealer Price|Selling Price|Hampton Sale Price)'
 
 
+class ScanCancelled(Exception):
+    """The user stopped this discovery run; nothing from the current dealer is committed."""
+
+
+class ScanControl:
+    """LR-009: Pause, Resume and Stop for one historical discovery run.
+
+    The worker calls checkpoint() at dealer, navigation/scroll and sitemap-request
+    boundaries. A bounded call already in flight drains; no new request starts
+    after Stop. Stop also wakes a paused worker so it can exit.
+    """
+    def __init__(self):
+        import threading
+        self.cancel = threading.Event()
+        self.unpaused = threading.Event()
+        self.unpaused.set()
+
+    @property
+    def stopping(self):
+        return self.cancel.is_set()
+
+    @property
+    def paused(self):
+        return not self.unpaused.is_set() and not self.cancel.is_set()
+
+    def pause(self):
+        if not self.cancel.is_set():
+            self.unpaused.clear()
+
+    def resume(self):
+        self.unpaused.set()
+
+    def stop(self):
+        self.cancel.set()
+        self.unpaused.set()
+
+    def checkpoint(self):
+        self.unpaused.wait()
+        if self.cancel.is_set():
+            raise ScanCancelled('USER_STOPPED_SCAN')
+
+    def sleep(self, seconds):
+        self.checkpoint()
+        if self.cancel.wait(max(0.0, float(seconds))):
+            raise ScanCancelled('USER_STOPPED_SCAN')
+        self.checkpoint()
+
+
+class _NoControl:
+    stopping = False
+    paused = False
+    def checkpoint(self):
+        return None
+    def sleep(self, seconds):
+        time.sleep(seconds)
+
+
 def allowed_vehicle_url(url: str, source: str) -> bool:
     """Exactly the approved dealership host, VDP path and matching condition."""
     if source not in SITES or not isinstance(url, str):
@@ -89,12 +146,13 @@ def vehicle_links(index_html: str, base: str, source: str) -> list[str]:
     return out
 
 
-def sitemap_vehicle_links(gate, source: str, *, max_vehicles=250, delay=0.8):
+def sitemap_vehicle_links(gate, source: str, *, max_vehicles=250, delay=0.8, control=None):
     """Sitemap fallback when JS inventory cards never expose their VDP links.
 
     Reads only allowlisted same-host XML, obeys robots on every request, and
     never marks the returned list complete or infers a missing VIN is sold.
     """
+    control = control or _NoControl()
     base = SITES[source]
     root = urlsplit(base)
     homepage = f'{root.scheme}://{root.netloc}'
@@ -106,6 +164,7 @@ def sitemap_vehicle_links(gate, source: str, *, max_vehicles=250, delay=0.8):
     found = []
     diagnostics = []
     while queue and len(visited) < MAX_SITEMAP_FILES and len(found) < max_vehicles:
+        control.checkpoint()  # LR-009: no new sitemap request after Stop
         url = queue.pop(0)
         try:
             p = urlsplit(url)
@@ -146,7 +205,9 @@ def sitemap_vehicle_links(gate, source: str, *, max_vehicles=250, delay=0.8):
                             queue.insert(0,candidate)
                         else:
                             queue.append(candidate)
-            time.sleep(delay)
+            control.sleep(delay)
+        except ScanCancelled:
+            raise
         except Exception as ex:
             diagnostics.append(f'{p.path}:{type(ex).__name__}:{str(ex)[:70]}')
     return found, {'sitemaps_checked':len(visited),'sitemap_warnings':diagnostics[:12]}
@@ -205,17 +266,21 @@ def basic_catalog_from_links(links, source, max_vehicles=250, provenance='sitema
     return rows
 
 
-def scan_basic_source(source, *, max_vehicles=250, delay=0.8, progress=None):
+def scan_basic_source(source, *, max_vehicles=250, delay=0.8, progress=None, control=None):
     """Discover unverified YMM entries, WITHOUT requesting vehicle detail pages.
 
     Inventory pages are attempted first. Sitemaps are fallback and never
     establish stock availability. Respects robots.txt and rate limits.
+    LR-009: ``control`` (ScanControl) stops the run between bounded requests.
     """
+    control = control or _NoControl()
     if source not in SITES:raise ValueError('unsupported_source')
     if not 1<=max_vehicles<=800:raise ValueError('invalid_vehicle_limit')
     if delay<0.5:raise ValueError('minimum_request_delay_500ms')
+    control.checkpoint()
     target=SITES[source]; gate=RobotsGate()
     if not gate.permitted(target):raise RuntimeError('robots_disallow_inventory_index')
+    control.checkpoint()
     if progress:progress('loading_inventory',discovered=0,parsed=0,visited=0,failed=0)
     links=[];warnings=[]
     try:
@@ -227,10 +292,12 @@ def scan_basic_source(source, *, max_vehicles=250, delay=0.8, progress=None):
         try:
             ctx=browser.new_context(viewport={'width':1440,'height':950},locale='en-US')
             page=ctx.new_page()
+            control.checkpoint()
             page.goto(target,wait_until='domcontentloaded',timeout=45000)
             page.wait_for_timeout(2200)
             stagnant=0
             for _ in range(12):
+                control.checkpoint()  # LR-009: Stop/Pause between scroll passes
                 old=len(links)
                 for u in vehicle_links(page.content(),target,source):
                     if u not in links:links.append(u)
@@ -241,9 +308,10 @@ def scan_basic_source(source, *, max_vehicles=250, delay=0.8, progress=None):
         finally:
             browser.close()
     verified_card_links=len(links)
+    control.checkpoint()
     rows=basic_catalog_from_links(links,source,max_vehicles,'inventory_page')
     if len(rows)<10:
-        more,report=sitemap_vehicle_links(gate,source,max_vehicles=max_vehicles,delay=delay)
+        more,report=sitemap_vehicle_links(gate,source,max_vehicles=max_vehicles,delay=delay,control=control)
         warnings=report.get('sitemap_warnings',[])
         known={r['url'] for r in rows}
         for r in basic_catalog_from_links(more,source,max_vehicles,'sitemap'):
