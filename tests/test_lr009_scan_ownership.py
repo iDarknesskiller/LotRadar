@@ -998,12 +998,34 @@ class F1RetiredReaderTransport(Fixture):
         self.assertEqual(self.events('HEADLESS_ERROR'), [])
         self.call(CONTROL, {'action': 'stop'})
 
-    def test_a_transport_that_keeps_failing_stops_the_new_rescan_once(self):
+    def test_a_transport_that_keeps_failing_is_reported_unavailable_once(self):
         calls, rescan = self._late_untagged_failure(failures=10)
-        self.assertEqual(len(calls), 2, 'bounded: one restart, then the active run is stopped')
+        budget = self.handler.headless_dealer.RESTART_BUDGET
+        self.assertEqual(len(calls), 1 + budget, 'bounded restarts, then the Reader is unavailable')
         status = self.status()
         self.assertEqual((status['running'], status['state'], self.bridge.run_id), (False, 'stopped', rescan))
-        self.assertEqual(len(self.events('HEADLESS_ERROR')), 1)
+        self.assertEqual(len(self.events('HEADLESS_UNAVAILABLE')), 1)
+        self.assertEqual(self.events('HEADLESS_ERROR'), [], 'not reported as a failure of the Rescan itself')
+        self.assertTrue(any(e['reason'].startswith('READER_UNAVAILABLE') for e in status['errors']))
+
+    def test_repeated_retired_faults_do_not_stop_a_paused_successor(self):
+        """LR-009-05: two faults tagged with a retired run id are not the paused run's."""
+        from headless_dealer import ReaderFault
+        h = self.handler.headless_dealer
+        self.assertEqual(self.call(START, QUICK)[0], 200)
+        self.call(CONTROL, {'action': 'pause'})
+        calls = []
+
+        async def pump():
+            calls.append(1)
+            if len(calls) <= 2:
+                raise ReaderFault('retired-run', RuntimeError('late teardown'))
+        with patch.object(h, '_pump', pump):
+            h._run()
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(self.status()['state'], 'paused')
+        self.assertEqual(self.events('HEADLESS_ERROR') + self.events('HEADLESS_UNAVAILABLE'), [])
+        self.call(CONTROL, {'action': 'stop'})
 
     def h_teardown(self):
         return getattr(self.handler.headless_dealer, 'teardown_error', None)
@@ -1096,6 +1118,70 @@ class F3CoordinatorLaunchFailure(Fixture):
         self.assertFalse(self.bridge.verify['running'])
         self.assertTrue(self.bridge.verify.get('interrupted'))
         self._assert_slot_free()
+
+    def _seed_coordinated_targets(self):
+        """One saved vehicle that every coordinated route has work for."""
+        self.seed_vehicle()
+        self.store.create_draft(VIN, 'toyota_used')
+        self.store.db.execute("UPDATE drafts SET status='USER_CONFIRMED_PUBLISHED',published_url=? WHERE vin=?",
+                              ('https://www.facebook.com/marketplace/item/1111111111111/', VIN))
+        self.store.db.commit()
+        self.store.record_link_check('toyota_used', url('toyota_used', 0x77), 'unavailable')
+
+    def test_rollback_is_durable_on_every_coordinated_route(self):
+        """LR-009-05: a restarted bridge must not restore the failed operation's jobs."""
+        self._seed_coordinated_targets()
+        routes = [('/api/full-scan-start', VERIFY, 'Marketplace-Full-Scan'),
+                  ('/api/recheck-outstock', {'explicit_request': True}, 'LotRadar-Recheck-Outstock'),
+                  ('/api/facebook-auto-check-all', {'explicit_request': True}, 'LotRadar-Check-Listing-Links')]
+        for route, body, thread_name in routes:
+            with self.subTest(route=route):
+                with self._failing(thread_name):
+                    code, reply = self.call(route, body)
+                self.assertEqual((code, reply.get('error')), (400, 'scan_coordinator_start_failed; no scan is running'))
+                self.assertFalse(self.bridge.queue or self.bridge.inflight)
+                checkpoint = json.loads((self.root / 'pending_dealer_scan.json').read_text('utf-8'))
+                self.assertEqual(checkpoint['jobs'], [])
+                reopened = CB.ChromeBridge(self.root, self.store, lambda *a: None, {}, threading.RLock())
+                self.assertEqual(reopened.queue, [], 'failed coordinator work restored after restart')
+                self.assertFalse(reopened.scan_info.get('running') or reopened.verify.get('running'))
+                self._assert_slot_free()
+
+    def test_no_job_is_dispatched_before_the_coordinator_starts(self):
+        """LR-009-05: a ready Reader cannot import while the coordinator launch is pending."""
+        self.seed_vehicle()
+        before = json.dumps(self.store.state()['vehicles'], sort_keys=True)
+        arrived, release = threading.Event(), threading.Event()
+        polls = []
+
+        def launch(**_):
+            arrived.set()
+            wait_for(release, 'test release of the coordinator launch')
+            raise RuntimeError("can't start new thread")
+        with patch.object(self.server, 'launch_scan_thread', launch), ThreadPoolExecutor(1) as pool:
+            pending = pool.submit(self.call, '/api/full-scan-start', VERIFY)
+            try:
+                wait_for(arrived)
+                for _ in range(4):  # the Reader is connected and polling
+                    polls.append(self.bridge.next(consumer='headless')['job'])
+            finally:
+                release.set()
+            self.assertEqual(pending.result(10)[0], 400)
+        self.assertEqual(polls, [None] * 4, 'no lease while the coordinator is not running')
+        self.assertEqual(json.dumps(self.store.state()['vehicles'], sort_keys=True), before)
+        self._assert_slot_free()
+
+    def test_jobs_dispatch_once_the_coordinator_has_started(self):
+        code, reply = self.call('/api/full-scan-start', VERIFY)
+        self.assertEqual(code, 200)
+        job = self.bridge.next(consumer='headless')['job']
+        self.assertEqual(job['kind'], 'inventory_index')
+        self.assertFalse(self.bridge.dispatch_hold)
+        self.call(CONTROL, {'action': 'stop'})
+        deadline = time.monotonic() + 10
+        while self.handler.full_job['running']:
+            self.assertLess(time.monotonic(), deadline, 'Full Scan coordinator did not stop')
+            time.sleep(0.1)
 
     def test_successful_launch_is_unchanged(self):
         code, reply = self.call('/api/full-scan-start', VERIFY)

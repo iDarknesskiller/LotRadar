@@ -86,6 +86,7 @@ class ChromeBridge:
             with os.fdopen(fd, 'w', encoding='ascii') as f:
                 f.write(self.key)
         self.run_id = None
+        self.dispatch_hold = False  # LR-009: admitted run waits for its coordinator
         self.started = 0.
         self.totals = defaultdict(int)
         # Separate verification ledger. Explicit detail repair refreshes dealer
@@ -221,11 +222,29 @@ class ChromeBridge:
             self.basic_run = None
             return True
 
+    def hold_dispatch(self):
+        """Hold dispatch for the run about to be admitted until its coordinator starts.
+
+        Caller holds full_lock. While held, ``next()`` hands out no job, so a
+        ready Reader cannot import anything for an operation that may still
+        fail to start. Refuses (like ``start``) when another run owns the slot.
+        """
+        with self.lock:
+            if self._dealer_slot_busy():
+                raise ValueError('another_scan_already_running')
+            self.dispatch_hold = True
+
+    def release_dispatch(self):
+        with self.lock:
+            self.dispatch_hold = False
+
     def abort_reader_run(self, run_id, reason):
         """Roll back an admitted Reader run whose coordinator never started.
 
         Only the active run identified by ``run_id`` is touched; a finished or
-        newer run is left alone. Nothing is imported or marked sold.
+        newer run is left alone. Nothing is imported or marked sold. The
+        rollback is written to the durable checkpoint before returning, so a
+        restart cannot restore the failed operation's jobs.
         """
         from core import utc
         with self.lock:
@@ -240,15 +259,17 @@ class ChromeBridge:
                                    notice='Did not start: '+reason+'; nothing was checked.')
                 self._save_verify()
                 self.events('', 'FINISH', 'Check did not start: '+reason[:160])
-                return True
-            if not self.scan_info.get('running'):
-                return False
-            self.queue.clear();self.inflight.clear();self.paused=False;self._reset_worker_budget()
-            with self.scan_lock:
-                self.scan_info.update(running=False, current='', eta_seconds=None, failed=True, launch_failed=run_id)
-                self.scan_info.setdefault('errors', []).append({'source': '', 'reason': reason})
-            self.events('', 'FINISH', 'Scan did not start: '+reason[:160])
-            self._write_diagnostics()
+            else:
+                if not self.scan_info.get('running'):
+                    return False
+                self.queue.clear();self.inflight.clear();self.paused=False;self._reset_worker_budget()
+                with self.scan_lock:
+                    self.scan_info.update(running=False, current='', eta_seconds=None, failed=True, launch_failed=run_id)
+                    self.scan_info.setdefault('errors', []).append({'source': '', 'reason': reason})
+                self.events('', 'FINISH', 'Scan did not start: '+reason[:160])
+                self._write_diagnostics()
+            self.dispatch_hold = False
+            self._checkpoint_scan()
             return True
 
     def _write_diagnostics(self):
@@ -736,6 +757,9 @@ class ChromeBridge:
                 # LR-009: historical discovery owns the slot. An idle Reader poll
                 # is not evidence that it finished; never finalize it here.
                 return {'job':None,'waiting':True,**self.control_status()}
+            if self.dispatch_hold:
+                # LR-009: the coordinator of this run has not started yet.
+                return {'job':None,'running':True,'waiting':True,**self.control_status()}
             running = self.verify.get('running') if self.mode == 'verify' else self.scan_info.get('running')
             if not running:
                 return {'job':None,'running':False,'connected':True, **self.control_status()}

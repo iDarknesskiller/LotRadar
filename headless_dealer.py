@@ -53,7 +53,7 @@ class HeadlessDealer:
         self.error = None
         self.teardown_error = None
         self.serving_run = None   # run whose pending work the pump is serving
-        self.restarted_for = None  # run that already used its one pump restart
+        self.restarts = (None, 0)  # (active run, pump restarts used for it)
         self.user_agent = None
         self.denial_run = None
         self.denials = {}
@@ -94,15 +94,24 @@ class HeadlessDealer:
             except Exception as exc:
                 if not self._fault(exc):
                     return
-                # A retired run's failure must not strand the current run's
-                # queue without a transport: serve it from a fresh pump.
+                # A failure that is not the active run's must not strand its
+                # queue without a transport: serve it from a fresh pump, after
+                # a short, Stop-interruptible backoff.
+                if self.stop_event.wait(0.25 * self.restarts[1]):
+                    return
+
+    RESTART_BUDGET = 2
 
     def _fault(self, exc):
         """LR-009: report and stop only the run whose Reader work failed.
 
-        A failure tagged with (or, untagged, raised while serving) a run other
-        than the active one restarts the pump once for the active run. A second
-        failure means the transport itself is broken: the active run is stopped.
+        * Attributed to the active run (tagged with its id, or untagged while
+          serving it): that run is stopped with HEADLESS_ERROR.
+        * Not attributed to it (a retired run's id, or an idle pump): the pump
+          restarts for the active run, up to RESTART_BUDGET times per run.
+        * Budget exhausted: the Reader transport is unavailable. The active run
+          cannot progress, so it is stopped, but reported as
+          HEADLESS_UNAVAILABLE, never as a failure of that run's own work.
         Returns True when the pump should restart.
         """
         cause = exc.cause if isinstance(exc, ReaderFault) else exc
@@ -117,13 +126,22 @@ class HeadlessDealer:
             active = bridge.verify.get('running') if bridge.mode == 'verify' else bridge.scan_info.get('running')
             if not active:
                 return False
-            if failed_run != bridge.run_id and self.restarted_for != bridge.run_id:
-                self.restarted_for = bridge.run_id
-                return not self.stop_event.is_set()
-            bridge.events('', 'HEADLESS_ERROR', 'Headless browser stopped: '+self.error)
+            if failed_run == bridge.run_id:
+                bridge.events('', 'HEADLESS_ERROR', 'Headless browser stopped: '+self.error)
+                reason = 'Headless browser failed: '+self.error
+            else:
+                run, used = self.restarts
+                used = used if run == bridge.run_id else 0
+                if used < self.RESTART_BUDGET:
+                    self.restarts = (bridge.run_id, used + 1)
+                    return not self.stop_event.is_set()
+                bridge.events('', 'HEADLESS_UNAVAILABLE',
+                              f'Headless Reader unavailable after {used} restarts ({self.error}); '
+                              'the failures did not come from this run')
+                reason = 'READER_UNAVAILABLE: headless Reader could not be restarted ('+self.error+')'
             bridge.control('stop')
             with bridge.scan_lock:
-                bridge.scan_info.setdefault('errors', []).append({'source':'', 'reason':'Headless browser failed: '+self.error})
+                bridge.scan_info.setdefault('errors', []).append({'source':'', 'reason':reason})
             return False
 
     async def _retire(self, browser):

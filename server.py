@@ -374,12 +374,26 @@ def create_handler(store, port, token):
     def full_job_status():
         with full_lock:return json.loads(json.dumps(full_job))
 
+    def admit_held(start):
+        """LR-009: admit a coordinated Reader stage with dispatch held.
+
+        Caller holds full_lock. No job leaves the queue until launch_coordinator
+        has started the coordinator thread (or rolled the stage back).
+        """
+        chrome_bridge.hold_dispatch()
+        try:
+            return start()
+        except BaseException:
+            chrome_bridge.release_dispatch()
+            raise
+
     def launch_coordinator(operation,name,stage_run,args=()):
         """LR-009: start the Full Scan/recheck coordinator, or undo its admission.
 
         If the thread cannot start, the Reader stage this request admitted
-        (identified by run id) and the full_job reservation are rolled back so
-        no slot stays occupied by an operation that never ran.
+        (identified by run id) and the full_job reservation are rolled back,
+        durably, before any of its jobs could be dispatched, so nothing is
+        imported and no slot stays occupied by an operation that never ran.
         """
         try:
             launch_scan_thread(target=full_scan_worker,args=args,daemon=True,name=name).start()
@@ -387,8 +401,10 @@ def create_handler(store, port, token):
             reason=f'{operation}_coordinator_start_failed: {type(exc).__name__}'
             with full_lock:
                 chrome_bridge.abort_reader_run(stage_run,reason)
+                chrome_bridge.release_dispatch()
                 full_job.update(running=False,phase='failed',partial=True,error=reason,finished_at=utc())
             raise ValueError('scan_coordinator_start_failed; no scan is running') from exc
+        chrome_bridge.release_dispatch()
 
     def bridge_run_id():
         with chrome_bridge.lock:return chrome_bridge.run_id
@@ -1395,8 +1411,8 @@ def create_handler(store, port, token):
                             raise ValueError('full_scan_already_running')
                         # Start first to ensure we never report an active Full Scan
                         # when the browser queue itself refused to start.
-                        started=chrome_bridge.start(catalog,list(USED_SOURCES),850,
-                                                     skip_existing=False,discover_live=True)
+                        started=admit_held(lambda:chrome_bridge.start(catalog,list(USED_SOURCES),850,
+                                                     skip_existing=False,discover_live=True))
                         stage_run=bridge_run_id()
                         full_job.update(running=True,phase='scanning_inventory',operation='full_scan',
                             started_at=utc(),finished_at=None,cancel_requested=False,scan=None,verify=None,
@@ -1633,7 +1649,7 @@ def create_handler(store, port, token):
                         headless_dealer.ensure_ready()
                         if not chrome_bridge.dealer_connected():raise ValueError('dealer_reader_not_connected')
                         try:
-                            verify=chrome_bridge.start_verify(1200,tracked_vins=vins)
+                            verify=admit_held(lambda:chrome_bridge.start_verify(1200,tracked_vins=vins))
                         except ValueError as exc:
                             if str(exc)!='no_saved_vehicle_links_to_verify':raise
                             verify={'error':'No valid saved dealer links to check.'}
@@ -1658,7 +1674,7 @@ def create_handler(store, port, token):
                         if full_job['running'] or chrome_bridge.status()['running'] or facebook_auto.bulk_status()['active']:
                             raise ValueError('A scan is already running. Let it finish or stop it before checking both links.')
                         try:
-                            verify=chrome_bridge.start_verify(1200,tracked_vins={vin for vin,_ in pairs})
+                            verify=admit_held(lambda:chrome_bridge.start_verify(1200,tracked_vins={vin for vin,_ in pairs}))
                         except ValueError as exc:
                             if str(exc)!='no_saved_vehicle_links_to_verify':
                                 raise
