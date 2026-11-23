@@ -1,0 +1,37 @@
+# Nightly photo retention and cleanup
+
+**Work order LR-0015 · Assignment LR-0015-01 · Chief Architect → Claude, Lead Programmer.** Architecture review only. Juan’s separate approval is required before implementation. No production candidate or test harness has been frozen.
+
+Approved main `8c7283507efa2e23feed49c07d24fc8fe7310f1f`, source-derived build ID `20261121-8c72835`. PR #11 inspected at `ad4a289fd4dc0ce9849ce5c7525b630275157a6a` contains reports and scanner fixes. The retention request was in its discussion and description. Build this design from main on its own branch.
+
+### Photo retention and Facebook cleanup
+
+**Owner decision.** Automatically start the 30-day retention period when **every known dealer source for that VIN definitively reports it unavailable**. Keep the vehicle record and all associated local photos for the full period. Three consecutive days of unreadable dealer pages flag a vehicle for review only. The first eligible nightly maintenance run after expiry may clean exclusively owned files under a separately approved implementation. Keep a tracked Facebook listing in Delete Listing until its actual removal is confirmed.
+
+**Why the current availability flag is insufficient.** The Reader groups “this page is in the shop” with vehicle-not-found text. The link-check table keeps one outcome per source/URL, and an inconclusive read can leave an earlier unavailable outcome in place. In the fixture, one reachable dealer kept the probable flag off. Two unavailable dealers turned it on. A later inconclusive check left the stored result unavailable and the probable flag on. Neither state created an inventory removal. Current main also supports Owner-confirmed removal and a separate 30-day trash period for archived listing records. Pending Facebook confirmation requires the matching active draft and listing identity. [Reader classification](https://github.com/iDarknesskiller/LotRadar/blob/8c7283507efa2e23feed49c07d24fc8fe7310f1f/chrome-extension/background.js#L87-L95) · [Availability projection](https://github.com/iDarknesskiller/LotRadar/blob/8c7283507efa2e23feed49c07d24fc8fe7310f1f/core.py#L1236-L1280) · [Listing trash](https://github.com/iDarknesskiller/LotRadar/blob/8c7283507efa2e23feed49c07d24fc8fe7310f1f/core.py#L1202-L1231) · [Removal and Facebook confirmation](https://github.com/iDarknesskiller/LotRadar/blob/8c7283507efa2e23feed49c07d24fc8fe7310f1f/core.py#L1293-L1366)
+
+**Lifecycle design for review**
+
+1. Persist vehicle-specific evidence for each known dealer identity and URL, covering at least one source. Keep definitive unavailability separate from “unknown”, redirects, timeouts, 403/429, generic maintenance, incomplete scans and sitemap omissions. A VIN positively available at either dealer prevents eligibility. Record the first instant the last required dealer produces qualifying evidence and preserve it across daily checks and restarts.
+2. Count distinct consecutive review days in America/Chicago and compare the retention deadline using 30 full elapsed days from a stored UTC instant. These clock details are the Chief’s proposed implementation. More attempts on one day count once. A relisted VIN, changed identity or newly found dealer requires reevaluation. Unknown or stale evidence at the deletion boundary holds cleanup. Test one-dealer and shared VINs, no known sources, mixed results, date boundaries, daylight saving time and relisting.
+3. Test a dry run first. Immediately before cleanup, revalidate all known sources, including removed VINs hidden from active inventory. Inventory the exclusively managed originals, cached derivatives and managed exports, with ownership and shared-reference checks. Preserve user copies, exports outside managed storage, shared files, backups and unrelated directories. Validate resolved paths and reparse points. Exercise missing/locked files, disk failure and concurrent downloads.
+4. Use a durable, per-VIN cleanup record. Persist intent and file list before filesystem changes, coordinate in-flight writers, and make per-file retries safe after a crash. Finalize database references only after the corresponding action is verified. Preserve identity and draft backing for pending Facebook cleanup, including after day 30. Test recovery, explicit Facebook confirmation and cancellation after rediscovery. Retain a sanitized reason and outcome for each action.
+
+## Implementation proposal requested from Claude
+
+Map the dealer evidence in chrome-extension/background.js, headless_dealer.py and chrome_bridge.py through core.py. Trace photo owners and writers in photo_cache.py, photo_selection.py and server.py, including original downloads, exported copies, generated previews and saved selections. Identify the owner of each reference before proposing a migration. The existing Facebook trash expiry covers different records. Preserve the active draft and listing identity required by Facebook confirmation.
+
+Propose three reviewable stages: first record evidence and deadlines, then run a nightly read-only inventory with a fake clock, then seek Owner approval for an actual cleanup worker. Use a persistent VIN generation and an exclusive maintenance claim. Scanners and downloaders must check the generation before publishing files or references. Cancel on rediscovery. Reject ownership ambiguity, shared references, paths outside the managed root, and links or junctions anywhere in the path. Design for Windows file replacement races and locked files. Keep durable intent until every owned file and reference is accounted for. Log counts and reasons for due, held, skipped, retried and completed jobs without private paths or listing data.
+
+## Required automated tests
+
+| Check | Expected result |
+| --- | --- |
+| AC-01 Transition and clock | Initial confirmation deletes nothing. One second before 30 full days nothing is removed. The first eligible nightly run after expiry cleans every exclusively owned original, managed export and derivative plus their references. |
+| AC-02 Dealer evidence | One available dealer blocks eligibility. Three unreadable days flag review only. A missing check day breaks the streak. Multiple checks on one day count once. Test DST, restart, a newly added dealer and relisting. |
+| AC-03 Storage safety | Protect shared photos and references, user exports, backups, unrelated files and linked directories. Repeat validation at removal. |
+| AC-04 Crash recovery | Inject failure before and after each database commit and file operation. Restart twice. Missing or locked files have an auditable outcome. No unrelated reference is removed. |
+| AC-05 Facebook | A pending listing and its confirmation flow survive day 30, cleanup and restart. Only verified manual removal clears the reminder. |
+| AC-06 Concurrency | Simulate two maintenance workers, rediscovery and an in-flight photo write. A stale job cannot recreate the file or delete a relisted vehicle’s photos. |
+
+**Next handoff.** Claude returns a design, affected files, rollback strategy and fixture test plan to the Chief. All acceptance tests above are pending. Use the next available assignment number. In every handoff use simple English, list checks, comments, open issues and next owner, and pass these rules on. Record Gemini’s actual verdict and evidence when received. Give each confirmed fix its own linked issue within the work order, starting at LR-0015-1. The work order alone is LR-0015.
