@@ -37,6 +37,11 @@ secrets*
 *token*
 *credentials*
 
-# Private branding assets (supplied locally at build time; publication needs owner approval)
-branding/
+# Branding. Only the four Owner-approved public assets are tracked (branding/business_card.png,
+# branding/dedication.jpg, branding/lotradar_logo.png and LotRadar.ico at the root); every other file
+# in branding/ stays private and ignored. Publishing anything else needs a new Owner approval.
+branding/*
+!branding/business_card.png
+!branding/dedication.jpg
+!branding/lotradar_logo.png
 private-assets/

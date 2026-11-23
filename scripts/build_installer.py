@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build and verify the LotRadar Windows installer package.
 
-    python scripts/build_installer.py build  --mode production --asset-dir <private dir> [--out-dir dist]
-    python scripts/build_installer.py build  --mode development [--asset-dir <dir>]
+    python scripts/build_installer.py build  --mode production [--asset-dir <dir>] [--out-dir dist]
+    python scripts/build_installer.py build  --mode development [--asset-dir <dir> | --no-branding]
     python scripts/build_installer.py verify <package.zip> [--require-production]
 
 Design rules (see docs/INSTALL.md):
@@ -10,8 +10,11 @@ Design rules (see docs/INSTALL.md):
     package always matches a commit. Production builds also require a clean working tree.
   * Only an explicit allowlist is packaged. A tracked file that is neither allowlisted nor
     explicitly excluded fails the build, so new source files can never be silently omitted.
-  * Private branding assets are NEVER read from the repository. They are supplied through
-    --asset-dir (must be outside the repo or git-ignored) and validated before use.
+  * Branding: the four Owner-approved public assets are committed (branding/business_card.png,
+    branding/dedication.jpg, branding/lotradar_logo.png, LotRadar.ico) and packaged from their
+    HEAD blobs by default; each committed blob must match its approved SHA-256. --asset-dir
+    (outside the repo or git-ignored) overrides individual files for a build. --no-branding
+    (development only) packages none, to test the "LR" fallback. Every asset is validated.
   * Output is deterministic: sorted entries, fixed timestamps (commit time), STORED zip.
   * Install-Manifest.json is generated from the exact bytes being packaged.
 
@@ -68,6 +71,7 @@ SOURCE_ALLOWLIST = [
     'refresh_policy.py',
     'requirements.txt',
     'server.py',
+    'startup/Show-LotRadarStartup.ps1',
     'styles.css',
     'system_load.py',
     'trade_ready.py',
@@ -75,8 +79,15 @@ SOURCE_ALLOWLIST = [
 ]
 
 # Tracked files that are intentionally NOT part of the installed program.
-EXCLUDED_EXACT = {'.gitignore', '.gitattributes', 'README.md', 'AUDIT_README.txt', 'FILE_MANIFEST.json'}
+EXCLUDED_EXACT = {'.gitignore', '.gitattributes', 'README.md', 'AI_README.md', 'AUDIT_README.txt', 'FILE_MANIFEST.json'}
 EXCLUDED_PREFIXES = ('installer/', 'scripts/', 'docs/', 'tests/')
+
+
+def is_root_document(path):
+    """Markdown documents at the repository root (README.md, AI_README.md, ARCHITECT_HANDOFF.md, ...) are never
+    program files. They are excluded automatically so a new root document cannot make every build fail (LR-012).
+    Only the root level and only .md: any other unknown tracked file still fails the build."""
+    return '/' not in path and path.lower().endswith('.md')
 
 # Package-root files (outside the payload) taken from installer/.
 PACKAGE_FILES = {
@@ -85,7 +96,7 @@ PACKAGE_FILES = {
     'README - INSTALL.txt': 'installer/README - INSTALL.txt',
 }
 
-# Private assets: payload path -> (file name in --asset-dir, magic bytes, required in production)
+# Branding assets: payload path (== committed repo path) -> (file name in --asset-dir, magic bytes, required in production)
 ASSETS = {
     'branding/business_card.png': ('business_card.png', b'\x89PNG\r\n\x1a\n', True),
     'branding/dedication.jpg': ('dedication.jpg', b'\xff\xd8\xff', True),
@@ -93,6 +104,14 @@ ASSETS = {
     # Must be the icon made from lotradar_logo.png; production refuses to ship without it
     # (no silent substitution of an older icon).
     'LotRadar.ico': ('LotRadar.ico', b'\x00\x00\x01\x00', True),
+}
+# Owner-approved public bytes (2026-11-19). A committed asset whose blob differs fails the build, so a
+# replaced or corrupted image can never ship silently; changing an asset needs this table updated too.
+APPROVED_ASSET_SHA256 = {
+    'branding/business_card.png': 'be82e63c6035cf337cdc9a7bb038f670393324fa9e1f9aa3c710607bdfa701bd',
+    'branding/dedication.jpg': 'f1f86eef4f8d69d9f797e69767e8c1058afeb156d5af2d1ea369a538715db0e5',
+    'branding/lotradar_logo.png': 'b598d23ba243d30274d59ba78abc1571348b46eefbccd494a9dd3e0af2820e7d',
+    'LotRadar.ico': 'e97981648825570899b7a208fcd7aa82f2a66238fc791a87e18cf24b680d7629',
 }
 MAX_ASSET_BYTES = 25 * 1024 * 1024
 
@@ -150,7 +169,9 @@ def safe_relative(path):
 
 
 def load_committed_source(root):
-    """Return (commit, commit_epoch, {repo_path: bytes}) read from HEAD blobs."""
+    """Return (commit, commit_epoch, {repo_path: bytes}) read from HEAD blobs.
+
+    The blobs include every committed branding asset (ASSETS keys); assets that are not tracked are simply absent."""
     commit = git(root, 'rev-parse', 'HEAD', text=True)
     epoch = int(git(root, 'show', '-s', '--format=%ct', 'HEAD', text=True))
     tracked = [p for p in git(root, 'ls-tree', '-r', '-z', '--name-only', 'HEAD').decode('utf-8').split('\0') if p]
@@ -159,12 +180,22 @@ def load_committed_source(root):
     if missing:
         raise BuildError('Mandatory tracked files are missing at HEAD: ' + ', '.join(missing))
     unknown = sorted(p for p in tracked
-                     if p not in allow and p not in EXCLUDED_EXACT and not p.startswith(EXCLUDED_PREFIXES))
+                     if p not in allow and p not in ASSETS and p not in EXCLUDED_EXACT
+                     and not p.startswith(EXCLUDED_PREFIXES) and not is_root_document(p))
     if unknown:
         raise BuildError('Tracked files are neither packaged nor explicitly excluded (update the allowlist '
                          'in scripts/build_installer.py): ' + ', '.join(unknown))
-    blobs = {p: git(root, 'show', 'HEAD:' + p) for p in sorted(allow)}
+    blobs = {p: git(root, 'show', 'HEAD:' + p) for p in sorted(allow | (set(ASSETS) & set(tracked)))}
     return commit, epoch, blobs
+
+
+def check_asset_bytes(name, magic, data):
+    """Size, file-type and structure checks shared by committed and --asset-dir assets."""
+    if len(data) < 16 or len(data) > MAX_ASSET_BYTES:
+        raise BuildError('Asset %s has an implausible size (%d bytes).' % (name, len(data)))
+    if not data.startswith(magic):
+        raise BuildError('Asset %s is not the expected file type (bad header).' % name)
+    check_asset_structure(name, data)
 
 
 def check_asset_structure(name, data):
@@ -187,13 +218,35 @@ def check_asset_structure(name, data):
                 raise BuildError('Asset %s is a truncated ICO (frame %d outside file).' % (name, i))
 
 
-def load_assets(root, asset_dir, mode):
-    """Validate and read private assets. Returns {payload_path: bytes}."""
-    found = {}
+def load_assets(root, asset_dir, mode, committed=None, no_branding=False):
+    """Resolve branding assets. Returns ({payload_path: bytes}, {payload_path: 'committed' | 'asset-dir'}).
+
+    Precedence per file: --asset-dir copy (if present) > committed HEAD blob (must equal its approved SHA-256).
+    --no-branding (development only) returns nothing. Production needs all required assets."""
+    committed = committed or {}
+    found, sources = {}, {}
+    if no_branding:
+        if mode == 'production':
+            raise BuildError('--no-branding is only allowed for development builds.')
+        if asset_dir:
+            raise BuildError('--no-branding cannot be combined with --asset-dir.')
+        return found, sources
+    for payload_path, (name, magic, _required) in ASSETS.items():
+        if payload_path not in committed:
+            continue
+        data = committed[payload_path]
+        if sha256(data) != APPROVED_ASSET_SHA256[payload_path]:
+            raise BuildError('Committed asset %s does not match its Owner-approved SHA-256 (expected %s). Update '
+                             'APPROVED_ASSET_SHA256 only with a new Owner approval.' % (payload_path, APPROVED_ASSET_SHA256[payload_path]))
+        check_asset_bytes(name, magic, data)
+        found[payload_path] = data
+        sources[payload_path] = 'committed'
     if not asset_dir:
         if mode == 'production':
-            raise BuildError('Production builds require --asset-dir containing business_card.png, dedication.jpg, lotradar_logo.png and LotRadar.ico.')
-        return found
+            missing = [name for p, (name, _m, req) in ASSETS.items() if req and p not in found]
+            if missing:
+                raise BuildError('Required branding asset is missing (not committed and no --asset-dir): ' + ', '.join(missing))
+        return found, sources
     asset_dir = os.path.realpath(asset_dir)
     if not os.path.isdir(asset_dir):
         raise BuildError('--asset-dir is not a directory: %s' % asset_dir)
@@ -202,30 +255,28 @@ def load_assets(root, asset_dir, mode):
     for payload_path, (name, magic, required) in ASSETS.items():
         path = os.path.join(asset_dir, name)
         if not os.path.isfile(path):
-            if required and mode == 'production':
-                raise BuildError('Required private asset is missing: %s' % path)
-            continue
+            continue  # keep the committed copy, if any
         if inside_repo:
             rel = os.path.relpath(path, repo_real).replace(os.sep, '/')
             ignored = subprocess.run(['git', '-C', root, 'check-ignore', '-q', rel],
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
             if not ignored:
                 raise BuildError('Asset %s is inside the repository and NOT git-ignored; refusing (risk of '
-                                 'publishing private files). Keep assets outside the repo or under branding/.' % rel)
+                                 'publishing private files). Keep override assets outside the repo or in a '
+                                 'git-ignored folder such as private-assets/.' % rel)
         size = os.path.getsize(path)
         if size < 16 or size > MAX_ASSET_BYTES:
             raise BuildError('Asset %s has an implausible size (%d bytes).' % (name, size))
         with open(path, 'rb') as handle:
             data = handle.read()
-        if not data.startswith(magic):
-            raise BuildError('Asset %s is not the expected file type (bad header).' % name)
-        check_asset_structure(name, data)
+        check_asset_bytes(name, magic, data)
         found[payload_path] = data
+        sources[payload_path] = 'asset-dir'
     if mode == 'production':
         for payload_path, (name, _magic, required) in ASSETS.items():
             if required and payload_path not in found:
-                raise BuildError('Required private asset is missing: %s' % name)
-    return found
+                raise BuildError('Required branding asset is missing (not committed and not in --asset-dir): %s' % name)
+    return found, sources
 
 
 def zip_bytes(entries, epoch):
@@ -243,13 +294,13 @@ def zip_bytes(entries, epoch):
     return buffer.getvalue()
 
 
-def build(root, mode, asset_dir, out_dir):
+def build(root, mode, asset_dir, out_dir, no_branding=False):
     root = os.path.realpath(root)
     commit, epoch, blobs = load_committed_source(root)
     dirty = git(root, 'status', '--porcelain', '--untracked-files=normal', text=True) != ''
     if dirty and mode == 'production':
         raise BuildError('Production builds require a clean working tree (commit or stash changes first).')
-    assets = load_assets(root, asset_dir, mode)
+    assets, asset_sources = load_assets(root, asset_dir, mode, {p: blobs[p] for p in ASSETS if p in blobs}, no_branding)
 
     payload = {path: blobs[path] for path in SOURCE_ALLOWLIST}
     payload.update(assets)
@@ -278,6 +329,7 @@ def build(root, mode, asset_dir, out_dir):
         'working_tree_clean': not dirty,
         'branding_assets_included': sorted(p for p in payload if p in ASSETS),
         'branding_assets_missing': sorted(missing_branding),
+        'branding_asset_sources': {p: asset_sources[p] for p in sorted(asset_sources)},
         'package_files': [{'path': n, 'sha256': sha256(d), 'bytes': len(d)} for n, d in sorted(top.items())],
         'payload_files': [{'path': p, 'sha256': sha256(d), 'bytes': len(d)} for p, d in sorted(payload.items())],
     }
@@ -381,7 +433,8 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='command', required=True)
     b = sub.add_parser('build', help='build an installer ZIP from committed source')
     b.add_argument('--mode', choices=('production', 'development'), required=True)
-    b.add_argument('--asset-dir', help='private folder with business_card.png, dedication.jpg, lotradar_logo.png, LotRadar.ico (logo + icon required for production)')
+    b.add_argument('--asset-dir', help='optional folder whose business_card.png, dedication.jpg, lotradar_logo.png or LotRadar.ico override the committed copies for this build')
+    b.add_argument('--no-branding', action='store_true', help='development only: package no branding assets (tests the "LR" fallback)')
     b.add_argument('--out-dir', default=None, help='output folder (default: <repo>/dist)')
     b.add_argument('--repo-root', default=os.path.dirname(here))
     v = sub.add_parser('verify', help='verify an existing installer ZIP')
@@ -391,12 +444,13 @@ def main(argv=None):
     try:
         if args.command == 'build':
             out_dir = args.out_dir or os.path.join(args.repo_root, 'dist')
-            path, manifest, digest, dirty = build(args.repo_root, args.mode, args.asset_dir, out_dir)
+            path, manifest, digest, dirty = build(args.repo_root, args.mode, args.asset_dir, out_dir, args.no_branding)
             print('Built %s' % path)
             print('  package_version : %s (%s)' % (manifest['package_version'], manifest['build_type']))
             print('  source_commit   : %s' % manifest['source_commit'])
             print('  payload files   : %d' % len(manifest['payload_files']))
             print('  branding missing: %s' % (', '.join(manifest['branding_assets_missing']) or 'none'))
+            print('  branding source : %s' % (', '.join('%s=%s' % kv for kv in manifest['branding_asset_sources'].items()) or 'none'))
             print('  zip sha256      : %s' % digest)
             if dirty:
                 print('WARNING: working tree has uncommitted changes; they are NOT in the package.')

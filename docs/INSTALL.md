@@ -28,21 +28,47 @@ and `build_type` in `Install-Manifest.json`.
 * The commit to package must be committed. Packages are built from **committed blobs at HEAD**, never from
   uncommitted working-tree files.
 
-## Private branding assets
+## Branding assets (committed, Owner-approved public files)
 
-Photo export requires `business_card.png` and `dedication.jpg`. Branding requires `lotradar_logo.png` (transparent RGBA PNG, shown unchanged in the sidebar) and `LotRadar.ico` (made from that PNG; used for the shortcuts and the browser tab icon). **Production builds fail if the logo or icon is missing or corrupt**; development builds work without them and the app keeps the text "LR" mark. These files are private: keep them in the `--asset-dir` folder, never in the public repository. The logo is never added to vehicle photos or exports.
-Keep them in a folder **outside** this repository (or under the git-ignored `branding/`), e.g.
-`C:\LotRadarPrivate\assets\`. The builder checks type headers and size and refuses an in-repo, non-ignored folder.
+Photo export requires `business_card.png` and `dedication.jpg`. Branding uses `lotradar_logo.png` (transparent RGBA
+PNG, shown unchanged in the sidebar and startup window) and `LotRadar.ico` (made from that PNG; used for the shortcuts
+and the browser tab icon). The logo is never added to vehicle photos or exports.
+
+Since 2026-11-19 these four files are **committed** at the paths the program reads, with the Project Owner's
+explicit approval to publish them (including the business card's photo and contact details):
+
+| Path in the repository and installed program | SHA-256 |
+| --- | --- |
+| `branding/business_card.png` | `be82e63c6035cf337cdc9a7bb038f670393324fa9e1f9aa3c710607bdfa701bd` |
+| `branding/dedication.jpg` | `f1f86eef4f8d69d9f797e69767e8c1058afeb156d5af2d1ea369a538715db0e5` |
+| `branding/lotradar_logo.png` | `b598d23ba243d30274d59ba78abc1571348b46eefbccd494a9dd3e0af2820e7d` |
+| `LotRadar.ico` | `e97981648825570899b7a208fcd7aa82f2a66238fc791a87e18cf24b680d7629` |
+
+So a **GitHub "Download ZIP" of `main` works as is**: export previews and the logo need no extra private folder and
+no Git. Only these four exact paths are tracked; any other file in `branding/` stays git-ignored, and the builder
+refuses to package an unknown tracked file. The builder also refuses a committed asset whose bytes differ from the
+table above (`APPROVED_ASSET_SHA256` in `scripts/build_installer.py`); changing an asset needs a new Owner approval.
+
+`--asset-dir` is now an optional **per-file override** for a single build (a file found there replaces the committed
+copy; files not found there keep the committed copy). The override folder must be outside the repository or
+git-ignored (e.g. `private-assets/`); the tracked `branding/` folder itself is refused. `--no-branding`
+(development only) packages no branding at all, to test the text "LR" fallback; the Windows QA kit uses it.
 
 ## Build commands
 
 ```
-# Release candidate: requires both branding images and a clean working tree
+# Release candidate: committed branding, clean working tree required
+python scripts/build_installer.py build --mode production
+
+# Same, overriding one or more branding files for this build only
 python scripts/build_installer.py build --mode production --asset-dir C:\LotRadarPrivate\assets
 
-# Development/test package without private images (named *-DEV-NOBRANDING.zip; photo export will report
-# "branding_assets_missing")
+# Development/test package (committed branding, named *-DEV.zip)
 python scripts/build_installer.py build --mode development
+
+# Development package WITHOUT branding (named *-DEV-NOBRANDING.zip; photo export reports
+# "branding_assets_missing: business_card.png, dedication.jpg")
+python scripts/build_installer.py build --mode development --no-branding
 
 # Verify any package (re-hashes everything, scans for private data / secrets)
 python scripts/build_installer.py verify dist\LotRadar-Installer-<...>.zip --require-production
@@ -50,16 +76,31 @@ python scripts/build_installer.py verify dist\LotRadar-Installer-<...>.zip --req
 
 The build fails (and writes nothing) on: a missing mandatory file, a tracked file that is neither packaged nor
 explicitly excluded, a forbidden path (`data`, `runtime`, databases, keys, logs, `.exe`, ...), a secret-looking
-string, a missing/invalid required asset (production), or a dirty tree (production). Output is deterministic:
+string, a missing/invalid required asset (production), a committed asset that does not match its approved
+SHA-256, or a dirty tree (production). The manifest records where each branding file came from
+(`branding_asset_sources`: `committed` or `asset-dir`). Output is deterministic:
 the same commit and assets give the same ZIP byte for byte. Share the ZIP's SHA-256 (printed by the build) when
 handing it over. Publish it only as a release artifact, with the Project Owner's approval.
 
-## Supported platforms for this release
+## Supported platforms
 
-Windows 10 is the verified platform ("Windows 10 verified; Windows 11 untested"). Windows 11, installation/extraction
-from OneDrive-redirected folders, and the file-symlink refusal test (R3) were waived by the Project Owner and are **not
-verified**. Extract the ZIP to an ordinary local folder such as `C:\LotRadarInstall`; the link/reparse-point guard
-remains active and may refuse OneDrive folders.
+Two versions are described here. Do not mix them up.
+
+**Approved `main` (`bf61207`, the current release):** Windows 10 is the verified platform ("Windows 10 verified;
+Windows 11 untested"). Windows 11, installation/extraction from OneDrive folders, and the file-symlink refusal test
+(R3) were waived by the Project Owner and are **not verified** for that release. Its link/reparse-point guard refuses
+OneDrive folders, so extract that release to an ordinary local folder such as `C:\LotRadarInstall`.
+
+**PR #5 candidate (not merged, not released; tested at `673fe9d`):** on 2026-11-17 the automated installer suite
+passed on **Windows 11 Home build 26200**, PowerShell 5.1, standard user, with Developer Mode on so R3 could run
+(48 PASS / 0 FAIL / 1 SKIP; the skip is the full-launch test F1, which has **not** passed). Extracting this candidate's
+installer inside a **Personal OneDrive folder with Files On-Demand, files hydrated (available on this device)** also
+passed (51 PASS / 0 FAIL / 1 SKIP): the installer accepts cloud-file placeholders **only** for the read-only package it
+installs from, still refuses junctions and symlinks inside the package, and still refuses to install the program into
+a cloud or linked folder. **Not tested for the candidate:** online-only (not downloaded) files, OneDrive for Business,
+other cloud providers (Dropbox, Google Drive, iCloud), non-ASCII folder names, OneDrive sync conflicts during
+install, and Windows 10. If the installer refuses a cloud folder, copy the extracted package to an ordinary local
+folder and run it again.
 
 ## Install / upgrade (user, no admin rights)
 
@@ -73,14 +114,39 @@ remains active and may refuse OneDrive folders.
    program if the swap fails. Shortcuts are created on the Desktop and Start menu.
    The installer refuses (nothing is changed) if the package payload, `Programs\MarketplaceScanner` or
    `ProgramBackups` is a junction, symlink or other reparse-point folder, or if any payload path resolves outside the
-   package folder. If the package sits in a OneDrive/redirected folder and is refused, copy the extracted package to a
+   package folder. In the PR #5 candidate this check also covers `Programs`, `%LOCALAPPDATA%\MarketplaceScanner` and
+   its `runtime` folder, and runs before the runtime folder and lock files are created, so nothing is written through
+   a link. (`%LOCALAPPDATA%` itself is not checked.) If the package sits in a OneDrive or other cloud/redirected folder and is refused, copy the extracted package to a
    normal local folder (for example `C:\LotRadarInstall`) and run it again.
    If anything fails after the swap, the previous program folder is restored (the failed copy is kept as
    `ProgramBackups\Failed-install-*`); on a first install with no previous program, the failed copy is moved there
    and no program is installed. Data is never touched.
-4. Start LotRadar from the shortcut. First run installs Python 3.10+ (via WinGet), the packages in
+4. Start LotRadar from the shortcut (in the PR #5 candidate a startup window shows the steps; see below). First run installs Python 3.10+ (via WinGet), the packages in
    `requirements.txt` and Playwright Chromium; offline it stops with a message and can simply be launched again
    after connecting.
+
+## Startup window (PR #5 candidate, not in the approved `main` release)
+
+Double-clicking the LotRadar shortcut shows a small LotRadar window listing the real startup steps: checking the
+installation, Python and packages, the browser runtime, starting the local server, opening LotRadar. A step is marked
+done only when the startup script reports it; a moving bar is shown because no step reports a measurable fraction (no
+percentages or time estimates are shown). LotRadar is reported as open only after the script reports that it opened the
+window AND the window's own check of `http://127.0.0.1:8765/api/health` succeeds.
+
+- The window only displays progress. `Marketplace Bootstrap.ps1` still does all the work, in its own minimized
+  "LotRadar Server" console window (taskbar), and stays the only owner of the launch lock, the server and the browser
+  window. LotRadar keeps running after the startup window closes; closing the "LotRadar Server" window stops LotRadar.
+- Closing the startup window while LotRadar is still starting does not stop anything: the console window is brought up
+  and startup continues there.
+- If startup fails, the window shows the reason, **Show details**, **Show console** (the full output of that attempt),
+  **Retry** and **Close**. Retry/Close close the failed attempt's console only after its script has exited.
+- A second double-click while LotRadar runs opens LotRadar again without starting a second server.
+- Scripts and automation keep the original console start and exit codes: set `LOTRADAR_STARTUP_GUI=0` (or
+  `LOTRADAR_NO_PAUSE=1`, used by the test harness). If the window cannot be shown (no desktop session, Windows Forms
+  unavailable, or the per-user LotRadar or runtime folder is a link), the launcher falls back to the console start.
+- Progress is passed through `%LOCALAPPDATA%\MarketplaceScanner\runtime\startup-status-<random>.jsonl` (step names and
+  short messages only, with user/computer names and profile paths removed). The window deletes its file when it
+  closes; files older than one day are removed at the next start.
 
 ## Stale staging folders
 

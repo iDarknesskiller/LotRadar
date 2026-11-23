@@ -1,13 +1,20 @@
 # Manual acceptance checklist (cannot be automated)
 
-**Scope for the current release candidate (Project Owner waivers, recorded 2026-11-16):** Windows 10 is the verified
-platform. **Windows 11, OneDrive-redirected extraction/installation and the R3 file-symlink refusal test are
-WAIVED - NOT VERIFIED** (not passed). The installer's link/reparse-point guard (`Test-UnsafeLink`), path containment
-and checksums stay enabled; the R3 test code stays in the harness and may show SKIP. Release label: **"Windows 10
-verified; Windows 11 untested."** Extract packages into an ordinary local folder (for example `C:\LotRadarInstall`),
-not into OneDrive. Where this checklist says "Windows 10 and Windows 11", the Windows 11 column is waived.
+**Scope for the approved `main` release (`bf61207`; Project Owner waivers, recorded 2026-11-16):** Windows 10 is the
+verified platform. **Windows 11, OneDrive-redirected extraction/installation and the R3 file-symlink refusal test are
+WAIVED - NOT VERIFIED** for that release (not passed). Its link/reparse-point guard (`Test-UnsafeLink`), path containment
+and checksums stay enabled. Release label: **"Windows 10 verified; Windows 11 untested."** Extract that release into an
+ordinary local folder (for example `C:\LotRadarInstall`), not into OneDrive.
 
-Run each item on **Windows 10 (Windows 11 waived, see above)**, as a standard user, using a package built from the commit under
+**PR #5 candidate (unmerged; automated evidence at `673fe9d`, 2026-11-17):** Windows 11 Home build 26200, standard
+user, Developer Mode on: installer suite 48 PASS / 0 FAIL / 1 SKIP, **R3 PASS**; extraction inside a hydrated
+**Personal OneDrive** Files On-Demand folder 51 PASS / 0 FAIL / 1 SKIP (cloud placeholders accepted for the package
+source only; links inside the package and cloud/linked install destinations still refused). **Still open for the
+candidate:** F1 full launch (skipped, not passed), this manual checklist on Windows 11, Windows 10 re-run, online-only
+placeholders, OneDrive for Business and other cloud providers. These results are automated only; they do not fill in
+the Windows 11 column below.
+
+Run each item on **Windows 10** (and on Windows 11 for the PR #5 candidate), as a standard user, using a package built from the commit under
 test. Record OS build, package version and PASS/FAIL. Do not use real customer data; do not post to Facebook.
 Use a test profile or a machine where overwriting `%LOCALAPPDATA%\Programs\MarketplaceScanner` is acceptable
 (data in `%LOCALAPPDATA%\MarketplaceScanner\data` is preserved, but back it up first).
@@ -50,6 +57,27 @@ Health must show `ok=true, local_only=true, service="Marketplace Scanner"`; one 
    before the export and `-Mode PhotoCompare -Vin <VIN> -BeforeFile <file>` after it (read-only; changed/deleted originals must be 0).
 4. A DEV-NOBRANDING package must report `branding_assets_missing`.
 
+## E. Startup window (PR #5 candidate; Windows 11 and Windows 10)
+Automated: G1-G5, G9, G10 every run, G6-G8 with `-FullLaunch` (window over the real bootstrap); every G case also checks
+the four visible steps the window reports. Still manual:
+0. Appearance (docs/startup/VISUAL_DESIGN_APPROVAL.md): a small dark window; the original watch-shaped LotRadar logo
+   (with its own red and green `LOT RADAR` lettering) in the centre with a soft blue glow; "Initializing LotRadar"; a
+   blue moving bar with no percentage; four steps `SYSTEM CHECK`, `LOADING MODULES`, `STARTING SERVER`,
+   `LAUNCHING LOTRADAR`. No other picture, character, moon, banner or large separate title. A development package
+   without the private logo shows a plain "LR" circle instead.
+1. Explorer double-click of the Desktop shortcut: one LotRadar startup window, the four steps change from Waiting to
+   In progress to Done (LOADING MODULES stays In progress until both Python and the browser runtime are ready; the line
+   under "Initializing LotRadar" names which one), LotRadar opens once, the startup window closes by itself,
+   "LotRadar Server" stays in the taskbar.
+2. Double-click again while LotRadar runs: LotRadar opens again; still one "LotRadar Server" window.
+3. Keyboard only: Tab moves between the buttons, Alt+S / Alt+D / Alt+C / Alt+L work, plain F5 retries when enabled, Alt+R leaves the attempt unchanged, Esc closes.
+4. Display scaling 100%, 125%, 150% and 200% (Settings > Display; sign out and back in after each change): text,
+   steps and buttons are not cut off, also with "Show details" open.
+5. Close the startup window while it shows "In progress": the "LotRadar Server" window comes up and LotRadar still
+   opens; nothing is stopped.
+6. Failure: with LotRadar running from a DIFFERENT folder or another program on port 8765, the window shows the port
+   message; Show console shows the output; Retry after closing the other program works; Close leaves no console behind.
+
 ## Result table
 | Item | Windows 10 | Windows 11 |
 |------|-----------|-----------|
@@ -57,3 +85,11 @@ Health must show `ok=true, local_only=true, service="Marketplace Scanner"`; one 
 | B1-B2 | | |
 | C | | |
 | D | | |
+| E1-E6 | | |
+
+
+### PR #5 automated keyboard scope (Codex takeover)
+
+G10 posts mnemonic C and Escape messages only to the owned startup test window. It verifies WinForms mnemonic/dialog handling and failure-console lifetime without global SendKeys or forced foreground changes. It does not prove physical keyboard routing: E3 must still be performed interactively.
+
+The installer test cleanup no longer terminates Chrome/Edge based on a localhost app URL. Such a browser may share a personal process. Close leftover test app windows manually; no browser process tree is killed by Stop-SandboxProcesses.
