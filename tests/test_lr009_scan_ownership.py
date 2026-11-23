@@ -1271,6 +1271,77 @@ class F3CoordinatorLaunchFailure(Fixture):
         self.assertEqual(self.call(START, QUICK)[0], 200)
         self.call(CONTROL, {'action': 'stop'})
 
+    def _queue_save_outage(self, how, when):
+        """Refuse writes ('write') or replaces ('replace') of the saved queue while ``when()``."""
+        names = ('pending_dealer_scan.json', 'pending_dealer_scan.tmp')
+        if how == 'replace':
+            real = os.replace
+
+            def fail(src, dst, *a, **k):
+                if Path(dst).name in names and when():
+                    raise PermissionError('synthetic saved-queue outage')
+                return real(src, dst, *a, **k)
+            return patch.object(os, 'replace', fail)
+        real = Path.write_text
+
+        def fail(path, *a, **k):
+            if Path(path).name in names and when():
+                raise PermissionError('synthetic saved-queue outage')
+            return real(path, *a, **k)
+        return patch.object(Path, 'write_text', fail)
+
+    def test_start_is_refused_when_its_start_cannot_be_saved(self):
+        """LR-009-09: never answer "started" unless the saved queue says so."""
+        for how in ('write', 'replace'):
+            with self.subTest(failing=how):
+                ran = []
+                real_worker_launch = self.server.launch_scan_thread
+
+                def launch(**kw):
+                    target = kw['target']
+
+                    def watched(*a):
+                        target(*a)
+                        ran.append(self.handler.full_job.get('phase'))
+                    return real_worker_launch(**dict(kw, target=watched))
+                with patch.object(self.server, 'launch_scan_thread', launch), \
+                        self._queue_save_outage(how, lambda: not self.bridge.dispatch_hold):
+                    code, reply = self.call('/api/full-scan-start', VERIFY)
+                    self.assertEqual((code, reply.get('error')),
+                                     (400, 'scan_start_failed; the saved scan queue could not be written; no scan is running'))
+                    self.assertFalse(self.bridge.queue or self.bridge.inflight or self.bridge.dispatch_hold)
+                    saved = json.loads((self.root / 'pending_dealer_scan.json').read_text('utf-8'))
+                    self.assertTrue(saved['provisional'], 'the start was never saved as started')
+                    reopened = self._reopen()  # a restart now: truthfully never started
+                    self.assertEqual(reopened.queue, [])
+                    self.assertIn('COORDINATOR_NEVER_STARTED', reopened.scan_info['errors'][-1]['reason'])
+                self.assertFalse(self.handler.full_job['running'])
+                self.assertEqual(self.handler.full_job['phase'], 'failed')
+                self.assertTrue(self.handler.full_job['error'].startswith('full_scan_start_not_saved'))
+                deadline = time.monotonic() + 5
+                while not ran and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertEqual(ran, ['failed'], 'the waiting coordinator exited without running')
+                self.assertIsNone(self.bridge.next(consumer='headless')['job'])
+                self.assertEqual(self.call(START, QUICK)[0], 200)
+                self.call(CONTROL, {'action': 'stop'})
+
+    def test_status_reads_answer_during_a_queue_save_outage(self):
+        """LR-009-09: a status poll must not drop its connection when the queue cannot be saved."""
+        self.assertEqual(self.call(START, QUICK)[0], 200)
+        down = [True]
+        with self._queue_save_outage('replace', lambda: down[0]):
+            with self.bridge.lock, self.bridge.scan_lock:  # unsaved change, so each status poll tries to save
+                self.bridge.scan_info['eta_seconds'] = 123
+            for path in (STATUS, '/api/live-verify-status', '/api/dealer-connection-console', STATUS):
+                code, _ = self.call(path)
+                self.assertEqual(code, 200, path)
+            self.assertEqual(len(self.events('CHECKPOINT_WRITE_FAILED')), 1, 'one warning per outage')
+            down[0] = False
+        self.assertEqual(self.call(STATUS)[0], 200)
+        self.assertFalse(self.bridge._checkpoint_failing, 'a later successful save ends the outage')
+        self.call(CONTROL, {'action': 'stop'})
+
     def test_jobs_dispatch_once_the_coordinator_has_started(self):
         code, reply = self.call('/api/full-scan-start', VERIFY)
         self.assertEqual(code, 200)

@@ -127,6 +127,7 @@ class ChromeBridge:
             if raw==getattr(self,'_last_checkpoint',None):return
             path=self.root/'pending_dealer_scan.json';temp=path.with_suffix('.tmp')
             temp.write_text(raw,encoding='utf-8');os.replace(temp,path);self._last_checkpoint=raw
+            self._checkpoint_failing=False
 
     def _restore_scan(self):
         path=self.root/'pending_dealer_scan.json'
@@ -239,10 +240,26 @@ class ChromeBridge:
             self.dispatch_hold = True
 
     def release_dispatch(self):
-        """End the hold. The checkpoint stops marking the work provisional."""
+        """End the hold on a failure path (best-effort save)."""
         with self.lock:
             self.dispatch_hold = False
             self._try_checkpoint()
+
+    def commit_dispatch(self):
+        """Success path: release the hold only once the saved queue says it started.
+
+        The save and the release happen under the bridge lock, so no job can be
+        handed out before the saved queue is non-provisional. If the save fails
+        the hold is restored and the error is raised: the caller must refuse
+        the start, and the work still on disk stays provisional.
+        """
+        with self.lock:
+            self.dispatch_hold = False
+            try:
+                self._checkpoint_scan()
+            except BaseException:
+                self.dispatch_hold = True
+                raise
 
     def _try_checkpoint(self):
         """Best-effort checkpoint for admission/rollback paths (LR-009).
@@ -256,9 +273,12 @@ class ChromeBridge:
             self._checkpoint_scan()
             return True
         except OSError as exc:
-            self.events('', 'CHECKPOINT_WRITE_FAILED',
-                        'Saved scan queue could not be updated ('+type(exc).__name__+'); '
-                        'work that never started is still discarded after a restart')
+            # One warning per outage, not one per status poll.
+            if not getattr(self, '_checkpoint_failing', False):
+                self._checkpoint_failing = True
+                self.events('', 'CHECKPOINT_WRITE_FAILED',
+                            'Saved scan queue could not be updated ('+type(exc).__name__+'); '
+                            'work that never started is still discarded after a restart')
             return False
 
     def _discard_provisional(self, data):
@@ -268,7 +288,7 @@ class ChromeBridge:
         The operation is shown as failed (scan) or interrupted (verification).
         """
         from core import utc
-        reason = ('COORDINATOR_NEVER_STARTED: LotRadar restarted before this operation started; '
+        reason = ('COORDINATOR_NEVER_STARTED: LotRadar stopped before this operation\'s start was saved; '
                   'its queued work was discarded and nothing was dispatched')
         self.run_id = data.get('run_id')
         self.mode = data.get('mode', 'scan')
@@ -1376,11 +1396,15 @@ class ChromeBridge:
                     'key_present':bool(self.key)}
 
 # Snapshot queue mutations under the same reentrant lock. Completed jobs are absent.
-def _durable_scan_method(method):
+def _durable_scan_method(method, strict=True):
     def wrapped(self,*args,**kwargs):
         with self.lock:
             try:return method(self,*args,**kwargs)
-            finally:self._checkpoint_scan()
+            finally:
+                if strict:self._checkpoint_scan()
+                else:self._try_checkpoint()
     return wrapped
-for _method in ('start','start_single','start_missing_photos','start_verify','control','next','submit','recover_jobs'):
+for _method in ('start','start_single','start_missing_photos','start_verify','control','next','submit'):
     setattr(ChromeBridge,_method,_durable_scan_method(getattr(ChromeBridge,_method)))
+# LR-009: status reads call recover_jobs; a failed save must not break the read.
+ChromeBridge.recover_jobs=_durable_scan_method(ChromeBridge.recover_jobs, strict=False)

@@ -400,15 +400,19 @@ def create_handler(store, port, token):
     def launch_coordinator(operation,name,stage_run,args=()):
         """LR-009: start the Full Scan/recheck coordinator, or undo its admission.
 
-        If the thread cannot start, the Reader stage this request admitted
-        (identified by run id) and the full_job reservation are rolled back,
-        durably, before any of its jobs could be dispatched, so nothing is
-        imported and no slot stays occupied by an operation that never ran.
+        The operation is reported as started only when both hold: its
+        coordinator thread is running, and the saved queue records it as
+        started (``commit_dispatch``). The coordinator thread waits until that
+        verdict is known. If either step fails, the Reader stage this request
+        admitted (by run id) and the full_job reservation are rolled back
+        before any job could be dispatched, and the route answers 400. Work
+        still on disk is then provisional, so a restart discards it truthfully.
         """
-        try:
-            launch_scan_thread(target=full_scan_worker,args=args,daemon=True,name=name).start()
-        except Exception as exc:
-            reason=f'{operation}_coordinator_start_failed: {type(exc).__name__}'
+        go=threading.Event();verdict={'run':False}
+        def coordinator(*a):
+            go.wait()
+            if verdict['run']:full_scan_worker(*a)
+        def refuse(reason,message,exc):
             with full_lock:
                 try:
                     chrome_bridge.abort_reader_run(stage_run,reason)
@@ -419,8 +423,21 @@ def create_handler(store, port, token):
                         chrome_bridge.release_dispatch()
                     finally:
                         full_job.update(running=False,phase='failed',partial=True,error=reason,finished_at=utc())
-            raise ValueError('scan_coordinator_start_failed; no scan is running') from exc
-        chrome_bridge.release_dispatch()
+            raise ValueError(message) from exc
+        try:
+            try:
+                launch_scan_thread(target=coordinator,args=args,daemon=True,name=name).start()
+            except Exception as exc:
+                refuse(f'{operation}_coordinator_start_failed: {type(exc).__name__}',
+                       'scan_coordinator_start_failed; no scan is running',exc)
+            try:
+                chrome_bridge.commit_dispatch()
+            except OSError as exc:
+                refuse(f'{operation}_start_not_saved: {type(exc).__name__}',
+                       'scan_start_failed; the saved scan queue could not be written; no scan is running',exc)
+            verdict['run']=True
+        finally:
+            go.set()
 
     def bridge_run_id():
         with chrome_bridge.lock:return chrome_bridge.run_id
@@ -873,6 +890,17 @@ def create_handler(store, port, token):
             return self._json(403,{'error':'preflight_rejected'})
 
         def do_GET(self):
+            # LR-009: a GET always gets an answer; an unexpected error (for
+            # example a failed queue save) must not drop the connection.
+            try:
+                return self._do_GET()
+            except Exception:
+                try:
+                    return self._json(500, {'ok':False,'error':'internal_error; see server console'})
+                except Exception:
+                    return None
+
+        def _do_GET(self):
             path = urlsplit(self.path).path
             if path in ('/api/chrome-bridge/next','/api/chrome-bridge/ping','/api/chrome-bridge/facebook-auto-next'):
                 if not self._bridge_authorized():
