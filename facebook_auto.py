@@ -163,6 +163,15 @@ class FacebookAutoQueue:
                     'retryable':counts['failed']+counts['expired']+counts['cancelled'],
                     'active':bool(counts['queued'] or counts['checking']),**counts}
 
+    def bulk_results(self):
+        """Per-listing outcome of the CURRENT bulk batch only (Delete Listing Refresh evidence)."""
+        with self.lock:
+            self._expire()
+            ids=set(self.bulk_job_ids)
+            return [{'vin':j['vin'],'listing_id':j['listing_id'],'state':j['state'],
+                     'detail':str(j.get('detail') or '')[:180],'fields':list(j.get('fields') or [])}
+                    for j in self.jobs if j['id'] in ids]
+
     def timing(self):
         with self.lock:
             self._expire()

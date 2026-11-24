@@ -540,4 +540,9 @@
 .delete-listing-section>.delete-listing-section-title{margin:0;font-size:13px;color:var(--soft);letter-spacing:.4px}
 .cleanup-status-warning{grid-column:1/-1;border:1px solid var(--warn);background:var(--panel2);color:var(--warn);padding:12px;border-radius:10px;font-size:12px;line-height:1.5;margin-bottom:12px}
 .cleanup-status-warning .btn{margin-left:8px}
+.delete-listing-refresh{grid-column:1/-1;border:1px solid var(--line,#334);background:var(--panel2);padding:10px 12px;border-radius:10px;font-size:12px;line-height:1.5;margin-bottom:12px}
+.delete-listing-refresh .refresh-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.delete-listing-refresh .refresh-details{margin-top:6px;color:var(--soft)}
+.refresh-review-card .refresh-dealer-result{margin-top:2px}
+.refresh-review-card .refresh-page_unavailable strong,.refresh-review-card .refresh-check_failed strong{color:var(--warn)}
 .delete-listing-section .vehicle-grid{width:100%}

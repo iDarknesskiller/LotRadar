@@ -967,6 +967,7 @@ class ChromeBridge:
                            'checked': len(bad), 'matched': 0, 'review': len(bad),
                            'unreachable': 0, 'inconclusive': 0, 'findings': bad,
                            'started_at': utc(), 'finished_at': None,
+                           'run_id': self.run_id,
                            'availability_verified': False,
                            'scope': 'tracked_listing_dealer_links' if tracked_vins is not None else 'saved_dealer_links_only',
                            'skipped_due_to_limit': skipped_due_to_limit,'skipped_recent':skipped_recent,

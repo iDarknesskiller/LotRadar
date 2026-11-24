@@ -29,7 +29,7 @@ from feed_sync import sync_configured
 from listing_transfer import build_transfer_kit
 from photo_cache import PhotoCache
 from chrome_bridge import ChromeBridge, READER_REVISION
-from facebook_auto import FacebookAutoQueue
+from facebook_auto import FacebookAutoQueue, MAX_QUEUED as FACEBOOK_BATCH_LIMIT
 from dealer_site_scraper import scan_source, scan_basic_source, enrich_basic_from_visible_text, SITES, ScanFailure, prepare as prepare_external_scan
 
 BASE = Path(__file__).resolve().parent
@@ -364,6 +364,184 @@ def create_handler(store, port, token):
     def full_job_status():
         with full_lock:return json.loads(json.dumps(full_job))
 
+    # Delete Listing Refresh: the Refresh control and Check Listing Links share ONE admission and ONE
+    # batch. The batch records exactly which linked listings it checked, so Delete Listing can show
+    # THIS attempt's evidence instead of historical listing_link_checks rows (which keep an older
+    # 'unavailable' after a later failed check). Read-only: never removes inventory, archives a
+    # draft, deletes a photo or changes a Facebook post.
+    LISTING_CHECK_ORIGINS=('check_listing_links','delete_listing_refresh')
+    DEALER_FAILURE_TEXT={'DEALER_LINK_UNAVAILABLE':('page_unavailable','Dealer page shows a removal or not-found message'),
+                         'PAGE_TIMEOUT':('check_failed','Dealer page timed out'),
+                         'ACCESS_DENIED':('check_failed','Dealer site blocked the check'),
+                         'PAGE_UNAVAILABLE':('check_failed','Dealer page did not load'),
+                         'INVALID_DEALER_LINK':('check_failed','Saved dealer link is invalid')}
+    listing_batch={'current':None}
+
+    def listing_check_targets():
+        """Linked, locally tracked used vehicles; everything left out is itemized with a reason."""
+        candidates,skipped=[],[]
+        for vehicle in store.state()['vehicles']:
+            draft=vehicle.get('draft') or {}
+            if draft.get('status')!='USER_CONFIRMED_PUBLISHED' or not draft.get('published_url'):continue
+            vin=vehicle['vin']
+            if not any(src in USED_SOURCES for src in vehicle.get('sources') or {}):
+                skipped.append({'vin':vin,'listing_id':'','reason':'not_used_inventory'});continue
+            lid=facebook_listing_id(draft['published_url'])
+            if not lid:
+                skipped.append({'vin':vin,'listing_id':'','reason':'invalid_facebook_link'});continue
+            candidates.append((vin,lid))
+        uses={}
+        for _,lid in candidates:uses[lid]=uses.get(lid,0)+1
+        targets=[]
+        for vin,lid in candidates:
+            # One post linked to two VINs cannot be attributed (its capture is rejected as a conflict).
+            if uses[lid]>1:
+                skipped.append({'vin':vin,'listing_id':lid,'reason':'duplicate_listing_link'});continue
+            if len(targets)>=FACEBOOK_BATCH_LIMIT:
+                skipped.append({'vin':vin,'listing_id':lid,'reason':'over_batch_limit'});continue
+            targets.append({'vin':vin,'listing_id':lid,'url':'https://www.facebook.com/marketplace/item/'+lid})
+        return targets,skipped
+
+    def blocking_job_label():
+        """Name of the job that blocks a new listing check, or ''. Caller holds full_lock."""
+        if full_job['running']:
+            return {'full_scan':'Full Scan','recheck_outstock':'Recheck Out of Stock',
+                    'check_listings':'Check Listing Links'}.get(full_job.get('operation'),'Another scan')
+        if chrome_bridge.status()['running']:
+            if chrome_bridge.verify_status().get('running'):return 'Refresh & Verify Inventory'
+            return 'Quick Scan' if chrome_bridge.quick_scan else 'A dealer scan or photo fetch'
+        if facebook_auto.bulk_status()['active']:return 'A Facebook retry batch'
+        return ''
+
+    def running_listing_batch():
+        """The admitted, unfinished listing-check batch, if any. Caller holds full_lock."""
+        batch=listing_batch['current']
+        if (full_job['running'] and full_job.get('operation')=='check_listings' and batch
+                and full_job.get('batch_id')==batch['id'] and not batch['finished_at']):
+            return batch
+        return None
+
+    def joined_reply(batch):
+        return {'ok':True,'joined':True,'batch_id':batch['id'],'started_by':batch['origin'],
+                'total':len(batch['targets']),'dealer_links':batch['dealer_links'],'skipped':len(batch['skipped'])}
+
+    def start_listing_check(origin):
+        if origin not in LISTING_CHECK_ORIGINS:raise ValueError('invalid_listing_check_origin')
+        with full_lock:
+            batch=running_listing_batch()
+            if batch:return joined_reply(batch)  # a repeated click (either control) shares the batch
+        targets,skipped=listing_check_targets()
+        if not targets:
+            return {'ok':True,'total':0,'skipped':len(skipped),'skipped_items':skipped}
+        if not chrome_bridge.connected():
+            raise ValueError('Connect LotRadar Browser Reader for Facebook checks first.')
+        headless_dealer.ensure_ready()
+        with full_lock:
+            batch=running_listing_batch()
+            if batch:return joined_reply(batch)
+            blocking=blocking_job_label()
+            if blocking:
+                raise ValueError(f'{blocking} is running. Let it finish or stop it before checking listing links.')
+            try:
+                verify=chrome_bridge.start_verify(1200,tracked_vins={t['vin'] for t in targets})
+            except ValueError as exc:
+                if str(exc)!='no_saved_vehicle_links_to_verify':raise
+                verify={'error':'No saved dealer links to check.'}
+            batch={'id':secrets.token_hex(6),'origin':origin,'started_at':utc(),'finished_at':None,
+                   'targets':targets,'skipped':skipped,'verify_run_id':verify.get('run_id') or '',
+                   'dealer_links':verify.get('total',0),'fb_bulk_started':None,'result':None}
+            listing_batch['current']=batch
+            full_job.update(running=True,phase='verifying_inventory',operation='check_listings',
+                started_at=batch['started_at'],finished_at=None,cancel_requested=False,scan=None,verify=verify,
+                facebook=None,error=None,partial=bool(verify.get('error') or skipped),batch_id=batch['id'])
+        threading.Thread(target=full_scan_worker,args=([(t['vin'],t['url']) for t in targets],),daemon=True,
+                         name='LotRadar-Check-Listing-Links').start()
+        return {'ok':True,'joined':False,'batch_id':batch['id'],'started_by':origin,'total':len(targets),
+                'dealer_links':batch['dealer_links'],'skipped':len(skipped)}
+
+    def dealer_outcome(finding):
+        if not finding:return 'unchecked','No result in this batch (batch limit, recent-check cooldown or stopped)'
+        if finding.get('status') in ('MATCH','REVIEW') and not set(finding.get('issues') or [])&set(DEALER_FAILURE_TEXT):
+            return 'loads','Dealer page loaded'
+        for issue in finding.get('issues') or []:
+            if issue in DEALER_FAILURE_TEXT:return DEALER_FAILURE_TEXT[issue]
+        return 'check_failed','Dealer page could not be read'
+
+    def facebook_outcome(job,listing_id,since):
+        if not job:return 'unchecked','Not checked in this batch',None
+        state=job['state']
+        if state=='captured':
+            capture=store.facebook_capture_since(listing_id,since)
+            when=capture['captured_at'] if capture else None
+            if capture and capture['status']=='sold':return 'marked_sold','Facebook shows the post as sold',when
+            return 'active','Post loaded on Facebook',when
+        if state=='failed':
+            if job.get('detail')=='facebook_listing_unavailable':
+                return 'unavailable','Facebook says the listing is no longer available',None
+            return 'inconclusive',job.get('detail') or 'Facebook check failed',None
+        if state in ('queued','checking'):return 'pending','Waiting for Chrome Reader',None
+        return 'inconclusive',{'expired':'Facebook check expired','cancelled':'Facebook check cancelled'}.get(state,state),None
+
+    def listing_refresh_projection(batch):
+        """Classify ONE batch's own attempt. Historical link-check rows are never used here."""
+        verify=chrome_bridge.verify_status()
+        findings={}
+        if batch['verify_run_id'] and verify.get('run_id')==batch['verify_run_id']:
+            for f in verify.get('findings') or []:findings[(f.get('vin'),f.get('source'))]=f
+        fb_jobs={}
+        if batch['fb_bulk_started'] is not None and facebook_auto.bulk_started==batch['fb_bulk_started']:
+            fb_jobs={(j['vin'],j['listing_id']):j for j in facebook_auto.bulk_results()}
+        state=store.state()
+        vehicles={v['vin']:v for v in state['vehicles']}
+        removed={r['vin']:r['status'] for r in state.get('removals') or []}
+        groups={k:[] for k in ('review','facebook_inconclusive','unchecked','stale','already_pending','no_action')}
+        for target in batch['targets']:
+            vin,lid=target['vin'],target['listing_id']
+            vehicle=vehicles.get(vin) or {}
+            draft=vehicle.get('draft') or {}
+            dealers=[]
+            for src in USED_SOURCES:
+                rec=(vehicle.get('sources') or {}).get(src)
+                if not rec:continue
+                found=findings.get((vin,src))
+                outcome,detail=dealer_outcome(found)
+                if not found and not rec.get('url'):detail='No saved dealer link'
+                dealers.append({'source':src,'url':str((found or {}).get('url') or rec.get('url') or '')[:300],
+                                'outcome':outcome,'detail':detail,'checked_at':(found or {}).get('checked_at')})
+            fb,fb_detail,fb_at=facebook_outcome(fb_jobs.get((vin,lid)),lid,batch['started_at'])
+            item={'vin':vin,'listing_id':lid,'facebook_url':target['url'],'dealers':dealers,
+                  'facebook':{'outcome':fb,'detail':fb_detail,'checked_at':fb_at}}
+            if vin in removed:
+                item['reason']='Already removed from inventory'+(' · Facebook deletion pending' if removed[vin]=='PENDING_FB_DELETE' else '')
+                groups['already_pending'].append(item)
+            elif (not vehicle or draft.get('status')!='USER_CONFIRMED_PUBLISHED'
+                  or facebook_listing_id(draft.get('published_url') or '')!=lid):
+                item['reason']='Facebook link changed after this check; result ignored'
+                groups['stale'].append(item)
+            elif fb=='active' and any(d['outcome'] in ('page_unavailable','check_failed') for d in dealers):
+                groups['review'].append(item)
+            elif fb in ('inconclusive','pending','unchecked'):
+                groups['facebook_inconclusive'].append(item)
+            elif fb=='active' and dealers and all(d['outcome']=='unchecked' for d in dealers):
+                groups['unchecked'].append(item)
+            else:
+                groups['no_action'].append(item)
+        with full_lock:
+            own=full_job.get('operation')=='check_listings' and full_job.get('batch_id')==batch['id']
+            running=bool(own and full_job['running'])
+            phase=full_job.get('phase') if own else 'unknown'
+        return {'ok':True,'batch_id':batch['id'],'started_by':batch['origin'],'started_at':batch['started_at'],
+                'finished_at':batch['finished_at'],'running':running,'phase':phase,
+                'targets':len(batch['targets']),'skipped':batch['skipped'],
+                'dealer_skipped_due_to_limit':int(verify.get('skipped_due_to_limit') or 0) if findings else None,
+                'counts':{k:len(v) for k,v in groups.items()},**groups}
+
+    def listing_refresh_status():
+        batch=listing_batch['current']
+        if not batch:return {'ok':True,'batch_id':None}
+        if batch['result'] is not None:return batch['result']
+        return listing_refresh_projection(batch)
+
     def full_scan_worker(tracked_pairs=None):
         """Advance three explicit, bounded browser jobs in sequence.
 
@@ -428,6 +606,9 @@ def create_handler(store, port, token):
                             change(phase='stopped',partial=True,finished_at=utc())
                             return
                         fb=facebook_auto.bulk_enqueue(pairs)
+                        batch=listing_batch['current']
+                        if batch and full_job.get('batch_id')==batch['id'] and full_job.get('operation')=='check_listings':
+                            batch['fb_bulk_started']=facebook_auto.bulk_started
                     if fb['active']:
                         if not wait_stage(lambda:not facebook_auto.bulk_status().get('active'),60*60):
                             facebook_auto.cancel_bulk();raise ValueError('facebook_bulk_timeout')
@@ -445,7 +626,20 @@ def create_handler(store, port, token):
         except Exception as exc:
             with full_lock:full_job.update(phase='failed',partial=True,error=f'{type(exc).__name__}: {str(exc)[:180]}',finished_at=utc())
         finally:
-            with full_lock:full_job['running']=False
+            # Freeze this batch's own evidence before the job is released (computed outside full_lock).
+            batch=listing_batch['current']
+            result=None
+            if (batch and full_job.get('operation')=='check_listings' and full_job.get('batch_id')==batch['id']
+                    and not batch['finished_at']):
+                try:result=listing_refresh_projection(batch)
+                except Exception as exc:  # evidence projection must never keep a job "running"
+                    result={'ok':False,'batch_id':batch['id'],'error':'refresh_result_unavailable: '+type(exc).__name__}
+            with full_lock:
+                if result is not None:
+                    batch['finished_at']=utc()
+                    result.update(running=False,finished_at=batch['finished_at'],phase=full_job.get('phase'))
+                    batch['result']=result
+                full_job['running']=False
 
 
     def current_photo_record(vin,source):
@@ -838,6 +1032,10 @@ def create_handler(store, port, token):
                     return self._json(403,{'error':'session_token_required'})
                 vin=parse_qs(urlsplit(self.path).query).get('vin',[''])[0].upper()
                 return self._json(200,facebook_auto.status(vin))
+            if path == '/api/listing-refresh-status':
+                if self.headers.get('X-SalesmanHub-Token') != token:
+                    return self._json(403,{'error':'session_token_required'})
+                return self._json(200,listing_refresh_status())
             if path == '/api/cleanup-status':
                 if self.headers.get('X-SalesmanHub-Token') != token:
                     return self._json(403,{'error':'session_token_required'})
@@ -1571,29 +1769,7 @@ def create_handler(store, port, token):
                         'facebook_links':len(pairs)})
                 if path == '/api/facebook-auto-check-all':
                     if data.get('explicit_request') is not True:raise ValueError('explicit_check_request_required')
-                    pairs=[(vehicle['vin'],draft['published_url']) for vehicle in store.state()['vehicles']
-                           if (draft:=vehicle.get('draft') or {}).get('status')=='USER_CONFIRMED_PUBLISHED'
-                           and draft.get('published_url') and any(src in USED_SOURCES for src in vehicle['sources'])]
-                    if not pairs:
-                        return self._json(200,{'ok':True,'total':0})
-                    if not chrome_bridge.connected():
-                        raise ValueError('Connect LotRadar Browser Reader for Facebook checks first.')
-                    headless_dealer.ensure_ready()
-                    with full_lock:
-                        if full_job['running'] or chrome_bridge.status()['running'] or facebook_auto.bulk_status()['active']:
-                            raise ValueError('A scan is already running. Let it finish or stop it before checking both links.')
-                        try:
-                            verify=chrome_bridge.start_verify(1200,tracked_vins={vin for vin,_ in pairs})
-                        except ValueError as exc:
-                            if str(exc)!='no_saved_vehicle_links_to_verify':
-                                raise
-                            verify={'error':'No saved dealer links to check.'}
-                        full_job.update(running=True,phase='verifying_inventory',operation='check_listings',
-                            started_at=utc(),finished_at=None,cancel_requested=False,scan=None,verify=verify,
-                            facebook=None,error=None,partial=bool(verify.get('error')))
-                    threading.Thread(target=full_scan_worker,args=(pairs,),daemon=True,
-                                     name='LotRadar-Check-Listing-Links').start()
-                    return self._json(200,{'ok':True,'total':len(pairs),'dealer_links':verify.get('total',0)})
+                    return self._json(200,start_listing_check(str(data.get('origin') or 'check_listing_links')))
                 if path == '/api/facebook-auto-check':
                     if data.get('explicit_request') is not True:raise ValueError('explicit_check_request_required')
                     vin=str(data.get('vin') or '').upper()
@@ -1664,6 +1840,9 @@ def create_handler(store, port, token):
     Handler.photo_categories = photo_categories
     Handler.auto_sorter = auto_sorter
     Handler.headless_dealer = headless_dealer
+    Handler.chrome_bridge = chrome_bridge
+    Handler.facebook_auto = facebook_auto
+    Handler.listing_batch = listing_batch
     return Handler
 
 

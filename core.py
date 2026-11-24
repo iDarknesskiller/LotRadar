@@ -1247,6 +1247,21 @@ class MarketplaceStore:
                 WHERE listing_link_checks.outcome!='unavailable' OR excluded.outcome!='check_failed' ''',
                 (source,link,outcome,utc()))
 
+    def facebook_capture_since(self, listing_id, since):
+        """Newest read-only capture of one listing taken at/after *since* (ISO UTC), or None.
+
+        Used only to tell whether a Refresh batch saw the post as active; never changes data.
+        """
+        if not listing_id or not since:return None
+        with self.lock:
+            row=self.db.execute('SELECT captured_at,snapshot_json FROM facebook_listing_captures '
+                                'WHERE listing_id=? AND captured_at>=? ORDER BY id DESC LIMIT 1',
+                                (str(listing_id),str(since))).fetchone()
+        if not row:return None
+        try:status=json.loads(row['snapshot_json']).get('status') or 'unknown'
+        except (ValueError,TypeError):status='unknown'
+        return {'captured_at':row['captured_at'],'status':status}
+
     def cleanup_status(self, vin=None):
         with self.lock:
             groups=self._group({vin}) if vin else self._group()
