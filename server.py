@@ -376,6 +376,11 @@ def create_handler(store, port, token):
                          'PAGE_UNAVAILABLE':('check_failed','Dealer page did not load'),
                          'INVALID_DEALER_LINK':('check_failed','Saved dealer link is invalid')}
     listing_batch={'current':None}
+    # listing_id -> time of this process's latest FINISHED Facebook attempt (captured/failed/expired).
+    # Rotation needs it because the stored link-check row deliberately keeps an older 'unavailable'
+    # (and its old time) when a later check fails. In memory only (no schema change): after a restart
+    # rotation falls back to the stored times for one Refresh.
+    listing_attempts={}
 
     def listing_check_targets():
         """Linked, locally tracked used vehicles; everything left out is itemized with a reason."""
@@ -395,7 +400,7 @@ def create_handler(store, port, token):
         # Never-checked and least-recently-checked posts first: whatever exceeds the queue bound in
         # one Refresh is at the front of the next one (no fixed first-500 starvation).
         last=store.facebook_last_checked()
-        candidates.sort(key=lambda pair:(last.get(pair[1]) or '',pair[0]))
+        candidates.sort(key=lambda pair:(max(last.get(pair[1]) or '',listing_attempts.get(pair[1]) or ''),pair[0]))
         targets=[]
         for vin,lid in candidates:
             # One post linked to two VINs cannot be attributed (its capture is rejected as a conflict).
@@ -664,6 +669,10 @@ def create_handler(store, port, token):
                 try:result=listing_refresh_projection(batch)
                 except Exception as exc:  # evidence projection must never keep a job "running"
                     result={'ok':False,'batch_id':batch['id'],'error':'refresh_result_unavailable: '+type(exc).__name__}
+            if result is not None and batch.get('fb_bulk_started') is not None and facebook_auto.bulk_started==batch['fb_bulk_started']:
+                attempted=utc()
+                for job in facebook_auto.bulk_results():
+                    if job['state'] in ('captured','failed','expired'):listing_attempts[job['listing_id']]=attempted
             with full_lock:
                 if result is not None:
                     batch['finished_at']=utc()

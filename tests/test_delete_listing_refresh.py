@@ -450,5 +450,42 @@ class HoldFindings(RefreshBase):
                          {TOY: 'loads', MIT: 'unchecked'})
         self.assertEqual(st['counts']['unchecked'], 1)
 
+class RotationAfterFailures(RefreshBase):
+    """Codex HOLD on 5d55c3d: failing listings keep an old stored time (unavailable is preserved
+    when a later check fails) and must not take the same slots on every Refresh."""
+
+    def finish_like_server(self, st):
+        # What /api/chrome-bridge/facebook-auto-finish stores for each finished check.
+        for g in ('review', 'facebook_inconclusive', 'unchecked', 'no_action'):
+            for i in st[g]:
+                outcome = {'active': 'reachable', 'marked_sold': 'reachable', 'unavailable': 'unavailable'}.get(
+                    i['facebook']['outcome'], 'check_failed')
+                self.store.record_link_check('facebook', i['facebook_url'], outcome)
+
+    def test_repeatedly_failing_old_listings_do_not_starve_newer_ones(self):
+        for i in range(4): self.track(i)
+        original = S.FACEBOOK_BATCH_LIMIT
+        S.FACEBOOK_BATCH_LIMIT = 2
+        self.addCleanup(setattr, S, 'FACEBOOK_BATCH_LIMIT', original)
+        fb = lambda i: 'https://www.facebook.com/marketplace/item/' + LID[i]
+        # Old evidence: 0 and 1 were unavailable long ago; 2 and 3 were checked fine more recently.
+        for i in (0, 1): self.store.record_link_check('facebook', fb(i), 'unavailable')
+        self.store.db.execute("UPDATE listing_link_checks SET checked_at='2026-01-01T00:00:00+00:00' WHERE source='facebook'")
+        for i in (2, 3): self.store.record_link_check('facebook', fb(i), 'reachable')
+        self.store.db.execute("UPDATE listing_link_checks SET checked_at='2026-06-01T00:00:00+00:00' WHERE source='facebook' AND outcome='reachable'")
+        failing = {LID[0]: ('failed', 'Facebook page cannot be read: timeout'), LID[1]: ('failed', 'Facebook page cannot be read: timeout'),
+                   LID[2]: ('captured', 'unknown'), LID[3]: ('captured', 'unknown')}
+        _, first = self.run_batch(failing)
+        checked = lambda st: {i['vin'] for g in ('review', 'facebook_inconclusive', 'unchecked', 'no_action', 'stale', 'already_pending') for i in st[g]}
+        self.assertEqual(checked(first), {VINS[0], VINS[1]})          # oldest first
+        self.finish_like_server(first)
+        # The stored row keeps 'unavailable' and its OLD time (pre-existing rule) ...
+        kept = self.store.db.execute("SELECT outcome,checked_at FROM listing_link_checks WHERE source='facebook' AND link=?", (LID[0],)).fetchone()
+        self.assertEqual(tuple(kept), ('unavailable', '2026-01-01T00:00:00+00:00'))
+        # ... but the next Refresh must still move on to the listings it did not attempt.
+        _, second = self.run_batch(failing)
+        self.assertEqual(checked(second), {VINS[2], VINS[3]})
+        self.assertEqual({i['vin'] for i in second['skipped']}, {VINS[0], VINS[1]})
+
 if __name__ == '__main__':
     unittest.main()

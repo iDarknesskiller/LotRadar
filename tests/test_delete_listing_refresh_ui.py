@@ -51,9 +51,12 @@ class RefreshUi(RefreshBase):
             # Control 2: Check Listing Links (More scans) while the batch runs -> joins the same batch
             page.evaluate("document.getElementById('more-scans').open=true")
             page.wait_for_function("document.getElementById('btn-facebook-scan').disabled===true", timeout=10000)
-            page.evaluate("checkAllFacebook()")   # the Check Listing Links handler, as if clicked in another window
-            page.wait_for_function("document.getElementById('toast')?.textContent.includes('Already checking listing links')"
-                                   " || document.body.innerText.includes('Already checking listing links')", timeout=10000)
+            # The Check Listing Links handler, as if clicked in another window. Assert on the server's
+            # reply, not on the transient toast (a later notice can replace it; flaky on slow machines).
+            with page.expect_response(lambda r: r.url.endswith('/api/facebook-auto-check-all')) as reply:
+                page.evaluate("checkAllFacebook()")
+            joined = reply.value.json()
+            self.assertTrue(joined['joined']); self.assertEqual(joined['started_by'], 'delete_listing_refresh')
             self.assertEqual(len(self.verify_calls), 1)
             self.shot(page, '02-joined-while-running')
             gate.set()
