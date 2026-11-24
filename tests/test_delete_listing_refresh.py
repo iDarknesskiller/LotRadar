@@ -487,5 +487,24 @@ class RotationAfterFailures(RefreshBase):
         self.assertEqual(checked(second), {VINS[2], VINS[3]})
         self.assertEqual({i['vin'] for i in second['skipped']}, {VINS[0], VINS[1]})
 
+    def test_jobs_the_reader_never_received_keep_their_priority_after_a_stall(self):
+        """Codex P3 on d667681: a Reader stall before any job is received must not rotate those listings back."""
+        import facebook_auto
+        for i in range(4): self.track(i)
+        original = S.FACEBOOK_BATCH_LIMIT
+        S.FACEBOOK_BATCH_LIMIT = 2
+        self.addCleanup(setattr, S, 'FACEBOOK_BATCH_LIMIT', original)
+        stall = facebook_auto.BULK_STALL_SECONDS
+        facebook_auto.BULK_STALL_SECONDS = 1           # make the existing stall rule fire quickly
+        self.addCleanup(setattr, facebook_auto, 'BULK_STALL_SECONDS', stall)
+        checked = lambda st: {i['vin'] for g in ('review', 'facebook_inconclusive', 'unchecked', 'no_action', 'stale', 'already_pending') for i in st[g]}
+        code, _ = self.refresh(); self.assertEqual(code, 200)
+        first = self.wait_finished()                    # the Reader never asks for a job
+        self.assertEqual(checked(first), {VINS[0], VINS[1]})
+        self.assertTrue(all('stalled' in i['facebook']['detail'] for i in first['facebook_inconclusive']))
+        facebook_auto.BULK_STALL_SECONDS = stall
+        _, second = self.run_batch({LID[i]: ('captured', 'unknown') for i in range(4)})
+        self.assertEqual(checked(second), {VINS[0], VINS[1]})   # still first: they were never received
+
 if __name__ == '__main__':
     unittest.main()

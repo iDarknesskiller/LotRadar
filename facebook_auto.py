@@ -169,7 +169,8 @@ class FacebookAutoQueue:
             self._expire()
             ids=set(self.bulk_job_ids)
             return [{'vin':j['vin'],'listing_id':j['listing_id'],'state':j['state'],
-                     'detail':str(j.get('detail') or '')[:180],'fields':list(j.get('fields') or [])}
+                     'detail':str(j.get('detail') or '')[:180],'fields':list(j.get('fields') or []),
+                     'received':int(j.get('attempts') or 0)>0}   # the Reader leased it at least once
                     for j in self.jobs if j['id'] in ids]
 
     def timing(self):

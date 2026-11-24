@@ -376,7 +376,9 @@ def create_handler(store, port, token):
                          'PAGE_UNAVAILABLE':('check_failed','Dealer page did not load'),
                          'INVALID_DEALER_LINK':('check_failed','Saved dealer link is invalid')}
     listing_batch={'current':None}
-    # listing_id -> time of this process's latest FINISHED Facebook attempt (captured/failed/expired).
+    # listing_id -> time of this process's latest FINISHED Facebook attempt (captured/failed/expired)
+    # that the Reader actually received. A job failed by a Reader stall before it was ever leased is
+    # not an attempt and keeps its place at the front of the next Refresh.
     # Rotation needs it because the stored link-check row deliberately keeps an older 'unavailable'
     # (and its old time) when a later check fails. In memory only (no schema change): after a restart
     # rotation falls back to the stored times for one Refresh.
@@ -672,7 +674,8 @@ def create_handler(store, port, token):
             if result is not None and batch.get('fb_bulk_started') is not None and facebook_auto.bulk_started==batch['fb_bulk_started']:
                 attempted=utc()
                 for job in facebook_auto.bulk_results():
-                    if job['state'] in ('captured','failed','expired'):listing_attempts[job['listing_id']]=attempted
+                    if job['state'] in ('captured','failed','expired') and job['received']:
+                        listing_attempts[job['listing_id']]=attempted
             with full_lock:
                 if result is not None:
                     batch['finished_at']=utc()
