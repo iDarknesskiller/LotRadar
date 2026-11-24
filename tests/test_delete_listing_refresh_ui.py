@@ -73,7 +73,7 @@ class RefreshUi(RefreshBase):
             self.assertIn('1 need review', page.inner_text('.delete-listing-refresh'))
             self.shot(page, '03-review-after-refresh')
             # Owner confirmation is unchanged: a confirm dialog, then a pending reminder
-            page.click(f'.refresh-review-card [data-tracked-confirm="{VINS[0]}"]')
+            page.click(f'.refresh-review-card [data-refresh-confirm="{VINS[0]}"]')
             page.wait_for_selector(f'[data-delete-confirm="{VINS[0]}"]', timeout=10000)
             self.assertTrue(dialogs and 'no longer available at the dealership' in dialogs[-1])
             self.assertEqual(page.locator('.refresh-review-card').count(), 0)
@@ -81,6 +81,26 @@ class RefreshUi(RefreshBase):
             self.assertIn('0 need review', page.inner_text('.delete-listing-refresh'))
             self.shot(page, '04-after-owner-confirmation')
             browser.close()
+
+
+    def test_relinked_vehicle_card_disappears_and_cannot_be_confirmed(self):
+        from test_delete_listing_refresh import FB, LID
+        self.track(0)
+        self.findings = {(VINS[0], TOY): ('UNREACHABLE', ['DEALER_LINK_UNAVAILABLE'])}
+        self.run_batch({LID[0]: ('captured', 'unknown')})
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={'width': 1280, 'height': 900})
+            page.goto(f'http://127.0.0.1:{self.port}/')
+            page.click('button[data-tab="deletelisting"]')
+            page.wait_for_selector('.refresh-review-card', timeout=15000)
+            self.store.db.execute("UPDATE drafts SET published_url=? WHERE vin=?", (FB[4], VINS[0]))
+            page.evaluate("reload()")
+            page.wait_for_selector('.refresh-review-card', state='detached', timeout=15000)
+            self.assertIn('0 need review', page.inner_text('.delete-listing-refresh'))
+            self.assertIn('link changed', page.inner_text('.delete-listing-refresh'))
+            browser.close()
+        self.assertEqual(self.store.state()['summary']['pending_fb_deletions'], 0)
 
 
 if __name__ == '__main__':

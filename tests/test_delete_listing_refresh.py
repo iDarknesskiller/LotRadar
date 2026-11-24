@@ -364,17 +364,91 @@ class AC05Frontend(unittest.TestCase):
 
     def test_review_section_reuses_owner_confirmation_and_never_deletes(self):
         card = self.js[self.js.index('function refreshReviewCard'):self.js.index('function refreshBarHtml')]
-        self.assertIn('data-tracked-confirm=', card)
+        self.assertIn('data-refresh-confirm=', card)
+        confirm = self.js[self.js.index('function confirmRefreshReview'):self.js.index('function confirmFacebookDeleted')]
+        self.assertIn('expected_listing_id:item.listing_id', confirm)      # reviewed identity sent to the server
+        self.assertIn('refreshItemCurrent(item)', confirm)
+        self.assertIn('window.confirm(', confirm)
         self.assertIn('LotRadar will not delete the Facebook post', card)
         for verb in ('remove_out_of_stock', 'trash', 'confirm_facebook_deleted', "api('"):
             self.assertNotIn(verb, card)
         self.assertIn('reviewVins.has(r.vin)', self.js)              # not shown twice
-        self.assertIn('!isPendingCleanupVin(i.vin)', self.js)        # pending reminder wins
+        self.assertIn('!isPendingCleanupVin(i.vin)&&refreshItemCurrent(i)', self.js)   # pending wins; stale hidden
         self.assertIn('Show what was not fully checked', self.js)
 
     def test_assets_cache_busted(self):
-        self.assertIn('app.js?v=delete-listing-refresh-1', self.html)
+        self.assertIn('app.js?v=delete-listing-refresh-2', self.html)
 
+
+class HoldFindings(RefreshBase):
+    """Codex HOLD on bc9f5b3 (2026-11-24): stale review after a later relink; coverage gaps."""
+
+    def test_relink_after_refresh_finished_invalidates_the_review_card(self):
+        self.track(0)
+        self.findings = {(VINS[0], TOY): ('UNREACHABLE', ['DEALER_LINK_UNAVAILABLE'])}
+        _, st = self.run_batch({LID[0]: ('captured', 'unknown')})
+        self.assertIn(VINS[0], self.by_vin(st, 'review'))
+        # Owner relinks the vehicle to a different post AFTER the batch finished.
+        self.store.db.execute("UPDATE drafts SET published_url=? WHERE vin=?", (FB[4], VINS[0]))
+        st = self.get('/api/listing-refresh-status')
+        self.assertEqual(st['review'], [])
+        self.assertIn(VINS[0], self.by_vin(st, 'stale'))
+        self.assertEqual(st['counts']['review'], 0)
+
+    def test_confirmation_from_a_review_card_must_match_the_reviewed_listing(self):
+        self.track(0)
+        self.findings = {(VINS[0], TOY): ('UNREACHABLE', ['DEALER_LINK_UNAVAILABLE'])}
+        self.run_batch({LID[0]: ('captured', 'unknown')})
+        self.store.db.execute("UPDATE drafts SET published_url=? WHERE vin=?", (FB[4], VINS[0]))
+        code, r = self.post('/api/action', {'action': 'remove_out_of_stock', 'vin': VINS[0],
+                                            'explicit_out_of_stock_confirmation': True, 'expected_listing_id': LID[0]})
+        self.assertEqual(code, 400)
+        self.assertIn('listing_changed_since_review', r['error'])
+        self.assertIsNone(self.store.db.execute('SELECT * FROM inventory_removals WHERE vin=?', (VINS[0],)).fetchone())
+        code, r = self.post('/api/action', {'action': 'remove_out_of_stock', 'vin': VINS[0],
+                                            'explicit_out_of_stock_confirmation': True, 'expected_listing_id': LID[4]})
+        self.assertEqual((code, r['state']['summary']['pending_fb_deletions']), (200, 1))
+        row = self.store.db.execute('SELECT listing_id FROM inventory_removals WHERE vin=?', (VINS[0],)).fetchone()
+        self.assertEqual(row['listing_id'], LID[4])
+
+    def test_expected_listing_id_is_validated_and_optional_for_existing_callers(self):
+        self.track(0); self.track(1)
+        for bad in ('', 'abc', '123', None):
+            if bad is None: continue
+            code, _ = self.post('/api/action', {'action': 'remove_out_of_stock', 'vin': VINS[0],
+                                                'explicit_out_of_stock_confirmation': True, 'expected_listing_id': bad})
+            self.assertEqual(code, 400, bad)
+        # Out of Stock / Needs-verification callers send no expected id: unchanged behaviour.
+        code, _ = self.post('/api/action', {'action': 'remove_out_of_stock', 'vin': VINS[1],
+                                            'explicit_out_of_stock_confirmation': True})
+        self.assertEqual(code, 200)
+
+    def test_listings_over_the_limit_are_checked_first_on_the_next_refresh(self):
+        for i in range(4): self.track(i)
+        original = S.FACEBOOK_BATCH_LIMIT
+        S.FACEBOOK_BATCH_LIMIT = 2
+        self.addCleanup(setattr, S, 'FACEBOOK_BATCH_LIMIT', original)
+        all_ids = {LID[i]: ('captured', 'unknown') for i in range(4)}
+        _, first = self.run_batch(all_ids)
+        over_first = {i['vin'] for i in first['skipped'] if i['reason'] == 'over_batch_limit'}
+        self.assertEqual(len(over_first), 2)
+        for vin, lid in zip(VINS, LID):   # what the real finish endpoint records for each captured check
+            if vin not in over_first: self.store.record_link_check('facebook', 'https://www.facebook.com/marketplace/item/' + lid, 'reachable')
+        _, second = self.run_batch(all_ids)
+        checked_second = {i['vin'] for g in ('review', 'facebook_inconclusive', 'unchecked', 'stale', 'already_pending', 'no_action')
+                          for i in second[g]}
+        self.assertEqual(checked_second, over_first)
+
+    def test_partially_checked_vehicle_stays_in_the_incomplete_coverage_summary(self):
+        self.track(0)   # VIN 0 is at Toyota AND Mitsubishi
+        self.findings = {(VINS[0], TOY): ('MATCH', [])}   # Mitsubishi page not reached in this batch
+        _, st = self.run_batch({LID[0]: ('captured', 'unknown')})
+        self.assertEqual(st['review'], [])
+        unchecked = self.by_vin(st, 'unchecked')
+        self.assertIn(VINS[0], unchecked)
+        self.assertEqual({d['source']: d['outcome'] for d in unchecked[VINS[0]]['dealers']},
+                         {TOY: 'loads', MIT: 'unchecked'})
+        self.assertEqual(st['counts']['unchecked'], 1)
 
 if __name__ == '__main__':
     unittest.main()

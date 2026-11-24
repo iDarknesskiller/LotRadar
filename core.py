@@ -1262,6 +1262,12 @@ class MarketplaceStore:
         except (ValueError,TypeError):status='unknown'
         return {'captured_at':row['captured_at'],'status':status}
 
+    def facebook_last_checked(self):
+        """listing_id -> last stored Facebook link-check time (read-only; used to rotate Refresh targets)."""
+        with self.lock:
+            return {r['link']:r['checked_at'] for r in self.db.execute(
+                "SELECT link,checked_at FROM listing_link_checks WHERE source='facebook'")}
+
     def cleanup_status(self, vin=None):
         with self.lock:
             groups=self._group({vin}) if vin else self._group()
@@ -1305,12 +1311,17 @@ class MarketplaceStore:
             out.append(row)
         return out
 
-    def remove_out_of_stock(self, vin, explicit):
+    def remove_out_of_stock(self, vin, explicit, expected_listing_id=None):
         """Owner-confirmed removal from active inventory. Source records and drafts are never deleted.
 
         A tracked Facebook listing creates exactly one durable pending-deletion reminder.
+        expected_listing_id (optional): the Facebook listing the Owner reviewed. When given, the
+        removal is refused unless it is still the vehicle's tracked listing, so a reminder can never
+        be created for a post that was relinked after the review.
         """
         if explicit is not True:raise ValueError('explicit_out_of_stock_confirmation_required')
+        if expected_listing_id is not None and not re.fullmatch(r'[0-9]{8,24}',str(expected_listing_id)):
+            raise ValueError('invalid_expected_listing_id')
         vin=str(vin or '').strip().upper()
         if not VIN_RE.fullmatch(vin):raise ValueError('invalid_vin')
         with self.lock:
@@ -1328,6 +1339,8 @@ class MarketplaceStore:
             tracked=bool(draft and draft['status']=='USER_CONFIRMED_PUBLISHED')
             url=draft['published_url'] if tracked else ''
             lid=facebook_listing_id(url) if tracked else ''
+            if expected_listing_id is not None and lid!=str(expected_listing_id):
+                raise ValueError('listing_changed_since_review; refresh Delete Listing and review again')
             status='PENDING_FB_DELETE' if tracked else 'REMOVED'
             self.backup()
             self.db.execute('BEGIN IMMEDIATE')

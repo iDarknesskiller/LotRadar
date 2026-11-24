@@ -392,6 +392,10 @@ def create_handler(store, port, token):
             candidates.append((vin,lid))
         uses={}
         for _,lid in candidates:uses[lid]=uses.get(lid,0)+1
+        # Never-checked and least-recently-checked posts first: whatever exceeds the queue bound in
+        # one Refresh is at the front of the next one (no fixed first-500 starvation).
+        last=store.facebook_last_checked()
+        candidates.sort(key=lambda pair:(last.get(pair[1]) or '',pair[0]))
         targets=[]
         for vin,lid in candidates:
             # One post linked to two VINs cannot be attributed (its capture is rejected as a conflict).
@@ -522,8 +526,8 @@ def create_handler(store, port, token):
                 groups['review'].append(item)
             elif fb in ('inconclusive','pending','unchecked'):
                 groups['facebook_inconclusive'].append(item)
-            elif fb=='active' and dealers and all(d['outcome']=='unchecked' for d in dealers):
-                groups['unchecked'].append(item)
+            elif fb=='active' and any(d['outcome']=='unchecked' for d in dealers):
+                groups['unchecked'].append(item)   # incomplete dealer coverage, even if another page loaded
             else:
                 groups['no_action'].append(item)
         with full_lock:
@@ -536,10 +540,36 @@ def create_handler(store, port, token):
                 'dealer_skipped_due_to_limit':int(verify.get('skipped_due_to_limit') or 0) if findings else None,
                 'counts':{k:len(v) for k,v in groups.items()},**groups}
 
+    def revalidate_refresh_result(result):
+        """A finished batch's items are only actionable while the vehicle still tracks the SAME post.
+
+        Relinked or untracked items move to 'stale', removed ones to 'already_pending'. The frozen
+        evidence itself is never rewritten; a copy is returned.
+        """
+        if not result.get('ok'):return result
+        out=copy.deepcopy(result)
+        state=store.state()
+        current={v['vin']:facebook_listing_id((v.get('draft') or {}).get('published_url') or '')
+                 for v in state['vehicles'] if (v.get('draft') or {}).get('status')=='USER_CONFIRMED_PUBLISHED'}
+        removed={r['vin']:r['status'] for r in state.get('removals') or []}
+        for group in ('review','facebook_inconclusive','unchecked','no_action'):
+            keep=[]
+            for item in out[group]:
+                if item['vin'] in removed:
+                    item['reason']='Already removed from inventory'+(' · Facebook deletion pending' if removed[item['vin']]=='PENDING_FB_DELETE' else '')
+                    out['already_pending'].append(item)
+                elif current.get(item['vin'])!=item['listing_id']:
+                    item['reason']='Facebook link changed after this check; result ignored'
+                    out['stale'].append(item)
+                else:keep.append(item)
+            out[group]=keep
+        out['counts']={k:len(out[k]) for k in ('review','facebook_inconclusive','unchecked','stale','already_pending','no_action')}
+        return out
+
     def listing_refresh_status():
         batch=listing_batch['current']
         if not batch:return {'ok':True,'batch_id':None}
-        if batch['result'] is not None:return batch['result']
+        if batch['result'] is not None:return revalidate_refresh_result(batch['result'])
         return listing_refresh_projection(batch)
 
     def full_scan_worker(tracked_pairs=None):
@@ -1816,7 +1846,8 @@ def create_handler(store, port, token):
                         state = store.complete_facebook_cleanup(vin,
                             data.get('explicit_manual_removal'),data.get('explicit_local_trash'),data.get('expected_listing_url'))
                     elif action == 'remove_out_of_stock':
-                        state = store.remove_out_of_stock(vin,data.get('explicit_out_of_stock_confirmation'))
+                        state = store.remove_out_of_stock(vin,data.get('explicit_out_of_stock_confirmation'),
+                                                          data.get('expected_listing_id'))
                     elif action == 'confirm_facebook_deleted':
                         state = store.confirm_facebook_deleted(vin,data.get('explicit_manual_facebook_deletion'),data.get('expected_listing_url'))
                     elif action == 'restore_removed':

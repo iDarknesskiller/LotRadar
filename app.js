@@ -336,7 +336,7 @@ async function api(path,body){
  return json;
 }
 function notify(message,isError=false){clearTimeout(toastTimer);const n=$('toast');n.classList.toggle('error',isError);n.innerHTML=`<span class="toast-text">${esc(message)}</span><button type="button" class="toast-close" aria-label="Close message">×</button>`;n.querySelector('.toast-close')?.addEventListener('click',hideToast,{once:true});n.classList.add('shown');toastTimer=setTimeout(()=>n.classList.remove('shown'),4200);}
-async function reload(){setState(await api('/api/state'));}
+async function reload(){setState(await api('/api/state'));if(tab==='deletelisting')void refreshListingRefreshStatus();}
 function setState(s){
  const old=state.vehicles.find(v=>v.vin===selectedVin);
  const next=s.vehicles.find(v=>v.vin===selectedVin);
@@ -1927,6 +1927,9 @@ function removedRecoveryHtml(){
 const refreshDealerLabels={loads:'Page loads',page_unavailable:'Page unavailable',check_failed:'Check failed',unchecked:'Not checked'};
 const refreshSkipLabels={invalid_facebook_link:'invalid Facebook link',duplicate_listing_link:'same Facebook post linked to more than one VIN',not_used_inventory:'not used inventory',over_batch_limit:'over the batch limit'};
 const refreshTime=t=>t?new Date(t).toLocaleString():'time not recorded';
+const listingIdOf=url=>(/\/marketplace\/item\/(\d{8,24})$/.exec(safeFacebookUrl(url||''))||[])[1]||'';
+// A review card is actionable only while the vehicle still tracks the SAME Facebook post it reviewed.
+const refreshItemCurrent=item=>{const car=state.vehicles.find(v=>v.vin===item.vin);return Boolean(car&&car.listed&&listingIdOf(car.draft?.published_url)===item.listing_id);};
 const safeDealerUrl=url=>{try{const p=new URL(url);return p.protocol==='https:'&&!p.username&&!p.password?p.href:'';}catch{return '';}};
 function refreshReviewCard(item){
  const car=state.vehicles.find(v=>v.vin===item.vin);if(!car)return '';
@@ -1943,7 +1946,7 @@ function refreshReviewCard(item){
    <div>Verify at the dealership before you confirm. LotRadar will not delete the Facebook post.</div></div>
   <div class="vehicle-card-actions">
    ${fbUrl?`<button type="button" class="btn secondary" data-refresh-listing-open="${esc(item.vin)}">Open Facebook listing ↗</button>`:'<button type="button" class="btn ghost" disabled>No valid Facebook URL</button>'}
-   <button type="button" class="btn primary" data-tracked-confirm="${esc(item.vin)}">Confirm out of stock</button>
+   <button type="button" class="btn primary" data-refresh-confirm="${esc(item.vin)}">Confirm out of stock</button>
   </div></div></article>`;
 }
 function refreshBarHtml(reviewCount){
@@ -1964,14 +1967,14 @@ function refreshBarHtml(reviewCount){
  }
  const detailRows=b?.batch_id?[
   ...(b.facebook_inconclusive||[]).map(i=>`${i.vin} · Facebook ${i.facebook.outcome==='unchecked'?'not checked':i.facebook.outcome==='pending'?'pending':'inconclusive'}: ${i.facebook.detail}`),
-  ...(b.unchecked||[]).map(i=>`${i.vin} · Facebook active · dealer page not checked`),
+  ...(b.unchecked||[]).map(i=>`${i.vin} · Facebook active · not checked: ${i.dealers.filter(d=>d.outcome==='unchecked').map(d=>sourceLabels[d.source]||d.source).join(', ')}`),
   ...(b.skipped||[]).map(i=>`${i.vin} · skipped: ${refreshSkipLabels[i.reason]||i.reason}`),
   ...(b.stale||[]).map(i=>`${i.vin} · ${i.reason}`)]:[];
  const details=detailRows.length?`<details class="refresh-details"><summary>Show what was not fully checked (${detailRows.length})</summary>${detailRows.map(t=>`<div>${esc(t)}</div>`).join('')}</details>`:'';
  return `<div class="delete-listing-refresh" role="status"><div class="refresh-bar">${button}<span>${esc(text)}</span></div>${details}</div>`;
 }
 function renderDeleteListing(){
- const reviewItems=(listingRefresh?.review||[]).filter(i=>!isPendingCleanupVin(i.vin)&&state.vehicles.some(v=>v.vin===i.vin));
+ const reviewItems=(listingRefresh?.review||[]).filter(i=>!isPendingCleanupVin(i.vin)&&refreshItemCurrent(i));
  const reviewVins=new Set(reviewItems.map(i=>i.vin));
  const candidates=trackedCleanupCandidates().filter(r=>!reviewVins.has(r.vin)),rows=pendingRemovals(),needle=search.trim().toLowerCase();
  const shownReview=reviewItems.filter(i=>{const car=state.vehicles.find(v=>v.vin===i.vin);return `${i.vin} ${name(primary(car))} ${Object.values(car.sources||{}).map(s=>s.stock).join(' ')}`.toLowerCase().includes(needle);});
@@ -2017,7 +2020,7 @@ function openFacebookForDeletion(vin){
  window.open(url,'_blank','noopener,noreferrer');
 }
 function openRefreshListing(vin){
- const item=(listingRefresh?.review||[]).find(i=>i.vin===vin);
+ const item=(listingRefresh?.review||[]).find(i=>i.vin===vin&&refreshItemCurrent(i));
  const url=item?safeFacebookUrl(item.facebook_url):'';
  if(!url)return notify('No valid saved Facebook listing link for this vehicle.',true);
  window.open(url,'_blank','noopener,noreferrer');
@@ -2041,6 +2044,14 @@ function removeOutOfStock(vin){
  const tracked=car.listed?' A Delete Listing reminder will be created for its Facebook listing; LotRadar will NOT delete the Facebook post.':'';
  if(!window.confirm(`Have you verified that ${name(primary(car))} (VIN ${vin}) is no longer available at the dealership?\n\nThis removes it from active inventory. Nothing is permanently deleted and you can restore it.${tracked}`))return;
  void removalAction(vin,{action:'remove_out_of_stock',explicit_out_of_stock_confirmation:true},'Removed from active inventory.');
+}
+function confirmRefreshReview(vin){
+ const item=(listingRefresh?.review||[]).find(i=>i.vin===vin);
+ const car=state.vehicles.find(r=>r.vin===vin);
+ if(!item||!car||!refreshItemCurrent(item)){notify('This vehicle\'s Facebook link changed after the check. Run Refresh again before confirming.',true);void refreshListingRefreshStatus();renderGrid();return;}
+ if(!window.confirm(`Have you verified that ${name(primary(car))} (VIN ${vin}) is no longer available at the dealership?\n\nThis removes it from active inventory. Nothing is permanently deleted and you can restore it. A Delete Listing reminder will be created for Facebook listing ${item.listing_id}; LotRadar will NOT delete the Facebook post.`))return;
+ // The server refuses the removal if the tracked listing is no longer the one reviewed here.
+ void removalAction(vin,{action:'remove_out_of_stock',explicit_out_of_stock_confirmation:true,expected_listing_id:item.listing_id},'Removed from active inventory.').then(()=>refreshListingRefreshStatus());
 }
 function confirmFacebookDeleted(vin){
  const row=pendingRemovals().find(r=>r.vin===vin);if(!row)return;
@@ -2136,7 +2147,7 @@ function installHandlers(){installDealerScanControls();document.querySelectorAll
  const photoExport=e.target.closest('[data-photos-vin]');if(photoExport){e.preventDefault();e.stopPropagation();void downloadPhotoZip(photoExport.dataset.photosVin);return;}
  const deleteRefresh=e.target.closest('[data-delete-refresh]');if(deleteRefresh){e.preventDefault();e.stopPropagation();if(!deleteRefresh.disabled)void checkAllFacebook('delete_listing_refresh');return;}
  const cleanupRetry=e.target.closest('[data-cleanup-retry]');if(cleanupRetry){e.preventDefault();e.stopPropagation();void refreshCleanupStatus();return;}
- for(const [attr,fn] of [['outstockRemove',removeOutOfStock],['trackedConfirm',removeOutOfStock],['trackedListingOpen',openTrackedListing],['refreshListingOpen',openRefreshListing],['deleteOpen',openFacebookForDeletion],['deleteConfirm',confirmFacebookDeleted],['restoreRemoved',restoreRemoved]]){
+ for(const [attr,fn] of [['outstockRemove',removeOutOfStock],['trackedConfirm',removeOutOfStock],['trackedListingOpen',openTrackedListing],['refreshListingOpen',openRefreshListing],['refreshConfirm',confirmRefreshReview],['deleteOpen',openFacebookForDeletion],['deleteConfirm',confirmFacebookDeleted],['restoreRemoved',restoreRemoved]]){
   const control=e.target.closest('[data-'+attr.replace(/[A-Z]/g,c=>'-'+c.toLowerCase())+']');
   if(control){e.preventDefault();e.stopPropagation();fn(control.dataset[attr]);return;}}
  const refresh=e.target.closest('[data-refresh-vin]');if(refresh){e.preventDefault();e.stopPropagation();void refreshOneVehicle(refresh.dataset.refreshVin);return;}
