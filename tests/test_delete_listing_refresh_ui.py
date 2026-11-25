@@ -146,11 +146,21 @@ class RefreshUi(RefreshBase):
             page.goto(f'http://127.0.0.1:{self.port}/')
             page.click('button[data-tab="deletelisting"]')
             page.wait_for_selector('.refresh-review-card', timeout=15000)
+            # reload() redraws from /api/state first (the card goes), THEN asks /api/listing-refresh-status,
+            # whose reply adds "ignored (link changed)". Hold that reply so the test always covers the order
+            # that made the old immediate check fail intermittently (full suite on 8ccbde4).
+            held = []
+            page.route('**/api/listing-refresh-status', lambda route: held.append(route))
             self.store.db.execute("UPDATE drafts SET published_url=? WHERE vin=?", (FB[4], VINS[0]))
             page.evaluate("reload()")
             page.wait_for_selector('.refresh-review-card', state='detached', timeout=15000)
+            self.assertIn('0 need review', page.inner_text('.delete-listing-refresh'))   # live count, no reply needed
+            self.assertTrue(held)                       # the status reply really was held until now
+            for route in list(held): route.continue_()  # release the held replies, then stop holding
+            page.unroute('**/api/listing-refresh-status')
+            # The server's revalidated result then reports the relinked listing as ignored.
+            page.locator('.delete-listing-refresh', has_text='link changed').wait_for(timeout=15000)
             self.assertIn('0 need review', page.inner_text('.delete-listing-refresh'))
-            self.assertIn('link changed', page.inner_text('.delete-listing-refresh'))
             browser.close()
         self.assertEqual(self.store.state()['summary']['pending_fb_deletions'], 0)
 
