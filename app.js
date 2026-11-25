@@ -1931,23 +1931,76 @@ const listingIdOf=url=>(/\/marketplace\/item\/(\d{8,24})$/.exec(safeFacebookUrl(
 // A review card is actionable only while the vehicle still tracks the SAME Facebook post it reviewed.
 const refreshItemCurrent=item=>{const car=state.vehicles.find(v=>v.vin===item.vin);return Boolean(car&&car.listed&&listingIdOf(car.draft?.published_url)===item.listing_id);};
 const safeDealerUrl=url=>{try{const p=new URL(url);return p.protocol==='https:'&&!p.username&&!p.password?p.href:'';}catch{return '';}};
+// Delete Listing cards reuse the inventory card layout (Owner's reference screenshot): one cover photo,
+// STOCK and mileage, title and price, VIN, this section's evidence and two actions. No Download photos.
+// Active vehicles (review, stock verification) use the inventory cover via /api/photo. Pending vehicles
+// use ONLY the photo saved at confirmation, via /api/removal-photo; anything else shows the placeholder.
+function deleteListingCard({vin,cls,title,stock,mileage,priceHtml,photoUrl,noPhotoText,lines,warning,actions,trade}){
+ return `<article class="vehicle-card delete-listing-card ${cls}" data-delete-vin="${esc(vin)}">
+  <div class="vehicle-photo"><span class="photo-empty" aria-hidden="true">▱</span><span class="photo-failed-note">${esc(photoUrl?'Saved photo unavailable':noPhotoText)}</span>${photoUrl?`<img loading="lazy" alt="${esc(title)}" src="${esc(photoUrl)}">`:''}${trade?'<span class="photo-label trade-pill trade-photo-badge">★ TRADE-IN PRIORITY</span>':''}</div>
+  <div class="vehicle-main">
+   <div class="card-stock-row"><strong class="stock-number">STOCK ${esc(stock)}</strong><strong class="card-mileage">${esc(mileage)}</strong></div>
+   <div class="vehicle-card-head"><h3>${esc(title)}</h3>${priceHtml}</div>
+   ${lines.map(line=>`<div class="inventory-card-age">${line}</div>`).join('')}
+   <div class="vehicle-vin-row"><span>VIN</span><strong title="${esc(vin)}">${esc(vin)}</strong></div>
+   ${warning}
+   <div class="vehicle-card-actions">${actions}</div>
+  </div></article>`;
+}
+function activeDeleteListingCard(car,o){
+ // Active inventory vehicle: same cover, stock, price, mileage and dates as its inventory card.
+ const first=primary(car),srcs=Object.keys(car.sources).filter(s=>usedSources.includes(s)),priceInfo=cardDealerPrice(car),age=ageInDays(car);
+ const stock=(srcs.map(k=>car.sources[k]).find(q=>isTradeInStock(q.stock))||srcs.map(k=>car.sources[k]).find(q=>q.stock)||first).stock||'MISSING';
+ const photoUrl=photoInfo(car).url;
+ return deleteListingCard({...o,vin:car.vin,title:name(first),stock,trade:isTradeInVehicle(car),
+  mileage:first.mileage!=null&&Number.isFinite(Number(first.mileage))?Number(first.mileage).toLocaleString('en-US')+' mi':'Mileage pending',
+  priceHtml:`<div class="price" title="${esc(priceInfo.warning||'Price from saved dealer record.')}">${esc(priceInfo.label)}${priceInfo.conflict?'<span class="price-review-dot" aria-label="Review differing dealer records" title="Dealer records disagree"> •</span>':''}</div>`,
+  photoUrl:photoUrl&&localOrHttps(photoUrl)?photoUrl:'',noPhotoText:'Photo pending review or download',
+  lines:[esc(age===null?'Load date unavailable':age===0?'Loaded less than 1 day ago':`Loaded ${age} day${age===1?'':'s'} ago`),
+   usedSources.filter(src=>car.sources?.[src]).map(src=>`${esc(sourceLabels[src])}: ${car.last_successful_refresh?.[src]?'Refreshed '+esc(new Date(car.last_successful_refresh[src]).toLocaleString()):'Last successful refresh not recorded'}`).join('<br>')]});
+}
+const removalPhotoUrl=row=>{
+ const p=row.identity?.photo;
+ if(!p||!usedSources.includes(p.source)||!/^[0-9a-f]{64}$/.test(String(p.sha256||'')))return '';
+ return `/api/removal-photo?vin=${encodeURIComponent(row.vin)}&source=${encodeURIComponent(p.source)}&ref=${p.sha256}`;
+};
+function pendingRemovalCard(r){
+ // Removed vehicle: only what was saved at confirmation. Older reminders without a photo show the placeholder.
+ const id=r.identity||{},valid=Boolean(safeFacebookUrl(r.open_url));
+ const mileage=id.mileage!=null&&Number.isFinite(Number(id.mileage))?Number(id.mileage).toLocaleString('en-US')+' mi':'Mileage not saved';
+ const price=Number(id.price_cents)>0?`<div class="price">${esc(money(id.price_cents))}</div>`:'';
+ const photoUrl=removalPhotoUrl(r);
+ // Same stock choice as the inventory card: a trade-in stock first, then Toyota Used, then Mitsubishi Used.
+ const saved=usedSources.map(src=>id.stocks?.[src]).filter(Boolean);
+ const stock=saved.find(isTradeInStock)||saved[0]||id.stock||'MISSING';
+ return deleteListingCard({vin:r.vin,cls:'pending-removal-card',title:removalLabel(r),stock,mileage,priceHtml:price,
+  photoUrl,noPhotoText:'No saved photo',trade:isTradeInStock(stock),
+  lines:[esc(`Removed ${new Date(r.removed_at).toLocaleDateString()}`),esc(photoUrl?'Photo saved when confirmed out of stock':'No photo was saved for this vehicle')],
+  warning:`<div class="vehicle-dealer-warning"><strong>⚑ Facebook listing still needs manual deletion</strong>${valid?`<div>${esc(r.open_url)}</div>`:'<div>No valid saved Facebook listing link. The reminder is kept; find and delete this post manually on Facebook Marketplace.</div>'}</div>`,
+  actions:`<button type="button" class="card-refresh" data-delete-open="${esc(r.vin)}" title="Open the Facebook listing so you can delete it there">Open listing ↗</button>
+   <button type="button" class="btn ghost fb-cleanup-move" data-delete-confirm="${esc(r.vin)}">I've deleted it on Facebook</button>`});
+}
+// "Delete listing" is the Owner's name for Confirm out of stock: a confirm dialog, then a Pending reminder.
+// LotRadar never deletes or edits the Facebook post.
+const deleteListingTitle='Confirm this vehicle is no longer at the dealership. It moves to Pending Facebook deletion; LotRadar does not delete the Facebook post.';
 function refreshReviewCard(item){
  const car=state.vehicles.find(v=>v.vin===item.vin);if(!car)return '';
- const stock=Object.values(car.sources||{}).map(s=>s.stock).find(Boolean)||'MISSING';
  const fbUrl=safeFacebookUrl(item.facebook_url);
  const dealers=item.dealers.map(d=>{const link=safeDealerUrl(d.url);
   return `<div class="refresh-dealer-result refresh-${esc(d.outcome)}"><strong>${esc(sourceLabels[d.source]||d.source)} · ${esc(refreshDealerLabels[d.outcome]||d.outcome)}</strong> · ${esc(d.detail)}${d.checked_at?' · '+esc(refreshTime(d.checked_at)):''}${link?` · <a href="${esc(link)}" target="_blank" rel="noopener noreferrer">Open dealer page ↗</a>`:''}</div>`;}).join('');
- return `<article class="vehicle-card delete-listing-card refresh-review-card" data-delete-vin="${esc(item.vin)}"><div class="vehicle-main">
-  <div class="card-stock-row"><strong class="stock-number">STOCK ${esc(stock)}</strong><strong class="card-mileage">Active on Facebook</strong></div>
-  <div class="vehicle-card-head"><h3>${esc(name(primary(car)))}</h3></div>
-  <div class="vehicle-vin-row"><span>VIN</span><strong>${esc(item.vin)}</strong></div>
-  <div class="vehicle-dealer-warning"><strong>⚑ Facebook post is active but a dealer page failed this check</strong>
+ return activeDeleteListingCard(car,{cls:'refresh-review-card',
+  warning:`<div class="vehicle-dealer-warning"><strong>⚑ Facebook post is active but a dealer page failed this check</strong>
    <div>Facebook · ${esc(item.facebook.detail)} · ${esc(refreshTime(item.facebook.checked_at))}${fbUrl?` · ${esc(fbUrl)}`:''}</div>${dealers}
-   <div>Verify at the dealership before you confirm. LotRadar will not delete the Facebook post.</div></div>
-  <div class="vehicle-card-actions">
-   ${fbUrl?`<button type="button" class="btn secondary" data-refresh-listing-open="${esc(item.vin)}">Open Facebook listing ↗</button>`:'<button type="button" class="btn ghost" disabled>No valid Facebook URL</button>'}
-   <button type="button" class="btn primary" data-refresh-confirm="${esc(item.vin)}">Confirm out of stock</button>
-  </div></div></article>`;
+   <div>Verify at the dealership before you confirm. LotRadar will not delete the Facebook post.</div></div>`,
+  actions:`${fbUrl?`<button type="button" class="card-refresh" data-refresh-listing-open="${esc(item.vin)}">Open listing ↗</button>`:'<button type="button" class="card-refresh" disabled>No valid Facebook URL</button>'}
+   <button type="button" class="btn ghost fb-cleanup-move" data-refresh-confirm="${esc(item.vin)}" title="${esc(deleteListingTitle)}">Delete listing</button>`});
+}
+function trackedReviewCard(r){
+ const facebookLink=safeFacebookUrl(r.draft?.published_url||''),issue=cleanupIssues[r.vin];
+ return activeDeleteListingCard(r,{cls:'tracked-review-card',
+  warning:`<div class="vehicle-dealer-warning"><strong>⚑ Needs stock verification</strong>${issue?cleanupIssueText(issue).map(line=>`<div>${esc(line)}</div>`).join(''):''}<div>This vehicle is tracked on Facebook. Verify that it is unavailable at the dealership before removal.</div></div>`,
+  actions:`${facebookLink?`<button type="button" class="card-refresh" data-tracked-listing-open="${esc(r.vin)}" aria-label="Open tracked Facebook listing for ${esc(name(primary(r)))}">Open listing ↗</button>`:'<button type="button" class="card-refresh" disabled>No valid Facebook URL</button>'}
+   <button type="button" class="btn ghost fb-cleanup-move" data-tracked-confirm="${esc(r.vin)}" title="${esc(deleteListingTitle)}">Delete listing</button>`});
 }
 function refreshBarHtml(reviewCount){
  const b=listingRefresh,running=checkingListingLinks;
@@ -1982,36 +2035,16 @@ function renderDeleteListing(){
  const shownPending=rows.filter(r=>`${r.vin} ${removalLabel(r)} ${r.identity?.stock||''}`.toLowerCase().includes(needle));
  $('inventory-matches').textContent=`${shownReview.length} need review · ${shownCandidates.length} to verify · ${shownPending.length} pending`;$('vehicle-more-row').hidden=true;
  $('vehicle-grid').classList.add('cleanup-list');
- const candidateHtml=shownCandidates.map(r=>{
-  const facebookLink=safeFacebookUrl(r.draft?.published_url||'');
-  const stock=Object.values(r.sources||{}).map(s=>s.stock).find(Boolean)||'MISSING';
-  return `<article class="vehicle-card delete-listing-card tracked-review-card" data-delete-vin="${esc(r.vin)}"><div class="vehicle-main">
-   <div class="card-stock-row"><strong class="stock-number">STOCK ${esc(stock)}</strong><strong class="card-mileage">Needs stock verification</strong></div>
-   <div class="vehicle-card-head"><h3>${esc(name(primary(r)))}</h3></div>
-   <div class="vehicle-vin-row"><span>VIN</span><strong>${esc(r.vin)}</strong></div>
-   <div class="vehicle-dealer-warning"><strong>⚑ Needs stock verification</strong><div>This vehicle is tracked on Facebook. Verify that it is unavailable at the dealership before removal.</div></div>
-   <div class="vehicle-card-actions">
-    ${facebookLink?`<button type="button" class="btn secondary" data-tracked-listing-open="${esc(r.vin)}" aria-label="Open tracked Facebook listing for ${esc(name(primary(r)))}">Open tracked listing ↗</button>`:'<button type="button" class="btn ghost" disabled>No valid Facebook URL</button>'}
-    <button type="button" class="btn primary" data-tracked-confirm="${esc(r.vin)}">Confirm out of stock</button>
-   </div></div></article>`;
- }).join('');
- const pendingHtml=shownPending.map(r=>{
-  const valid=Boolean(safeFacebookUrl(r.open_url));
-  return `<article class="vehicle-card delete-listing-card" data-delete-vin="${esc(r.vin)}"><div class="vehicle-main">
-   <div class="card-stock-row"><strong class="stock-number">STOCK ${esc(r.identity?.stock||'MISSING')}</strong><strong class="card-mileage">Removed ${esc(new Date(r.removed_at).toLocaleDateString())}</strong></div>
-   <div class="vehicle-card-head"><h3>${esc(removalLabel(r))}</h3></div>
-   <div class="vehicle-vin-row"><span>VIN</span><strong>${esc(r.vin)}</strong></div>
-   <div class="vehicle-dealer-warning"><strong>⚑ Facebook listing still needs manual deletion</strong>${valid?`<div>${esc(r.open_url)}</div>`:'<div>No valid saved Facebook listing link. The reminder is kept; find and delete this post manually on Facebook Marketplace.</div>'}</div>
-   <div class="vehicle-card-actions">
-    <button type="button" class="btn secondary" data-delete-open="${esc(r.vin)}">Delete Listing ↗</button>
-    <button type="button" class="btn primary" data-delete-confirm="${esc(r.vin)}">I've deleted it on Facebook</button>
-    </div></div></article>`;}).join('');
+ const candidateHtml=shownCandidates.map(trackedReviewCard).join('');
+ const pendingHtml=shownPending.map(pendingRemovalCard).join('');
  const reviewHtml=shownReview.map(refreshReviewCard).join('');
- const reviewSection=reviewHtml?`<div class="delete-listing-section"><h3 class="delete-listing-section-title">Active on Facebook · dealer page failed in the last Refresh (${shownReview.length})</h3><div class="vehicle-grid cleanup-list">${reviewHtml}</div></div>`:'';
- const candidateSection=candidateHtml?`<div class="delete-listing-section"><h3 class="delete-listing-section-title">Needs stock verification (${shownCandidates.length})</h3><div class="vehicle-grid cleanup-list">${candidateHtml}</div></div>`:'';
- const pendingSection=pendingHtml?`<div class="delete-listing-section"><h3 class="delete-listing-section-title">Pending Facebook deletion (${shownPending.length})</h3><div class="vehicle-grid cleanup-list">${pendingHtml}</div></div>`:'';
+ const reviewSection=reviewHtml?`<div class="delete-listing-section"><h3 class="delete-listing-section-title">Active on Facebook · dealer page failed in the last Refresh (${shownReview.length})</h3><div class="vehicle-grid delete-listing-grid">${reviewHtml}</div></div>`:'';
+ const candidateSection=candidateHtml?`<div class="delete-listing-section"><h3 class="delete-listing-section-title">Needs stock verification (${shownCandidates.length})</h3><div class="vehicle-grid delete-listing-grid">${candidateHtml}</div></div>`:'';
+ const pendingSection=pendingHtml?`<div class="delete-listing-section"><h3 class="delete-listing-section-title">Pending Facebook deletion (${shownPending.length})</h3><div class="vehicle-grid delete-listing-grid">${pendingHtml}</div></div>`:'';
  const warning=cleanupError?`<div class="cleanup-status-warning" role="alert"><strong>Availability review status could not be refreshed</strong><div>${esc(cleanupError)}</div><div>Pending Facebook deletion reminders remain visible below. <button type="button" class="btn ghost" data-cleanup-retry>Retry</button></div></div>`:'';
  $('vehicle-grid').innerHTML=refreshBarHtml(reviewItems.length)+warning+(reviewSection+candidateSection+pendingSection||`<div class="empty"><strong>${candidates.length||rows.length||reviewItems.length?'No matching Delete Listing vehicles':'No vehicles need Delete Listing action'}</strong><p>${candidates.length||rows.length||reviewItems.length?'Clear or change the search.':'Tracked or pending unavailable vehicles will appear here after availability review.'}</p></div>`);
+ // A missing, changed or refused photo falls back to the placeholder underneath (never another photo).
+ $('vehicle-grid').querySelectorAll('.vehicle-photo img').forEach(img=>img.addEventListener('error',()=>{img.hidden=true}));
 }
 function openFacebookForDeletion(vin){
  const row=(state.removals||[]).find(r=>r.vin===vin&&r.status==='PENDING_FB_DELETE');

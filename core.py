@@ -31,6 +31,16 @@ FB_URL_RE = re.compile(r'^https://(?:www\.|m\.)?facebook\.com/marketplace/item/[
 MAX_FEED_CHARS = 12_000_000
 # Facebook is NOT an inventory authority. Never read, import, compare or store FB VINs.
 FACEBOOK_ID_RE = re.compile(r'^[0-9]{8,24}$')
+# Delete Listing card photo: a reference to ONE file in the vehicle's own photo-cache folder
+# (vehicle_photos/<VIN>/<source>/<file>). Same file-name rule as PhotoCache.read_photo; no paths.
+REMOVAL_PHOTO_FILE_RE = re.compile(r'[0-9]{2,3}_[a-f0-9]{24}\.(?:jpg|png|webp)')
+REMOVAL_PHOTO_SOURCES = ('toyota_used', 'mitsubishi_used')
+def valid_removal_photo(photo):
+    return (isinstance(photo,dict) and set(photo)=={'source','index','file','sha256'}
+            and photo['source'] in REMOVAL_PHOTO_SOURCES
+            and type(photo['index']) is int and 0<=photo['index']<250
+            and isinstance(photo['file'],str) and bool(REMOVAL_PHOTO_FILE_RE.fullmatch(photo['file']))
+            and isinstance(photo['sha256'],str) and bool(re.fullmatch(r'[0-9a-f]{64}',photo['sha256'])))
 def facebook_listing_id(value):
     try:
         parsed=urlparse(str(value or '').strip())
@@ -1311,13 +1321,27 @@ class MarketplaceStore:
             out.append(row)
         return out
 
-    def remove_out_of_stock(self, vin, explicit, expected_listing_id=None):
+    def pending_removal_photo(self, vin):
+        """The saved photo reference of a vehicle that is CURRENTLY pending Facebook deletion, else None."""
+        vin=str(vin or '').strip().upper()
+        if not VIN_RE.fullmatch(vin):return None
+        with self.lock:
+            row=self.db.execute("SELECT identity_json FROM inventory_removals WHERE vin=? AND status='PENDING_FB_DELETE'",(vin,)).fetchone()
+        if not row:return None
+        try:photo=json.loads(row['identity_json']).get('photo')
+        except (ValueError,AttributeError):return None
+        return dict(photo) if valid_removal_photo(photo) else None
+
+    def remove_out_of_stock(self, vin, explicit, expected_listing_id=None, photo=None):
         """Owner-confirmed removal from active inventory. Source records and drafts are never deleted.
 
         A tracked Facebook listing creates exactly one durable pending-deletion reminder.
         expected_listing_id (optional): the Facebook listing the Owner reviewed. When given, the
         removal is refused unless it is still the vehicle's tracked listing, so a reminder can never
         be created for a post that was relinked after the review.
+        photo (optional): the card cover as a local reference {source,index,file,sha256}, chosen by the
+        server from this VIN's own photo cache. It is stored in identity_json only when well formed
+        (no schema change); anything else is dropped and the card shows a placeholder.
         """
         if explicit is not True:raise ValueError('explicit_out_of_stock_confirmation_required')
         if expected_listing_id is not None and not re.fullmatch(r'[0-9]{8,24}',str(expected_listing_id)):
@@ -1334,7 +1358,8 @@ class MarketplaceStore:
             identity={'vin':vin,'year':rec.get('year'),'make':rec.get('make'),'model':rec.get('model'),
                       'trim':rec.get('trim'),'stock':rec.get('stock') or next(iter(stocks.values()),''),
                       'stocks':stocks,'sources':sorted(groups[vin]),'price_cents':rec.get('price_cents'),
-                      'title':dealer_vehicle_title(rec)}
+                      'mileage':rec.get('mileage'),'title':dealer_vehicle_title(rec)}
+            if valid_removal_photo(photo):identity['photo']=dict(photo)
             draft=self.db.execute('SELECT status,published_url FROM drafts WHERE vin=?',(vin,)).fetchone()
             tracked=bool(draft and draft['status']=='USER_CONFIRMED_PUBLISHED')
             url=draft['published_url'] if tracked else ''

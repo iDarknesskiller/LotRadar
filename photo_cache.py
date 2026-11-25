@@ -958,6 +958,38 @@ class PhotoCache:
             if not media_type or len(data)>MAX_IMAGE_BYTES: raise ValueError('photo_cache_corrupted')
             return data,media_type
 
+    def reference(self,vin,source,index,urls):
+        """A durable reference to one CACHED photo of this vehicle: {source,index,file,sha256}.
+
+        Used for the Delete Listing card after the vehicle leaves active inventory. Nothing is copied
+        or written; the original cached file stays where it is, byte for byte.
+        """
+        data,_=self.read_photo(vin,source,index,urls)
+        with self.lock:
+            file=self._manifest(vin,source)['entries'][urls[index]]['file']
+        return {'source':source,'index':index,'file':file,'sha256':hashlib.sha256(data).hexdigest()}
+
+    def read_reference(self,vin,source,photo):
+        """Read a saved reference back, only from this VIN/source folder and only if it is the same file.
+
+        Raises ValueError/OSError (caller answers 404) for a malformed reference, a name outside the
+        folder, a missing, unreadable, oversized or non-image file, or bytes that changed since saving.
+        """
+        if not isinstance(photo,dict) or photo.get('source')!=source:raise ValueError('photo_reference_mismatch')
+        name,digest=photo.get('file'),photo.get('sha256')
+        if not isinstance(name,str) or not re.fullmatch(r'[0-9]{2,3}_[a-f0-9]{24}\.(?:jpg|png|webp)',name):
+            raise ValueError('invalid_cached_filename')
+        if not isinstance(digest,str) or not re.fullmatch(r'[0-9a-f]{64}',digest):raise ValueError('invalid_photo_reference')
+        folder=self._directory(vin,source).resolve()
+        path=(folder/name).resolve()
+        if path.parent!=folder:raise ValueError('photo_outside_vehicle_folder')
+        if path.stat().st_size>MAX_IMAGE_BYTES:raise ValueError('photo_cache_corrupted')
+        data=path.read_bytes()
+        if len(data)>MAX_IMAGE_BYTES or hashlib.sha256(data).hexdigest()!=digest:raise ValueError('photo_changed_since_saved')
+        media_type=sniff_image(data)
+        if not media_type:raise ValueError('photo_cache_corrupted')
+        return data,media_type
+
     def usable_indices(self,vin,source,urls):
         quality=self.status(vin,source,urls)
         usable=[x for x in quality['photos'] if x['downloaded'] and not x['excluded']]

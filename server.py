@@ -692,6 +692,32 @@ def create_handler(store, port, token):
             raise ValueError('unknown_vehicle_source')
         return vehicle['sources'][source]
 
+    def removal_photo_reference(vin):
+        """The inventory card's cover for this ACTIVE vehicle as a local reference, or None.
+
+        Same order as photoInfo() in app.js (Toyota Used, then Mitsubishi Used; manual cover, dealer
+        lead photo, then dealer gallery order), restricted to photos already cached on this computer
+        and never a rejected graphic. Read-only: nothing is downloaded, copied or rewritten.
+        """
+        vehicle=next((v for v in store.state()['vehicles'] if v['vin']==vin),None)
+        if not vehicle:return None
+        decorated_state({'vehicles':[vehicle]})
+        for source in ('toyota_used','mitsubishi_used'):
+            rec=vehicle['sources'].get(source)
+            if not rec:continue
+            urls=rec.get('images') or []
+            cached=set(rec.get('photo_usable_indices') or [])|set(rec.get('photo_review_preview_indices') or [])
+            blocked=set(rec.get('photo_graphic_indices') or [])
+            order=[]
+            if rec.get('photo_cover_manual'):order.append(rec.get('photo_cover_index'))
+            if rec.get('dealer_lead_photo') in urls:order.append(urls.index(rec['dealer_lead_photo']))
+            order.extend(range(len(urls)))
+            for index in order:
+                if type(index) is not int or index in blocked or index not in cached:continue
+                try:return photo_cache.reference(vin,source,index,urls)
+                except (ValueError,OSError,KeyError,TypeError):continue
+        return None
+
     def export_for_preferred_dealer(vin, requested, *, for_preview=False):
         """Exactly one dealer supplies photos; never merge photo sets or dealer facts.
 
@@ -1196,6 +1222,24 @@ def create_handler(store, port, token):
                     return self.wfile.write(data)
                 except (ValueError,OSError):
                     return self._json(404,{'error':'photo_not_cached'})
+            if path == '/api/removal-photo':
+                # Delete Listing pending card only. Serves the ONE photo saved at Confirm out of stock,
+                # only while that VIN is pending Facebook deletion, only from its own cache folder, and
+                # only if the file still has the saved SHA-256. /api/photo stays active-inventory only.
+                if self.headers.get('Sec-Fetch-Site','same-origin') not in ('same-origin','none'):
+                    return self._json(403,{'error':'cross_origin_photo_request_denied'})
+                query=parse_qs(urlsplit(self.path).query)
+                try:
+                    vin=query.get('vin',[''])[0].strip().upper();source=query.get('source',[''])[0]
+                    ref=query.get('ref',[''])[0]
+                    photo=store.pending_removal_photo(vin)
+                    if not photo or photo['source']!=source or photo['sha256']!=ref:
+                        raise ValueError('no_current_pending_photo')
+                    data,mime=photo_cache.read_reference(vin,source,photo)
+                    self._headers(200,mime,len(data))
+                    return self.wfile.write(data)
+                except (ValueError,OSError):
+                    return self._json(404,{'error':'photo_not_available'})
             if path == '/api/health':
                 return self._json(200, {'ok': True, 'service':'Marketplace Scanner', 'local_only': True,
                                          'chrome_bridge_available': True, 'api_revision':'CHROME-R13-USED-REFRESH',
@@ -1858,8 +1902,12 @@ def create_handler(store, port, token):
                         state = store.complete_facebook_cleanup(vin,
                             data.get('explicit_manual_removal'),data.get('explicit_local_trash'),data.get('expected_listing_url'))
                     elif action == 'remove_out_of_stock':
+                        # The card cover is chosen here, from this VIN's own cache. The client never supplies it.
+                        try:photo=removal_photo_reference(str(vin or '').strip().upper())
+                        except Exception as exc:
+                            photo_error('removal_photo_reference',exc);photo=None
                         state = store.remove_out_of_stock(vin,data.get('explicit_out_of_stock_confirmation'),
-                                                          data.get('expected_listing_id'))
+                                                          data.get('expected_listing_id'),photo=photo)
                     elif action == 'confirm_facebook_deleted':
                         state = store.confirm_facebook_deleted(vin,data.get('explicit_manual_facebook_deletion'),data.get('expected_listing_url'))
                     elif action == 'restore_removed':
