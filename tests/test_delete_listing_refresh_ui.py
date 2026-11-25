@@ -3,11 +3,55 @@
 Skipped when Playwright/Chromium is not installed. Uses the same local reader fixtures as
 test_delete_listing_refresh.py; nothing reaches a dealer site, Facebook or the Owner's data.
 """
-import os, sys, tempfile, threading, time, unittest
+import json, os, sys, tempfile, threading, time, unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_delete_listing_refresh import RefreshBase, VINS, LID, TOY
+
+
+def check_all_reply(origin):
+    """Match ONLY the /api/facebook-auto-check-all reply to a POST sent with this origin.
+
+    Refresh and Check Listing Links share that endpoint; matching the URL alone can pick up the other
+    control's reply (Codex, 2026-11-25: Refresh's own late reply was taken for the join reply).
+    """
+    def match(response):
+        request = response.request
+        if request.method != 'POST' or not response.url.endswith('/api/facebook-auto-check-all'):
+            return False
+        try:
+            return json.loads(request.post_data or '{}').get('origin') == origin
+        except ValueError:
+            return False
+    return match
+
+
+def gated_reader(test, outcomes):
+    """Run the fixture Reader in a thread that waits for gate.set(). Always stopped before the store closes.
+
+    The cleanup is registered after RefreshBase.setUp's, so it runs first (cleanups are LIFO): on an early
+    failure it cancels the Reader, releases the gate and joins the thread before the database is closed.
+    """
+    gate, stop = threading.Event(), threading.Event()
+    def run():
+        gate.wait(30)
+        if not stop.is_set():
+            test.reader(outcomes)
+    thread = threading.Thread(target=run, name='fixture-reader', daemon=True)
+    thread.start()
+    def release():
+        stop.set(); gate.set(); thread.join(30)
+        test.reader_teardown = {'alive': thread.is_alive(), 'store_open': _store_open(test.store)}
+    test.addCleanup(release)
+    return gate, thread
+
+
+def _store_open(store):
+    try:
+        store.db.execute('SELECT 1').fetchone(); return True
+    except Exception:
+        return False
 
 try:
     from playwright.sync_api import sync_playwright
@@ -30,11 +74,7 @@ class RefreshUi(RefreshBase):
     def test_refresh_and_check_listing_links_share_one_batch_in_the_page(self):
         self.track(0); self.track(1)
         self.findings = {(VINS[0], TOY): ('INCONCLUSIVE', ['PAGE_TIMEOUT']), (VINS[1], TOY): ('MATCH', [])}
-        gate = threading.Event()
-        def reader():
-            gate.wait(30)
-            self.reader({LID[0]: ('captured', 'unknown'), LID[1]: ('captured', 'unknown')})
-        threading.Thread(target=reader, daemon=True).start()
+        gate, _ = gated_reader(self, {LID[0]: ('captured', 'unknown'), LID[1]: ('captured', 'unknown')})
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page(viewport={'width': 1280, 'height': 900})
@@ -45,19 +85,26 @@ class RefreshUi(RefreshBase):
             page.wait_for_selector('#btn-delete-refresh')
             self.assertIn('Nothing is removed or changed', page.inner_text('.delete-listing-refresh'))
             self.shot(page, '01-delete-listing-before-refresh')
-            # Control 1: Refresh in Delete Listing
-            page.click('#btn-delete-refresh')
-            page.wait_for_function("document.querySelector('#btn-delete-refresh')?.disabled===true", timeout=10000)
-            # Control 2: Check Listing Links (More scans) while the batch runs -> joins the same batch
+            # Control 1: Refresh in Delete Listing STARTS the batch. Wait for ITS reply (matched by origin);
+            # a disabled button is not proof, the page disables both controls before the reply arrives.
+            with page.expect_response(check_all_reply('delete_listing_refresh')) as first:
+                page.click('#btn-delete-refresh')
+            self.assertEqual(first.value.status, 200)
+            started = first.value.json()
+            self.assertTrue(started['ok']); self.assertFalse(started['joined'])
+            self.assertTrue(started['batch_id']); self.assertEqual(started['started_by'], 'delete_listing_refresh')
+            # Control 2: Check Listing Links (More scans) while the Reader is still gated JOINS that batch.
             page.evaluate("document.getElementById('more-scans').open=true")
             page.wait_for_function("document.getElementById('btn-facebook-scan').disabled===true", timeout=10000)
-            # The Check Listing Links handler, as if clicked in another window. Assert on the server's
-            # reply, not on the transient toast (a later notice can replace it; flaky on slow machines).
-            with page.expect_response(lambda r: r.url.endswith('/api/facebook-auto-check-all')) as reply:
-                page.evaluate("checkAllFacebook()")
-            joined = reply.value.json()
-            self.assertTrue(joined['joined']); self.assertEqual(joined['started_by'], 'delete_listing_refresh')
-            self.assertEqual(len(self.verify_calls), 1)
+            # The Check Listing Links handler, as if clicked in another window; its own reply, by origin.
+            with page.expect_response(check_all_reply('check_listing_links')) as second:
+                page.evaluate("()=>{void checkAllFacebook();}")
+            self.assertEqual(second.value.status, 200)
+            joined = second.value.json()
+            self.assertTrue(joined['ok']); self.assertTrue(joined['joined'])
+            self.assertEqual(joined['started_by'], 'delete_listing_refresh')
+            self.assertEqual(joined['batch_id'], started['batch_id'])
+            self.assertEqual(len(self.verify_calls), 1)          # one dealer verification for both controls
             self.shot(page, '02-joined-while-running')
             gate.set()
             page.wait_for_selector('.refresh-review-card', timeout=40000)
@@ -104,6 +151,27 @@ class RefreshUi(RefreshBase):
             self.assertIn('link changed', page.inner_text('.delete-listing-refresh'))
             browser.close()
         self.assertEqual(self.store.state()['summary']['pending_fb_deletions'], 0)
+
+
+class ReaderTeardown(RefreshBase):
+    """Codex, 2026-11-25: a failure before gate.set() left the Reader thread using a closed database."""
+
+    def test_reader_thread_exits_before_the_store_closes_after_an_early_failure(self):
+        outer = self
+        class EarlyFailure(RefreshBase):
+            def runTest(inner):
+                inner.track(0)
+                _, outer.inner_thread = gated_reader(inner, {LID[0]: ('captured', 'unknown')})
+                outer.inner = inner
+                inner.fail('simulated failure before the Reader gate opens')
+        result = unittest.TestResult()
+        EarlyFailure().run(result)
+        self.assertEqual(len(result.failures), 1, result.errors)
+        self.assertIn('simulated failure', result.failures[0][1])
+        self.assertEqual(result.errors, [])
+        self.assertEqual(self.inner.reader_teardown, {'alive': False, 'store_open': True})   # joined first
+        self.assertFalse(self.inner_thread.is_alive())
+        self.assertFalse(_store_open(self.inner.store))                                     # then closed
 
 
 if __name__ == '__main__':
