@@ -95,7 +95,9 @@ class RefreshUi(RefreshBase):
             self.assertTrue(started['batch_id']); self.assertEqual(started['started_by'], 'delete_listing_refresh')
             # Control 2: Check Listing Links (More scans) while the Reader is still gated JOINS that batch.
             page.evaluate("document.getElementById('more-scans').open=true")
-            page.wait_for_function("document.getElementById('btn-facebook-scan').disabled===true", timeout=10000)
+            # Check Listing Links is disabled while the batch runs. A locator, not a string expression:
+            # the page's CSP (script-src 'self') blocks the eval() a string wait uses on later polls.
+            page.locator('#btn-facebook-scan:disabled').wait_for(state='attached', timeout=10000)
             # The Check Listing Links handler, as if clicked in another window; its own reply, by origin.
             with page.expect_response(check_all_reply('check_listing_links')) as second:
                 page.evaluate("()=>{void checkAllFacebook();}")
@@ -172,6 +174,23 @@ class ReaderTeardown(RefreshBase):
         self.assertEqual(self.inner.reader_teardown, {'alive': False, 'store_open': True})   # joined first
         self.assertFalse(self.inner_thread.is_alive())
         self.assertFalse(_store_open(self.inner.store))                                     # then closed
+
+
+class BrowserTestsRespectThePagePolicy(unittest.TestCase):
+    """Codex, 2026-11-25 (d2c7231): a wait_for_function given a bare expression string re-polls it with eval()
+    inside the page, which LotRadar's Content Security Policy (script-src 'self') blocks: an intermittent
+    EvalError whenever the condition was not already true on the first check. Browser tests must wait
+    with a locator, or pass a FUNCTION (compiled once by the driver, no page eval on later polls)."""
+
+    def test_no_browser_test_waits_on_a_bare_expression_string(self):
+        import re
+        offenders = []
+        for path in sorted(Path(__file__).resolve().parent.glob('test_*.py')):
+            for number, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+                m = re.search(r"wait_for_function\(\s*(['\"])(.*)", line)
+                if m and not re.match(r"\s*(\(|async\b|function\b)", m.group(2)):
+                    offenders.append(f'{path.name}:{number}: {line.strip()}')
+        self.assertEqual(offenders, [])
 
 
 if __name__ == '__main__':
